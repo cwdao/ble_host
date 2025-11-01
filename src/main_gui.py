@@ -52,6 +52,7 @@ class BLEHostGUI:
         self.frame_mode = False  # 是否启用帧模式
         self.max_channel_count = 80  # 最大信道数（判断帧完整）
         self.display_channel_list = list(range(10))  # 展示的信道列表，默认0-9
+        self.display_max_frames = 100  # 显示和计算使用的最大帧数（用于plot和统计信息）
         
         # 创建界面
         self._create_widgets()
@@ -124,6 +125,13 @@ class BLEHostGUI:
         display_channels_entry = ttk.Entry(frame_control_frame, textvariable=self.display_channels_var, width=20)
         display_channels_entry.pack(side=tk.LEFT, padx=5)
         ttk.Label(frame_control_frame, text="(如: 0-9 或 0,2,4,6,8)").pack(side=tk.LEFT, padx=2)
+        
+        # 显示帧数（用于plot和计算）
+        ttk.Label(frame_control_frame, text="显示帧数:").pack(side=tk.LEFT, padx=5)
+        self.display_max_frames_var = tk.StringVar(value="100")
+        display_frames_entry = ttk.Entry(frame_control_frame, textvariable=self.display_max_frames_var, width=10)
+        display_frames_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(frame_control_frame, text="(plot和计算范围)").pack(side=tk.LEFT, padx=2)
         
         # 应用按钮
         ttk.Button(frame_control_frame, text="应用", command=self._apply_frame_settings).pack(side=tk.LEFT, padx=5)
@@ -305,6 +313,21 @@ class BLEHostGUI:
             self.max_channel_count = 80
             self.max_channels_var.set("80")
         
+        # 解析展示帧数
+        try:
+            display_frames = int(self.display_max_frames_var.get())
+            if display_frames > 0:
+                self.display_max_frames = display_frames
+                self.logger.info(f"显示帧数设置为: {display_frames}（用于plot和计算）")
+            else:
+                self.logger.warning("显示帧数必须大于0，使用默认值100")
+                self.display_max_frames = 100
+                self.display_max_frames_var.set("100")
+        except ValueError:
+            self.logger.warning("显示帧数无效，使用默认值100")
+            self.display_max_frames = 100
+            self.display_max_frames_var.set("100")
+        
         # 解析展示信道
         display_text = self.display_channels_var.get()
         self.display_channel_list = self._parse_display_channels(display_text)
@@ -313,6 +336,8 @@ class BLEHostGUI:
         # 立即更新绘图（如果有数据）
         if self.frame_mode:
             self._update_frame_plots()
+            # 同时更新统计信息（因为使用了新的帧数范围）
+            self._update_statistics()
     
     def _toggle_frame_mode(self):
         """切换帧模式"""
@@ -350,7 +375,7 @@ class BLEHostGUI:
                 else:
                     channel = int(selected)
                 
-                freq = self.data_processor.calculate_channel_frequency(channel, max_frames=100)
+                freq = self.data_processor.calculate_channel_frequency(channel, max_frames=self.display_max_frames)
                 
                 if freq is not None:
                     self.freq_result_var.set(f"通道{channel}频率: {freq:.4f} Hz")
@@ -397,20 +422,11 @@ class BLEHostGUI:
                 else:
                     channel = int(selected)
                 
-                # 获取当前plot使用的数据范围（100帧）
-                max_frames = 100
+                # 使用设置的显示帧数
+                max_frames = self.display_max_frames
                 
                 # 计算统计信息
                 stats = self.data_processor.get_channel_statistics(channel, max_frames=max_frames)
-                
-                if stats:
-                    self.stats_text.insert(tk.END, f"通道 {channel} 统计信息（最近{stats['count']}帧）:\n")
-                    self.stats_text.insert(tk.END, f"  均值: {stats['mean']:.4f}\n")
-                    self.stats_text.insert(tk.END, f"  最大值: {stats['max']:.4f}\n")
-                    self.stats_text.insert(tk.END, f"  最小值: {stats['min']:.4f}\n")
-                    self.stats_text.insert(tk.END, f"  标准差: {stats['std']:.4f}\n")
-                    self.stats_text.insert(tk.END, f"  数据点数: {stats['count']}\n")
-                    self.stats_text.insert(tk.END, "\n")
                 
                 # 计算频率（基于当前plot显示的数据范围）
                 freq = self.data_processor.calculate_channel_frequency(channel, max_frames=max_frames)
@@ -420,6 +436,15 @@ class BLEHostGUI:
                     self.stats_text.insert(tk.END, f"  主频率: {freq:.4f} Hz\n")
                 else:
                     self.stats_text.insert(tk.END, "频率估计值: 计算失败（数据不足）\n")
+
+                if stats:
+                    self.stats_text.insert(tk.END, f"通道 {channel} 统计信息（最近{stats['count']}帧，范围={max_frames}）:\n")
+                    self.stats_text.insert(tk.END, f"  均值: {stats['mean']:.4f}\n")
+                    # self.stats_text.insert(tk.END, f"  最大值: {stats['max']:.4f}\n")
+                    # self.stats_text.insert(tk.END, f"  最小值: {stats['min']:.4f}\n")
+                    # self.stats_text.insert(tk.END, f"  标准差: {stats['std']:.4f}\n")
+                    self.stats_text.insert(tk.END, f"  数据点数: {stats['count']}\n")
+                    self.stats_text.insert(tk.END, "\n")
                 
             except ValueError:
                 self.stats_text.insert(tk.END, f"无效的通道号: {selected}\n")
@@ -633,10 +658,10 @@ class BLEHostGUI:
             self.logger.warning(f"[绘图调试] 设置的展示信道 {self.display_channel_list} 中没有可用数据")
             return
         
-        # 准备所有通道的数据
+        # 准备所有通道的数据（使用设置的显示帧数）
         channel_data = {}
         for ch in display_channels:
-            indices, amplitudes = self.data_processor.get_frame_data_range(ch, max_frames=100)
+            indices, amplitudes = self.data_processor.get_frame_data_range(ch, max_frames=self.display_max_frames)
             if len(indices) > 0 and len(amplitudes) > 0:
                 channel_data[ch] = (indices, amplitudes)
         
