@@ -84,7 +84,7 @@ class BLEHostGUI:
         
         # 波特率
         ttk.Label(control_frame, text="波特率:").grid(row=0, column=3, padx=5, pady=5)
-        self.baudrate_var = tk.StringVar(value="115200")
+        self.baudrate_var = tk.StringVar(value="230400")
         baudrate_combo = ttk.Combobox(control_frame, textvariable=self.baudrate_var, 
                                       values=["9600", "19200", "38400", "57600", "115200", "230400"], width=10)
         baudrate_combo.grid(row=0, column=4, padx=5, pady=5)
@@ -162,14 +162,15 @@ class BLEHostGUI:
         self.freq_result_var = tk.StringVar(value="")
         ttk.Label(process_frame, textvariable=self.freq_result_var, foreground="blue").pack(pady=5)
         
-        # 统计信息
-        stats_frame = ttk.Frame(process_frame)
-        stats_frame.pack(fill=tk.X, pady=5)
+        # 统计信息（自动更新）
+        stats_label_frame = ttk.LabelFrame(process_frame, text="统计信息（自动更新）", padding="5")
+        stats_label_frame.pack(fill=tk.X, pady=5)
         
-        ttk.Button(stats_frame, text="计算统计信息", command=self._calculate_statistics).pack(pady=5)
+        self.stats_text = scrolledtext.ScrolledText(stats_label_frame, height=8, width=30)
+        self.stats_text.pack(fill=tk.BOTH, expand=True)
         
-        self.stats_text = scrolledtext.ScrolledText(process_frame, height=8, width=30)
-        self.stats_text.pack(fill=tk.BOTH, expand=True, pady=5)
+        # 绑定频率变量选择变化事件
+        self.freq_var_var.trace_add('write', self._on_freq_var_changed)
         
         # 日志显示区域
         log_frame = ttk.LabelFrame(right_frame, text="日志", padding="10")
@@ -370,24 +371,86 @@ class BLEHostGUI:
                 self.freq_result_var.set("频率计算失败")
                 messagebox.showwarning("警告", "频率计算失败，可能需要更多数据")
     
-    def _calculate_statistics(self):
-        """计算统计信息"""
+    def _on_freq_var_changed(self, *args):
+        """频率变量选择变化时的回调"""
+        # 延迟更新，避免频繁刷新
+        if hasattr(self, '_stats_update_scheduled'):
+            self.root.after_cancel(self._stats_update_scheduled)
+        self._stats_update_scheduled = self.root.after(100, self._update_statistics)
+    
+    def _update_statistics(self):
+        """自动更新统计信息（基于当前选择的通道/变量）"""
         self.stats_text.delete(1.0, tk.END)
         
-        vars_list = self.data_processor.get_all_variables()
-        if not vars_list:
-            self.stats_text.insert(tk.END, "暂无数据\n")
+        selected = self.freq_var_var.get()
+        if not selected:
+            self.stats_text.insert(tk.END, "请选择通道或变量\n")
             return
         
-        for var_name in vars_list:
-            stats = self.data_processor.calculate_statistics(var_name)
+        # 判断是帧模式还是非帧模式
+        if self.frame_mode:
+            # 帧模式：显示通道统计信息和频率
+            try:
+                # 解析选择的值，可能是"ch0", "ch1"或"0", "1"
+                if selected.startswith("ch"):
+                    channel = int(selected[2:])
+                else:
+                    channel = int(selected)
+                
+                # 获取当前plot使用的数据范围（100帧）
+                max_frames = 100
+                
+                # 计算统计信息
+                stats = self.data_processor.get_channel_statistics(channel, max_frames=max_frames)
+                
+                if stats:
+                    self.stats_text.insert(tk.END, f"通道 {channel} 统计信息（最近{stats['count']}帧）:\n")
+                    self.stats_text.insert(tk.END, f"  均值: {stats['mean']:.4f}\n")
+                    self.stats_text.insert(tk.END, f"  最大值: {stats['max']:.4f}\n")
+                    self.stats_text.insert(tk.END, f"  最小值: {stats['min']:.4f}\n")
+                    self.stats_text.insert(tk.END, f"  标准差: {stats['std']:.4f}\n")
+                    self.stats_text.insert(tk.END, f"  数据点数: {stats['count']}\n")
+                    self.stats_text.insert(tk.END, "\n")
+                
+                # 计算频率（基于当前plot显示的数据范围）
+                freq = self.data_processor.calculate_channel_frequency(channel, max_frames=max_frames)
+                
+                if freq is not None:
+                    self.stats_text.insert(tk.END, f"频率估计值（基于{stats['count'] if stats else 0}帧）:\n")
+                    self.stats_text.insert(tk.END, f"  主频率: {freq:.4f} Hz\n")
+                else:
+                    self.stats_text.insert(tk.END, "频率估计值: 计算失败（数据不足）\n")
+                
+            except ValueError:
+                self.stats_text.insert(tk.END, f"无效的通道号: {selected}\n")
+        else:
+            # 非帧模式：显示变量统计信息和频率
+            vars_list = self.data_processor.get_all_variables()
+            if selected not in vars_list:
+                self.stats_text.insert(tk.END, f"变量 '{selected}' 不存在\n")
+                return
+            
+            # 计算统计信息（最近15秒）
+            duration = 15.0
+            stats = self.data_processor.calculate_statistics(selected, duration=duration)
+            
             if stats:
-                self.stats_text.insert(tk.END, f"\n{var_name}:\n")
+                self.stats_text.insert(tk.END, f"{selected} 统计信息（最近{duration}秒）:\n")
                 self.stats_text.insert(tk.END, f"  均值: {stats['mean']:.4f}\n")
                 self.stats_text.insert(tk.END, f"  最大值: {stats['max']:.4f}\n")
                 self.stats_text.insert(tk.END, f"  最小值: {stats['min']:.4f}\n")
                 self.stats_text.insert(tk.END, f"  标准差: {stats['std']:.4f}\n")
                 self.stats_text.insert(tk.END, f"  数据点数: {stats['count']}\n")
+                self.stats_text.insert(tk.END, "\n")
+            
+            # 计算频率（最近15秒）
+            freq = self.data_processor.calculate_frequency(selected, duration=duration)
+            
+            if freq is not None:
+                self.stats_text.insert(tk.END, f"频率估计值（基于{stats['count'] if stats else 0}个数据点）:\n")
+                self.stats_text.insert(tk.END, f"  主频率: {freq:.4f} Hz\n")
+            else:
+                self.stats_text.insert(tk.END, "频率估计值: 计算失败（数据不足）\n")
     
     def _start_update_loop(self):
         """启动数据更新循环"""
@@ -507,8 +570,8 @@ class BLEHostGUI:
         self.update_thread = threading.Thread(target=update_loop, daemon=True)
         self.update_thread.start()
         
-        # 启动频率列表更新线程
-        def update_freq_list():
+        # 启动频率列表更新线程和统计信息自动更新
+        def update_freq_list_and_stats():
             while True:
                 try:
                     if self.frame_mode:
@@ -535,12 +598,15 @@ class BLEHostGUI:
                                 self.freq_var_combo.current(0)
                                 self.freq_var_var.set(vars_list[0])
                     
+                    # 定期自动更新统计信息（即使选择没有变化，数据可能更新了）
+                    self.root.after(0, self._update_statistics)
+                    
                     time.sleep(1.0)  # 1秒更新一次
                 except Exception as e:
                     self.logger.error(f"更新频率列表错误: {e}")
                     time.sleep(1.0)
         
-        freq_list_thread = threading.Thread(target=update_freq_list, daemon=True)
+        freq_list_thread = threading.Thread(target=update_freq_list_and_stats, daemon=True)
         freq_list_thread.start()
     
     def _update_frame_plots(self):
