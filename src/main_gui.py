@@ -128,7 +128,7 @@ class BLEHostGUI:
         
         # 显示帧数（用于plot和计算）
         ttk.Label(frame_control_frame, text="显示帧数:").pack(side=tk.LEFT, padx=5)
-        self.display_max_frames_var = tk.StringVar(value="100")
+        self.display_max_frames_var = tk.StringVar(value="50")
         display_frames_entry = ttk.Entry(frame_control_frame, textvariable=self.display_max_frames_var, width=10)
         display_frames_entry.pack(side=tk.LEFT, padx=5)
         ttk.Label(frame_control_frame, text="(plot和计算范围)").pack(side=tk.LEFT, padx=2)
@@ -430,10 +430,11 @@ class BLEHostGUI:
                 
                 # 计算频率（基于当前plot显示的数据范围）
                 freq = self.data_processor.calculate_channel_frequency(channel, max_frames=max_frames)
-                
+                freq_min = 60/(1/freq)
+
                 if freq is not None:
                     self.stats_text.insert(tk.END, f"频率估计值（基于{stats['count'] if stats else 0}帧）:\n")
-                    self.stats_text.insert(tk.END, f"  主频率: {freq:.4f} Hz\n")
+                    self.stats_text.insert(tk.END, f"  主频率: {freq_min:.1f}次/分钟 - ({freq:.4f} Hz)\n")
                 else:
                     self.stats_text.insert(tk.END, "频率估计值: 计算失败（数据不足）\n")
 
