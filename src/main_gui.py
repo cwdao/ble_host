@@ -45,6 +45,11 @@ class BLEHostGUI:
         self.update_thread = None
         self.stop_event = threading.Event()
         
+        # 帧数据处理
+        self.last_frame_time = time.time()
+        self.frame_timeout = 0.5  # 500ms超时，如果500ms没有新数据，认为帧完成
+        self.frame_mode = False  # 是否启用帧模式
+        
         # 创建界面
         self._create_widgets()
         
@@ -92,6 +97,12 @@ class BLEHostGUI:
         
         # 清空数据按钮
         ttk.Button(control_frame, text="清空数据", command=self._clear_data).grid(row=0, column=7, padx=5, pady=5)
+        
+        # 帧模式开关
+        self.frame_mode_var = tk.BooleanVar(value=False)
+        frame_mode_check = ttk.Checkbutton(control_frame, text="帧模式", variable=self.frame_mode_var,
+                                           command=self._toggle_frame_mode)
+        frame_mode_check.grid(row=0, column=8, padx=5, pady=5)
         
         # 左右分栏
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -208,10 +219,28 @@ class BLEHostGUI:
     
     def _clear_data(self):
         """清空数据"""
-        self.data_processor.clear_buffer()
+        self.data_processor.clear_buffer(clear_frames=True)
         self.plotter.clear_plot()
+        self.data_parser.clear_buffer()
         self.plotter.refresh()
         self.logger.info("数据已清空")
+    
+    def _toggle_frame_mode(self):
+        """切换帧模式"""
+        self.frame_mode = self.frame_mode_var.get()
+        if self.frame_mode:
+            self.logger.info("启用帧模式 - 清空之前的非帧数据")
+            # 切换到帧模式时，清空之前的非帧数据（只保留帧数据）
+            self.data_processor.clear_buffer(clear_frames=False)  # 不清空帧数据
+            # 清空所有绘图，只显示帧数据
+            self.plotter.clear_plot()
+            # 清空解析器状态
+            self.data_parser.clear_buffer()
+        else:
+            self.logger.info("禁用帧模式")
+            # 切换到非帧模式时，清空帧数据
+            self.data_processor.clear_buffer(clear_frames=True)
+            self.plotter.clear_plot()
     
     def _calculate_frequency(self):
         """计算频率"""
@@ -258,11 +287,66 @@ class BLEHostGUI:
                         data = self.serial_reader.get_data(block=False)
                         
                         if data:
-                            # 解析数据
+                            current_time = time.time()
+                            
+                            # 如果是帧模式，优先处理帧数据
+                            if self.frame_mode:
+                                # 解析数据（会更新内部状态）
+                                parsed = self.data_parser.parse(data['text'])
+                                
+                                # 如果parse返回了完成的帧（检测到新帧头时自动完成旧帧）
+                                if parsed and parsed.get('frame'):
+                                    frame_data = parsed
+                                    if len(frame_data.get('channels', {})) > 0:
+                                        # 打印帧详细信息
+                                        channels = sorted(frame_data['channels'].keys())
+                                        self.logger.info(
+                                            f"[帧完成] index={frame_data['index']}, "
+                                            f"timestamp={frame_data['timestamp_ms']}ms, "
+                                            f"通道数={len(channels)}, "
+                                            f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
+                                        )
+                                        
+                                        self.data_processor.add_frame_data(frame_data)
+                                        self._update_frame_plots()
+                                    
+                                    # 初始化时间戳（新帧开始）
+                                    self.last_frame_time = current_time
+                                # 如果正在累积帧数据，更新时间戳
+                                elif self.data_parser.current_frame is not None:
+                                    # 检查是否有IQ数据
+                                    has_iq = bool(self.data_parser.parse_iq_data(data['text']))
+                                    if has_iq:
+                                        self.last_frame_time = current_time
+                                        iq_data = self.data_parser.current_frame.get('iq_data', {})
+                                        self.logger.debug(
+                                            f"[帧累积] index={self.data_parser.current_frame['index']}, "
+                                            f"当前通道数={len(iq_data)}"
+                                        )
+                                
+                                # 检查是否应该完成当前帧（超时判断，作为备份）
+                                if self.data_parser.current_frame is not None:
+                                    if current_time - self.last_frame_time > self.frame_timeout:
+                                        # 超时完成帧
+                                        frame_data = self.data_parser.flush_frame()
+                                        if frame_data and len(frame_data.get('channels', {})) > 0:
+                                            channels = sorted(frame_data['channels'].keys())
+                                            self.logger.info(
+                                                f"[帧完成-超时] index={frame_data['index']}, "
+                                                f"timestamp={frame_data['timestamp_ms']}ms, "
+                                                f"通道数={len(channels)}"
+                                            )
+                                            self.data_processor.add_frame_data(frame_data)
+                                            self._update_frame_plots()
+                                
+                                # 帧模式下不处理其他数据
+                                continue
+                            
+                            # 非帧模式：解析简单数据
                             parsed = self.data_parser.parse(data['text'])
                             
-                            if parsed:
-                                # 添加到处理器
+                            # 处理简单数据（向后兼容）
+                            if parsed and not parsed.get('frame'):
                                 self.data_processor.add_data(data['timestamp'], parsed)
                                 
                                 # 更新绘图（最近15秒的数据）
@@ -278,16 +362,39 @@ class BLEHostGUI:
                                     self.freq_var_combo.current(0)
                                     self.freq_var_var.set(vars_list[0])
                         
-                        # 刷新绘图
+                        # 定期刷新绘图
                         self.plotter.refresh()
                     
-                    time.sleep(0.1)  # 100ms更新间隔
+                    time.sleep(0.05)  # 50ms更新间隔，更快响应
                     
                 except Exception as e:
                     self.logger.error(f"更新循环错误: {e}")
         
         self.update_thread = threading.Thread(target=update_loop, daemon=True)
         self.update_thread.start()
+    
+    def _update_frame_plots(self):
+        """更新帧数据绘图 - 在一个图中显示前10个通道的幅值"""
+        channels = self.data_processor.get_all_frame_channels()
+        
+        if not channels:
+            return
+        
+        # 只显示前10个通道
+        max_channels = 10
+        display_channels = sorted(channels)[:max_channels]
+        
+        # 准备所有通道的数据
+        channel_data = {}
+        for ch in display_channels:
+            indices, amplitudes = self.data_processor.get_frame_data_range(ch, max_frames=100)
+            if len(indices) > 0 and len(amplitudes) > 0:
+                channel_data[ch] = (indices, amplitudes)
+        
+        # 一次更新所有通道（在一个图中显示多条线）
+        if channel_data:
+            self.plotter.update_frame_data(channel_data, max_channels=max_channels)
+            self.logger.debug(f"更新帧数据绘图: {len(channel_data)} 个通道")
     
     def on_closing(self):
         """窗口关闭事件"""
