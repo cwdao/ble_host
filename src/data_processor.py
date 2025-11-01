@@ -221,6 +221,90 @@ class DataProcessor:
             'count': len(values)
         }
     
+    def calculate_channel_frequency(self, channel: int, max_frames: int = None) -> Optional[float]:
+        """
+        计算指定通道的频率（基于FFT，去掉直流成分，选择振幅最大的频率）
+        
+        Args:
+            channel: 通道号
+            max_frames: 最多使用多少帧，None表示全部
+        
+        Returns:
+            主频率（Hz），如果计算失败返回None
+        """
+        indices, amplitudes = self.get_frame_data_range(channel, max_frames)
+        
+        if len(amplitudes) < 4:
+            self.logger.warning(f"通道{channel}数据点数不足，无法计算频率")
+            return None
+        
+        try:
+            # 去除直流成分（减去均值）
+            amplitudes_dc_removed = amplitudes - np.mean(amplitudes)
+            
+            # 计算采样率（基于timestamp_ms）
+            # 创建index到timestamp的映射以提高查找效率
+            idx_to_ts = {frame_idx: ts_ms for frame_idx, ts_ms in self.frame_metadata}
+            timestamps_ms = []
+            for idx in indices:
+                if idx in idx_to_ts:
+                    timestamps_ms.append(idx_to_ts[idx] / 1000.0)  # 转换为秒
+                else:
+                    # 如果找不到时间戳，使用默认值
+                    break
+            
+            # 如果找到了时间戳，使用真实采样率
+            if len(timestamps_ms) == len(indices) and len(timestamps_ms) > 1:
+                timestamps = np.array(timestamps_ms)
+                # 计算平均采样间隔（秒）
+                dt = np.mean(np.diff(timestamps))
+                if dt <= 0:
+                    # 如果时间戳有问题，使用帧index作为备用
+                    di = np.mean(np.diff(indices)) if len(indices) > 1 else 1.0
+                    dt = di
+                    self.logger.debug(f"通道{channel}: 使用帧index间隔计算采样率")
+            else:
+                # 如果没有时间戳或时间戳不完整，使用帧index间隔作为备用
+                if len(indices) > 1:
+                    di = np.mean(np.diff(indices))
+                    if di <= 0:
+                        return None
+                    # 假设帧间隔为固定值（例如每帧450ms，可根据实际情况调整）
+                    dt = 0.45  # 默认帧间隔450ms
+                    self.logger.debug(f"通道{channel}: 使用默认帧间隔{dt:.2f}秒计算采样率")
+                else:
+                    return None
+            
+            # FFT计算频率
+            n = len(amplitudes_dc_removed)
+            fft_vals = np.fft.rfft(amplitudes_dc_removed)
+            fft_freq = np.fft.rfftfreq(n, dt)
+            
+            # 计算功率谱（振幅）
+            power = np.abs(fft_vals)
+            
+            if len(power) > 1:
+                # 跳过DC分量（索引0），因为已经去除了直流成分
+                # 找到振幅最大的频率（排除DC分量后）
+                main_freq_idx = np.argmax(power[1:]) + 1
+                main_freq = fft_freq[main_freq_idx]
+                
+                # 记录主要频率的振幅
+                main_amplitude = power[main_freq_idx]
+                
+                self.logger.debug(
+                    f"通道{channel}频率计算: 主频率={main_freq:.4f} Hz, "
+                    f"振幅={main_amplitude:.2f}, 帧数={n}, 采样间隔={dt:.3f}秒"
+                )
+                
+                return main_freq
+            else:
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"通道{channel}频率计算错误: {e}")
+            return None
+    
     def get_channel_statistics(self, channel: int, max_frames: int = None) -> Optional[Dict]:
         """
         计算指定通道的统计信息

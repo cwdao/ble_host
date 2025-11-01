@@ -148,11 +148,11 @@ class BLEHostGUI:
         process_frame = ttk.LabelFrame(right_frame, text="数据处理", padding="10")
         process_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        # 频率计算
+        # 频率计算（帧模式：通道频率，非帧模式：变量频率）
         freq_frame = ttk.Frame(process_frame)
         freq_frame.pack(fill=tk.X, pady=5)
         
-        ttk.Label(freq_frame, text="变量:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(freq_frame, text="选择:").pack(side=tk.LEFT, padx=5)
         self.freq_var_var = tk.StringVar()
         self.freq_var_combo = ttk.Combobox(freq_frame, textvariable=self.freq_var_var, width=15)
         self.freq_var_combo.pack(side=tk.LEFT, padx=5)
@@ -334,19 +334,41 @@ class BLEHostGUI:
     
     def _calculate_frequency(self):
         """计算频率"""
-        var_name = self.freq_var_var.get()
-        if not var_name:
-            messagebox.showerror("错误", "请选择变量")
+        selected = self.freq_var_var.get()
+        if not selected:
+            messagebox.showerror("错误", "请选择变量或通道")
             return
         
-        freq = self.data_processor.calculate_frequency(var_name, duration=15.0)
-        
-        if freq is not None:
-            self.freq_result_var.set(f"频率: {freq:.2f} Hz")
-            self.logger.info(f"{var_name} 频率: {freq:.2f} Hz")
+        # 判断是帧模式还是非帧模式
+        if self.frame_mode:
+            # 帧模式：计算通道频率
+            # 解析选择的值，可能是"ch0", "ch1"或"0", "1"
+            try:
+                if selected.startswith("ch"):
+                    channel = int(selected[2:])
+                else:
+                    channel = int(selected)
+                
+                freq = self.data_processor.calculate_channel_frequency(channel, max_frames=100)
+                
+                if freq is not None:
+                    self.freq_result_var.set(f"通道{channel}频率: {freq:.4f} Hz")
+                    self.logger.info(f"通道{channel}频率: {freq:.4f} Hz")
+                else:
+                    self.freq_result_var.set("频率计算失败")
+                    messagebox.showwarning("警告", f"通道{channel}频率计算失败，可能需要更多数据")
+            except ValueError:
+                messagebox.showerror("错误", f"无效的通道号: {selected}")
         else:
-            self.freq_result_var.set("频率计算失败")
-            messagebox.showwarning("警告", "频率计算失败，可能需要更多数据")
+            # 非帧模式：计算变量频率
+            freq = self.data_processor.calculate_frequency(selected, duration=15.0)
+            
+            if freq is not None:
+                self.freq_result_var.set(f"频率: {freq:.2f} Hz")
+                self.logger.info(f"{selected} 频率: {freq:.2f} Hz")
+            else:
+                self.freq_result_var.set("频率计算失败")
+                messagebox.showwarning("警告", "频率计算失败，可能需要更多数据")
     
     def _calculate_statistics(self):
         """计算统计信息"""
@@ -467,7 +489,7 @@ class BLEHostGUI:
                                     if len(times) > 0:
                                         self.plotter.update_plot(var_name, times, values)
                                 
-                                # 更新变量列表
+                                # 更新变量列表（非帧模式）
                                 vars_list = self.data_processor.get_all_variables()
                                 self.freq_var_combo['values'] = vars_list
                                 if vars_list and not self.freq_var_var.get():
@@ -484,6 +506,42 @@ class BLEHostGUI:
         
         self.update_thread = threading.Thread(target=update_loop, daemon=True)
         self.update_thread.start()
+        
+        # 启动频率列表更新线程
+        def update_freq_list():
+            while True:
+                try:
+                    if self.frame_mode:
+                        # 帧模式：显示可用通道
+                        channels = self.data_processor.get_all_frame_channels()
+                        if channels:
+                            # 格式化为 "ch0", "ch1"
+                            channel_list = [f"ch{ch}" for ch in channels[:20]]  # 最多显示20个
+                            # 获取当前选项列表（使用字典访问方式）
+                            current_values = list(self.freq_var_combo['values'] or [])
+                            if set(channel_list) != set(current_values):
+                                self.freq_var_combo['values'] = channel_list
+                                if channel_list and not self.freq_var_var.get():
+                                    self.freq_var_combo.current(0)
+                                    self.freq_var_var.set(channel_list[0])
+                    else:
+                        # 非帧模式：显示变量列表
+                        vars_list = self.data_processor.get_all_variables()
+                        # 获取当前选项列表（使用字典访问方式）
+                        current_values = list(self.freq_var_combo['values'] or [])
+                        if set(vars_list) != set(current_values):
+                            self.freq_var_combo['values'] = vars_list
+                            if vars_list and not self.freq_var_var.get():
+                                self.freq_var_combo.current(0)
+                                self.freq_var_var.set(vars_list[0])
+                    
+                    time.sleep(1.0)  # 1秒更新一次
+                except Exception as e:
+                    self.logger.error(f"更新频率列表错误: {e}")
+                    time.sleep(1.0)
+        
+        freq_list_thread = threading.Thread(target=update_freq_list, daemon=True)
+        freq_list_thread.start()
     
     def _update_frame_plots(self):
         """更新帧数据绘图 - 根据设置显示指定通道的幅值"""

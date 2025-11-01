@@ -27,7 +27,7 @@ class Plotter:
         self.canvas = None
         # 使用单个axes显示所有数据
         self.ax = self.figure.add_subplot(111)
-        self.ax.set_title('通道幅值波形图')
+        self.ax.set_title('BLE Channel Sounding')
         self.ax.set_xlabel('Frame Index')
         self.ax.set_ylabel('Amplitude')
         self.ax.grid(True, alpha=0.3)
