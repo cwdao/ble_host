@@ -9,6 +9,7 @@ import threading
 import time
 import logging
 from pathlib import Path
+from typing import List
 
 try:
     from .serial_reader import SerialReader
@@ -49,6 +50,8 @@ class BLEHostGUI:
         self.last_frame_time = time.time()
         self.frame_timeout = 0.5  # 500ms超时，如果500ms没有新数据，认为帧完成
         self.frame_mode = False  # 是否启用帧模式
+        self.max_channel_count = 80  # 最大信道数（判断帧完整）
+        self.display_channel_list = list(range(10))  # 展示的信道列表，默认0-9
         
         # 创建界面
         self._create_widgets()
@@ -103,6 +106,27 @@ class BLEHostGUI:
         frame_mode_check = ttk.Checkbutton(control_frame, text="帧模式", variable=self.frame_mode_var,
                                            command=self._toggle_frame_mode)
         frame_mode_check.grid(row=0, column=8, padx=5, pady=5)
+        
+        # 第二行：帧模式相关控件
+        frame_control_frame = ttk.Frame(control_frame)
+        frame_control_frame.grid(row=1, column=0, columnspan=10, sticky="ew", padx=5, pady=5)
+        
+        # 最大信道数
+        ttk.Label(frame_control_frame, text="最大信道数:").pack(side=tk.LEFT, padx=5)
+        self.max_channels_var = tk.StringVar(value="80")
+        max_channels_entry = ttk.Entry(frame_control_frame, textvariable=self.max_channels_var, width=10)
+        max_channels_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(frame_control_frame, text="(判断帧完整)").pack(side=tk.LEFT, padx=2)
+        
+        # 展示信道选择
+        ttk.Label(frame_control_frame, text="展示信道:").pack(side=tk.LEFT, padx=5)
+        self.display_channels_var = tk.StringVar(value="0-9")
+        display_channels_entry = ttk.Entry(frame_control_frame, textvariable=self.display_channels_var, width=20)
+        display_channels_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(frame_control_frame, text="(如: 0-9 或 0,2,4,6,8)").pack(side=tk.LEFT, padx=2)
+        
+        # 应用按钮
+        ttk.Button(frame_control_frame, text="应用", command=self._apply_frame_settings).pack(side=tk.LEFT, padx=5)
         
         # 左右分栏
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -225,6 +249,70 @@ class BLEHostGUI:
         self.plotter.refresh()
         self.logger.info("数据已清空")
     
+    def _parse_display_channels(self, text: str) -> List[int]:
+        """
+        解析展示信道字符串
+        支持格式：
+        - "0-9" -> [0,1,2,3,4,5,6,7,8,9]
+        - "0,2,4,6,8" -> [0,2,4,6,8]
+        - "0-5,10,15-20" -> [0,1,2,3,4,5,10,15,16,17,18,19,20]
+        
+        Returns:
+            信道号列表
+        """
+        channels = []
+        text = text.strip()
+        if not text:
+            return list(range(10))  # 默认前10个
+        
+        try:
+            # 按逗号分割
+            parts = [p.strip() for p in text.split(',')]
+            for part in parts:
+                if '-' in part:
+                    # 范围格式 "0-9"
+                    start, end = part.split('-', 1)
+                    start = int(start.strip())
+                    end = int(end.strip())
+                    if start <= end:
+                        channels.extend(range(start, end + 1))
+                else:
+                    # 单个数字
+                    channels.append(int(part.strip()))
+            
+            # 去重并排序
+            channels = sorted(list(set(channels)))
+            return channels
+        except (ValueError, AttributeError) as e:
+            self.logger.warning(f"解析展示信道失败: {text}, 错误: {e}, 使用默认值")
+            return list(range(10))
+    
+    def _apply_frame_settings(self):
+        """应用帧模式设置"""
+        try:
+            # 解析最大信道数
+            max_count = int(self.max_channels_var.get())
+            if max_count > 0:
+                self.max_channel_count = max_count
+                self.logger.info(f"最大信道数设置为: {max_count}")
+            else:
+                self.logger.warning("最大信道数必须大于0，使用默认值80")
+                self.max_channel_count = 80
+                self.max_channels_var.set("80")
+        except ValueError:
+            self.logger.warning("最大信道数无效，使用默认值80")
+            self.max_channel_count = 80
+            self.max_channels_var.set("80")
+        
+        # 解析展示信道
+        display_text = self.display_channels_var.get()
+        self.display_channel_list = self._parse_display_channels(display_text)
+        self.logger.info(f"展示信道设置为: {self.display_channel_list}")
+        
+        # 立即更新绘图（如果有数据）
+        if self.frame_mode:
+            self._update_frame_plots()
+    
     def _toggle_frame_mode(self):
         """切换帧模式"""
         self.frame_mode = self.frame_mode_var.get()
@@ -236,6 +324,8 @@ class BLEHostGUI:
             self.plotter.clear_plot()
             # 清空解析器状态
             self.data_parser.clear_buffer()
+            # 应用当前设置
+            self._apply_frame_settings()
         else:
             self.logger.info("禁用帧模式")
             # 切换到非帧模式时，清空帧数据
@@ -327,8 +417,8 @@ class BLEHostGUI:
                                             f"当前通道数={iq_count}"
                                         )
                                         
-                                        # 如果IQ数据足够多（70个通道），认为帧完整了，立即完成
-                                        if iq_count >= 70:
+                                        # 如果IQ数据足够多（达到最大信道数），认为帧完整了，立即完成
+                                        if iq_count >= self.max_channel_count:
                                             frame_data = self.data_parser.flush_frame()
                                             if frame_data and len(frame_data.get('channels', {})) > 0:
                                                 channels = sorted(frame_data['channels'].keys())
@@ -396,33 +486,40 @@ class BLEHostGUI:
         self.update_thread.start()
     
     def _update_frame_plots(self):
-        """更新帧数据绘图 - 在一个图中显示前10个通道的幅值"""
-        channels = self.data_processor.get_all_frame_channels()
+        """更新帧数据绘图 - 根据设置显示指定通道的幅值"""
+        all_channels = self.data_processor.get_all_frame_channels()
         
-        self.logger.info(f"[绘图调试] 所有通道: {channels}, 通道数: {len(channels)}")
+        self.logger.debug(f"[绘图调试] 所有可用通道: {all_channels}, 通道数: {len(all_channels)}")
         
-        if not channels:
+        if not all_channels:
             self.logger.warning("[绘图调试] 没有找到任何通道数据")
             return
         
-        # 只显示前10个通道
-        max_channels = 10
-        display_channels = sorted(channels)[:max_channels]
-        self.logger.info(f"[绘图调试] 显示通道: {display_channels}")
+        # 根据设置的展示信道列表筛选
+        display_channels = []
+        for ch in self.display_channel_list:
+            if ch in all_channels:
+                display_channels.append(ch)
+            else:
+                self.logger.debug(f"[绘图调试] 通道{ch}不存在，跳过")
+        
+        self.logger.debug(f"[绘图调试] 显示通道: {display_channels}")
+        
+        if not display_channels:
+            self.logger.warning(f"[绘图调试] 设置的展示信道 {self.display_channel_list} 中没有可用数据")
+            return
         
         # 准备所有通道的数据
         channel_data = {}
         for ch in display_channels:
             indices, amplitudes = self.data_processor.get_frame_data_range(ch, max_frames=100)
-            self.logger.info(f"[绘图调试] 通道{ch}: indices长度={len(indices)}, amplitudes长度={len(amplitudes)}")
             if len(indices) > 0 and len(amplitudes) > 0:
                 channel_data[ch] = (indices, amplitudes)
-                self.logger.info(f"[绘图调试] 通道{ch}: 数据范围 indices={indices[:5]}..., amplitudes={amplitudes[:5]}...")
         
         # 一次更新所有通道（在一个图中显示多条线）
         if channel_data:
-            self.plotter.update_frame_data(channel_data, max_channels=max_channels)
-            self.logger.info(f"[绘图调试] 更新帧数据绘图: {len(channel_data)} 个通道")
+            self.plotter.update_frame_data(channel_data, max_channels=len(display_channels))
+            self.logger.debug(f"[绘图调试] 更新帧数据绘图: {len(channel_data)} 个通道")
         else:
             self.logger.warning("[绘图调试] 没有有效的通道数据用于绘图")
     
