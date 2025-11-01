@@ -55,6 +55,8 @@ class DataProcessor:
         timestamp_ms = frame_data['timestamp_ms']
         channels = frame_data.get('channels', {})
         
+        self.logger.debug(f"[数据存储] 添加帧 index={index}, 通道数={len(channels)}")
+        
         # 保存元数据
         self.frame_metadata.append((index, timestamp_ms))
         
@@ -62,12 +64,21 @@ class DataProcessor:
         for ch, channel_data in channels.items():
             amplitude = channel_data.get('amplitude', 0.0)
             
+            # 确保ch是整数类型
+            if not isinstance(ch, int):
+                try:
+                    ch = int(ch)
+                except (ValueError, TypeError):
+                    self.logger.warning(f"[数据存储] 通道号类型错误: {ch}, type={type(ch)}")
+                    continue
+            
             # 使用index作为x轴（也可以使用timestamp_ms）
             if ch not in self.frame_buffer:
                 self.frame_buffer[ch] = []
             
             # 存储为 (index, amplitude) 或 (timestamp_ms, amplitude)
             self.frame_buffer[ch].append((index, amplitude))
+            self.logger.debug(f"[数据存储] 通道{ch}: index={index}, amplitude={amplitude:.2f}")
     
     def get_data_range(self, var_name: str, duration: float) -> Tuple[np.ndarray, np.ndarray]:
         """

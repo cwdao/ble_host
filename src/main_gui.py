@@ -291,7 +291,7 @@ class BLEHostGUI:
                             
                             # 如果是帧模式，优先处理帧数据
                             if self.frame_mode:
-                                # 解析数据（会更新内部状态）
+                                # 解析数据（会更新内部状态，累积IQ数据）
                                 parsed = self.data_parser.parse(data['text'])
                                 
                                 # 如果parse返回了完成的帧（检测到新帧头时自动完成旧帧）
@@ -312,32 +312,54 @@ class BLEHostGUI:
                                     
                                     # 初始化时间戳（新帧开始）
                                     self.last_frame_time = current_time
-                                # 如果正在累积帧数据，更新时间戳
+                                # 如果正在累积帧数据，检查是否完成
                                 elif self.data_parser.current_frame is not None:
-                                    # 检查是否有IQ数据
-                                    has_iq = bool(self.data_parser.parse_iq_data(data['text']))
-                                    if has_iq:
+                                    # 检查当前帧的IQ数据量（parse已经更新了current_frame）
+                                    iq_data = self.data_parser.current_frame.get('iq_data', {})
+                                    iq_count = len(iq_data)
+                                    
+                                    # 如果有IQ数据，更新时间戳
+                                    if iq_count > 0:
                                         self.last_frame_time = current_time
-                                        iq_data = self.data_parser.current_frame.get('iq_data', {})
+                                        
                                         self.logger.debug(
                                             f"[帧累积] index={self.data_parser.current_frame['index']}, "
-                                            f"当前通道数={len(iq_data)}"
+                                            f"当前通道数={iq_count}"
                                         )
+                                        
+                                        # 如果IQ数据足够多（70个通道），认为帧完整了，立即完成
+                                        if iq_count >= 70:
+                                            frame_data = self.data_parser.flush_frame()
+                                            if frame_data and len(frame_data.get('channels', {})) > 0:
+                                                channels = sorted(frame_data['channels'].keys())
+                                                self.logger.info(
+                                                    f"[帧完成-数据完整] index={frame_data['index']}, "
+                                                    f"timestamp={frame_data['timestamp_ms']}ms, "
+                                                    f"通道数={len(channels)}"
+                                                )
+                                                self.data_processor.add_frame_data(frame_data)
+                                                self._update_frame_plots()
+                                                self.last_frame_time = current_time  # 重置时间戳
                                 
                                 # 检查是否应该完成当前帧（超时判断，作为备份）
                                 if self.data_parser.current_frame is not None:
+                                    # 检查超时
                                     if current_time - self.last_frame_time > self.frame_timeout:
-                                        # 超时完成帧
-                                        frame_data = self.data_parser.flush_frame()
-                                        if frame_data and len(frame_data.get('channels', {})) > 0:
-                                            channels = sorted(frame_data['channels'].keys())
-                                            self.logger.info(
-                                                f"[帧完成-超时] index={frame_data['index']}, "
-                                                f"timestamp={frame_data['timestamp_ms']}ms, "
-                                                f"通道数={len(channels)}"
-                                            )
-                                            self.data_processor.add_frame_data(frame_data)
-                                            self._update_frame_plots()
+                                        iq_data = self.data_parser.current_frame.get('iq_data', {})
+                                        if len(iq_data) > 0:  # 至少有一些数据才完成
+                                            # 超时完成帧
+                                            frame_data = self.data_parser.flush_frame()
+                                            if frame_data and len(frame_data.get('channels', {})) > 0:
+                                                channels = sorted(frame_data['channels'].keys())
+                                                self.logger.info(
+                                                    f"[帧完成-超时] index={frame_data['index']}, "
+                                                    f"timestamp={frame_data['timestamp_ms']}ms, "
+                                                    f"通道数={len(channels)}, "
+                                                    f"超时={current_time - self.last_frame_time:.2f}秒"
+                                                )
+                                                self.data_processor.add_frame_data(frame_data)
+                                                self._update_frame_plots()
+                                                self.last_frame_time = current_time  # 重置时间戳
                                 
                                 # 帧模式下不处理其他数据
                                 continue
@@ -377,24 +399,32 @@ class BLEHostGUI:
         """更新帧数据绘图 - 在一个图中显示前10个通道的幅值"""
         channels = self.data_processor.get_all_frame_channels()
         
+        self.logger.info(f"[绘图调试] 所有通道: {channels}, 通道数: {len(channels)}")
+        
         if not channels:
+            self.logger.warning("[绘图调试] 没有找到任何通道数据")
             return
         
         # 只显示前10个通道
         max_channels = 10
         display_channels = sorted(channels)[:max_channels]
+        self.logger.info(f"[绘图调试] 显示通道: {display_channels}")
         
         # 准备所有通道的数据
         channel_data = {}
         for ch in display_channels:
             indices, amplitudes = self.data_processor.get_frame_data_range(ch, max_frames=100)
+            self.logger.info(f"[绘图调试] 通道{ch}: indices长度={len(indices)}, amplitudes长度={len(amplitudes)}")
             if len(indices) > 0 and len(amplitudes) > 0:
                 channel_data[ch] = (indices, amplitudes)
+                self.logger.info(f"[绘图调试] 通道{ch}: 数据范围 indices={indices[:5]}..., amplitudes={amplitudes[:5]}...")
         
         # 一次更新所有通道（在一个图中显示多条线）
         if channel_data:
             self.plotter.update_frame_data(channel_data, max_channels=max_channels)
-            self.logger.debug(f"更新帧数据绘图: {len(channel_data)} 个通道")
+            self.logger.info(f"[绘图调试] 更新帧数据绘图: {len(channel_data)} 个通道")
+        else:
+            self.logger.warning("[绘图调试] 没有有效的通道数据用于绘图")
     
     def on_closing(self):
         """窗口关闭事件"""
