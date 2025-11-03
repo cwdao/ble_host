@@ -103,7 +103,7 @@ class BLEHostGUI:
         ttk.Button(control_frame, text="清空数据", command=self._clear_data).grid(row=0, column=7, padx=5, pady=5)
         
         # 帧模式开关
-        self.frame_mode_var = tk.BooleanVar(value=False)
+        self.frame_mode_var = tk.BooleanVar(value=True)
         frame_mode_check = ttk.Checkbutton(control_frame, text="帧模式", variable=self.frame_mode_var,
                                            command=self._toggle_frame_mode)
         frame_mode_check.grid(row=0, column=8, padx=5, pady=5)
