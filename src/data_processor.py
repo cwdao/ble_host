@@ -64,8 +64,10 @@ class DataProcessor:
         for ch, channel_data in channels.items():
             amplitude = channel_data.get('amplitude', 0.0)
             phase = channel_data.get('phase', 0.0)
-            I = channel_data.get('I', 0.0)
-            Q = channel_data.get('Q', 0.0)
+            local_amplitude = channel_data.get('local_amplitude', 0.0)
+            local_phase = channel_data.get('local_phase', 0.0)
+            remote_amplitude = channel_data.get('remote_amplitude', 0.0)
+            remote_phase = channel_data.get('remote_phase', 0.0)
             
             # 确保ch是整数类型
             if not isinstance(ch, int):
@@ -77,14 +79,24 @@ class DataProcessor:
             
             # 使用index作为x轴（也可以使用timestamp_ms）
             if ch not in self.frame_buffer:
-                self.frame_buffer[ch] = {'amplitude': [], 'phase': [], 'I': [], 'Q': []}
+                self.frame_buffer[ch] = {
+                    'amplitude': [], 'phase': [],
+                    'local_amplitude': [], 'local_phase': [],
+                    'remote_amplitude': [], 'remote_phase': []
+                }
             
             # 存储所有数据类型
             self.frame_buffer[ch]['amplitude'].append((index, amplitude))
             self.frame_buffer[ch]['phase'].append((index, phase))
-            self.frame_buffer[ch]['I'].append((index, I))
-            self.frame_buffer[ch]['Q'].append((index, Q))
-            self.logger.debug(f"[数据存储] 通道{ch}: index={index}, amplitude={amplitude:.2f}, phase={phase:.4f}")
+            self.frame_buffer[ch]['local_amplitude'].append((index, local_amplitude))
+            self.frame_buffer[ch]['local_phase'].append((index, local_phase))
+            self.frame_buffer[ch]['remote_amplitude'].append((index, remote_amplitude))
+            self.frame_buffer[ch]['remote_phase'].append((index, remote_phase))
+            self.logger.debug(
+                f"[数据存储] 通道{ch}: index={index}, "
+                f"amplitude={amplitude:.2f}, phase={phase:.4f}, "
+                f"local_amp={local_amplitude:.2f}, remote_amp={remote_amplitude:.2f}"
+            )
     
     def get_data_range(self, var_name: str, duration: float) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -128,7 +140,13 @@ class DataProcessor:
         Args:
             channel: 通道号
             max_frames: 最多返回多少帧，None表示返回全部
-            data_type: 数据类型，'amplitude', 'phase', 'I', 'Q'
+            data_type: 数据类型，支持：
+                - 'amplitude': 总幅值
+                - 'phase': 总相位
+                - 'local_amplitude': Local幅值
+                - 'local_phase': Local相位
+                - 'remote_amplitude': Remote幅值
+                - 'remote_phase': Remote相位
         
         Returns:
             (index数组, 数据数组)
@@ -256,7 +274,13 @@ class DataProcessor:
         Args:
             channel: 通道号
             max_frames: 最多使用多少帧，None表示全部
-            data_type: 数据类型，'amplitude', 'phase', 'I', 'Q'
+            data_type: 数据类型，支持：
+                - 'amplitude': 总幅值
+                - 'phase': 总相位
+                - 'local_amplitude': Local幅值
+                - 'local_phase': Local相位
+                - 'remote_amplitude': Remote幅值
+                - 'remote_phase': Remote相位
         
         Returns:
             主频率（Hz），如果计算失败返回None
@@ -342,7 +366,13 @@ class DataProcessor:
         Args:
             channel: 通道号
             max_frames: 最多使用多少帧，None表示全部
-            data_type: 数据类型，'amplitude', 'phase', 'I', 'Q'
+            data_type: 数据类型，支持：
+                - 'amplitude': 总幅值
+                - 'phase': 总相位
+                - 'local_amplitude': Local幅值
+                - 'local_phase': Local相位
+                - 'remote_amplitude': Remote幅值
+                - 'remote_phase': Remote相位
         
         Returns:
             统计信息字典

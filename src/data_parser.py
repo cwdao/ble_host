@@ -264,15 +264,27 @@ class DataParser:
             if all(abs(x) < 1e-6 for x in [il, ql, ir, qr]):
                 continue  # 全0数据
             
-            # 转换为幅值和相位
+            # 转换为总幅值和相位（使用组合后的IQ）
             I, Q = self.combine_iq(il, ql, ir, qr)
             amplitude, phase = self.iq_to_amplitude_phase(il, ql, ir, qr)
             
+            # 计算Local幅值和相位（只用il, ql）
+            local_amplitude = math.hypot(il, ql)  # sqrt(il^2 + ql^2)
+            local_phase = math.atan2(ql, il)  # 相位（弧度）
+            
+            # 计算Remote幅值和相位（只用ir, qr）
+            remote_amplitude = math.hypot(ir, qr)  # sqrt(ir^2 + qr^2)
+            remote_phase = math.atan2(qr, ir)  # 相位（弧度）
+            
             result['channels'][ch] = {
-                'amplitude': amplitude,
-                'phase': phase,  # 弧度
+                'amplitude': amplitude,      # 总幅值
+                'phase': phase,            # 总相位（弧度）
                 'I': I,
                 'Q': Q,
+                'local_amplitude': local_amplitude,    # Local幅值
+                'local_phase': local_phase,           # Local相位（弧度）
+                'remote_amplitude': remote_amplitude, # Remote幅值
+                'remote_phase': remote_phase,        # Remote相位（弧度）
                 'il': il, 'ql': ql, 'ir': ir, 'qr': qr
             }
         
