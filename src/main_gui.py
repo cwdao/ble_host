@@ -23,13 +23,19 @@ except ImportError:
     from data_processor import DataProcessor
     from plotter import Plotter
 
+# 版本信息
+__version__ = "1.1.0"
+__version_date__ = "2025-11-28"
+__version_author__ = "chwn@outlook.ie, HKUST(GZ)"
+
 
 class BLEHostGUI:
     """主GUI应用程序"""
     
     def __init__(self, root):
         self.root = root
-        self.root.title("BLE Host 上位机")
+        # 标题栏显示版本号
+        self.root.title(f"BLE CS Host v{__version__}")
         self.root.geometry("1200x800")
         
         # 设置日志
@@ -194,6 +200,32 @@ class BLEHostGUI:
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
         text_handler.setFormatter(formatter)
         logging.getLogger().addHandler(text_handler)
+        
+        # 版本信息显示（右下角，分两行显示）
+        version_frame = ttk.Frame(right_frame)
+        version_frame.pack(fill=tk.X, padx=5, pady=2)
+        
+        # 创建一个内部Frame用于垂直排列，然后整体右对齐
+        version_inner = ttk.Frame(version_frame)
+        version_inner.pack(side=tk.RIGHT, anchor=tk.E)
+        
+        # 第一行：版本号和日期
+        version_line1 = ttk.Label(
+            version_inner, 
+            text=f"版本 v{__version__} | {__version_date__}",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        version_line1.pack(anchor=tk.E)
+        
+        # 第二行：作者信息
+        version_line2 = ttk.Label(
+            version_inner, 
+            text=f"{__version_author__}",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        version_line2.pack(anchor=tk.E)
         
         # 初始化串口列表
         self._refresh_ports()
