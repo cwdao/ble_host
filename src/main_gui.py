@@ -39,7 +39,9 @@ class BLEHostGUI:
         self.serial_reader = None
         self.data_parser = DataParser()
         self.data_processor = DataProcessor()
-        self.plotter = Plotter(figure_size=(12, 8))
+        
+        # 多个绘图器（用于不同选项卡）
+        self.plotters = {}
         
         # 控制变量
         self.is_running = False
@@ -140,13 +142,12 @@ class BLEHostGUI:
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # 左侧：绘图区域
-        plot_frame = ttk.Frame(paned)
-        paned.add(plot_frame, weight=2)
+        # 左侧：多选项卡绘图区域
+        self.notebook = ttk.Notebook(paned)
+        paned.add(self.notebook, weight=2)
         
-        # 绘图画布
-        self.plot_widget = self.plotter.attach_to_tkinter(plot_frame)
-        self.plot_widget.pack(fill=tk.BOTH, expand=True)
+        # 创建多个选项卡
+        self._create_plot_tabs()
         
         # 右侧：控制面板
         right_frame = ttk.Frame(paned, width=300)
@@ -196,6 +197,36 @@ class BLEHostGUI:
         
         # 初始化串口列表
         self._refresh_ports()
+    
+    def _create_plot_tabs(self):
+        """创建多选项卡绘图区域"""
+        # 定义选项卡配置：(tab_key, tab_name, y_label, data_type)
+        tab_configs = [
+            ('amplitude', '幅值', 'Amplitude', 'amplitude'),
+            ('phase', '相位', 'Phase (rad)', 'phase'),
+            ('I', 'I分量', 'I Component', 'I'),
+            ('Q', 'Q分量', 'Q Component', 'Q'),
+        ]
+        
+        for tab_key, tab_name, y_label, data_type in tab_configs:
+            # 创建选项卡页面
+            tab_frame = ttk.Frame(self.notebook)
+            self.notebook.add(tab_frame, text=tab_name)
+            
+            # 创建绘图器
+            plotter = Plotter(figure_size=(12, 8))
+            plotter.ax.set_ylabel(y_label)
+            
+            # 附加到界面
+            widget = plotter.attach_to_tkinter(tab_frame)
+            widget.pack(fill=tk.BOTH, expand=True)
+            
+            # 保存引用
+            self.plotters[tab_key] = {
+                'plotter': plotter,
+                'data_type': data_type,
+                'frame': tab_frame
+            }
     
     def _refresh_ports(self):
         """刷新串口列表"""
@@ -253,9 +284,11 @@ class BLEHostGUI:
     def _clear_data(self):
         """清空数据"""
         self.data_processor.clear_buffer(clear_frames=True)
-        self.plotter.clear_plot()
+        # 清空所有绘图器
+        for plotter_info in self.plotters.values():
+            plotter_info['plotter'].clear_plot()
+            plotter_info['plotter'].refresh()
         self.data_parser.clear_buffer()
-        self.plotter.refresh()
         self.logger.info("数据已清空")
     
     def _parse_display_channels(self, text: str) -> List[int]:
@@ -347,7 +380,8 @@ class BLEHostGUI:
             # 切换到帧模式时，清空之前的非帧数据（只保留帧数据）
             self.data_processor.clear_buffer(clear_frames=False)  # 不清空帧数据
             # 清空所有绘图，只显示帧数据
-            self.plotter.clear_plot()
+            for plotter_info in self.plotters.values():
+                plotter_info['plotter'].clear_plot()
             # 清空解析器状态
             self.data_parser.clear_buffer()
             # 应用当前设置
@@ -356,7 +390,8 @@ class BLEHostGUI:
             self.logger.info("禁用帧模式")
             # 切换到非帧模式时，清空帧数据
             self.data_processor.clear_buffer(clear_frames=True)
-            self.plotter.clear_plot()
+            for plotter_info in self.plotters.values():
+                plotter_info['plotter'].clear_plot()
     
     def _calculate_frequency(self):
         """计算频率"""
@@ -510,6 +545,7 @@ class BLEHostGUI:
                                         
                                         self.data_processor.add_frame_data(frame_data)
                                         self._update_frame_plots()
+                                        self._refresh_all_plotters()
                                     
                                     # 初始化时间戳（新帧开始）
                                     self.last_frame_time = current_time
@@ -540,6 +576,7 @@ class BLEHostGUI:
                                                 )
                                                 self.data_processor.add_frame_data(frame_data)
                                                 self._update_frame_plots()
+                                                self._refresh_all_plotters()
                                                 self.last_frame_time = current_time  # 重置时间戳
                                 
                                 # 检查是否应该完成当前帧（超时判断，作为备份）
@@ -560,6 +597,7 @@ class BLEHostGUI:
                                                 )
                                                 self.data_processor.add_frame_data(frame_data)
                                                 self._update_frame_plots()
+                                                self._refresh_all_plotters()
                                                 self.last_frame_time = current_time  # 重置时间戳
                                 
                                 # 帧模式下不处理其他数据
@@ -572,11 +610,12 @@ class BLEHostGUI:
                             if parsed and not parsed.get('frame'):
                                 self.data_processor.add_data(data['timestamp'], parsed)
                                 
-                                # 更新绘图（最近15秒的数据）
+                                # 更新绘图（最近15秒的数据）- 使用第一个绘图器
+                                plotter = self.plotters['amplitude']['plotter']
                                 for var_name, value in parsed.items():
                                     times, values = self.data_processor.get_data_range(var_name, duration=15.0)
                                     if len(times) > 0:
-                                        self.plotter.update_plot(var_name, times, values)
+                                        plotter.update_plot(var_name, times, values)
                                 
                                 # 更新变量列表（非帧模式）
                                 vars_list = self.data_processor.get_all_variables()
@@ -586,7 +625,7 @@ class BLEHostGUI:
                                     self.freq_var_var.set(vars_list[0])
                         
                         # 定期刷新绘图
-                        self.plotter.refresh()
+                        self._refresh_all_plotters()
                     
                     time.sleep(0.05)  # 50ms更新间隔，更快响应
                     
@@ -636,7 +675,7 @@ class BLEHostGUI:
         freq_list_thread.start()
     
     def _update_frame_plots(self):
-        """更新帧数据绘图 - 根据设置显示指定通道的幅值"""
+        """更新帧数据绘图 - 根据设置显示指定通道的数据（所有选项卡）"""
         all_channels = self.data_processor.get_all_frame_channels()
         
         self.logger.debug(f"[绘图调试] 所有可用通道: {all_channels}, 通道数: {len(all_channels)}")
@@ -659,19 +698,30 @@ class BLEHostGUI:
             self.logger.warning(f"[绘图调试] 设置的展示信道 {self.display_channel_list} 中没有可用数据")
             return
         
-        # 准备所有通道的数据（使用设置的显示帧数）
-        channel_data = {}
-        for ch in display_channels:
-            indices, amplitudes = self.data_processor.get_frame_data_range(ch, max_frames=self.display_max_frames)
-            if len(indices) > 0 and len(amplitudes) > 0:
-                channel_data[ch] = (indices, amplitudes)
+        # 更新每个选项卡的绘图
+        for tab_key, plotter_info in self.plotters.items():
+            plotter = plotter_info['plotter']
+            data_type = plotter_info['data_type']
+            
+            # 准备该数据类型的所有通道数据
+            channel_data = {}
+            for ch in display_channels:
+                indices, values = self.data_processor.get_frame_data_range(
+                    ch, max_frames=self.display_max_frames, data_type=data_type
+                )
+                if len(indices) > 0 and len(values) > 0:
+                    channel_data[ch] = (indices, values)
+            
+            # 更新绘图
+            if channel_data:
+                plotter.update_frame_data(channel_data, max_channels=len(display_channels))
         
-        # 一次更新所有通道（在一个图中显示多条线）
-        if channel_data:
-            self.plotter.update_frame_data(channel_data, max_channels=len(display_channels))
-            self.logger.debug(f"[绘图调试] 更新帧数据绘图: {len(channel_data)} 个通道")
-        else:
-            self.logger.warning("[绘图调试] 没有有效的通道数据用于绘图")
+        self.logger.debug(f"[绘图调试] 更新帧数据绘图: {len(display_channels)} 个通道")
+    
+    def _refresh_all_plotters(self):
+        """刷新所有绘图器"""
+        for plotter_info in self.plotters.values():
+            plotter_info['plotter'].refresh()
     
     def on_closing(self):
         """窗口关闭事件"""

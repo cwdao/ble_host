@@ -63,6 +63,9 @@ class DataProcessor:
         # 为每个通道添加数据点
         for ch, channel_data in channels.items():
             amplitude = channel_data.get('amplitude', 0.0)
+            phase = channel_data.get('phase', 0.0)
+            I = channel_data.get('I', 0.0)
+            Q = channel_data.get('Q', 0.0)
             
             # 确保ch是整数类型
             if not isinstance(ch, int):
@@ -74,11 +77,14 @@ class DataProcessor:
             
             # 使用index作为x轴（也可以使用timestamp_ms）
             if ch not in self.frame_buffer:
-                self.frame_buffer[ch] = []
+                self.frame_buffer[ch] = {'amplitude': [], 'phase': [], 'I': [], 'Q': []}
             
-            # 存储为 (index, amplitude) 或 (timestamp_ms, amplitude)
-            self.frame_buffer[ch].append((index, amplitude))
-            self.logger.debug(f"[数据存储] 通道{ch}: index={index}, amplitude={amplitude:.2f}")
+            # 存储所有数据类型
+            self.frame_buffer[ch]['amplitude'].append((index, amplitude))
+            self.frame_buffer[ch]['phase'].append((index, phase))
+            self.frame_buffer[ch]['I'].append((index, I))
+            self.frame_buffer[ch]['Q'].append((index, Q))
+            self.logger.debug(f"[数据存储] 通道{ch}: index={index}, amplitude={amplitude:.2f}, phase={phase:.4f}")
     
     def get_data_range(self, var_name: str, duration: float) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -114,21 +120,33 @@ class DataProcessor:
         
         return times, values
     
-    def get_frame_data_range(self, channel: int, max_frames: int = None) -> Tuple[np.ndarray, np.ndarray]:
+    def get_frame_data_range(self, channel: int, max_frames: int = None, 
+                              data_type: str = 'amplitude') -> Tuple[np.ndarray, np.ndarray]:
         """
         获取指定通道的帧数据
         
         Args:
             channel: 通道号
             max_frames: 最多返回多少帧，None表示返回全部
+            data_type: 数据类型，'amplitude', 'phase', 'I', 'Q'
         
         Returns:
-            (index数组, amplitude数组) 或 (timestamp数组, amplitude数组)
+            (index数组, 数据数组)
         """
         if channel not in self.frame_buffer:
             return np.array([]), np.array([])
         
-        data_points = self.frame_buffer[channel]
+        channel_data = self.frame_buffer[channel]
+        
+        # 兼容旧格式（列表）和新格式（字典）
+        if isinstance(channel_data, list):
+            # 旧格式：[(index, amplitude), ...]
+            data_points = channel_data
+        elif isinstance(channel_data, dict):
+            # 新格式：{'amplitude': [...], 'phase': [...], ...}
+            data_points = channel_data.get(data_type, [])
+        else:
+            return np.array([]), np.array([])
         
         if max_frames and len(data_points) > max_frames:
             data_points = data_points[-max_frames:]
@@ -137,13 +155,22 @@ class DataProcessor:
             return np.array([]), np.array([])
         
         indices = np.array([idx for idx, _ in data_points])
-        amplitudes = np.array([amp for _, amp in data_points])
+        values = np.array([val for _, val in data_points])
         
-        return indices, amplitudes
+        return indices, values
     
     def get_all_frame_channels(self) -> List[int]:
         """获取所有有数据的通道号"""
-        return sorted(self.frame_buffer.keys())
+        channels = []
+        for ch in self.frame_buffer.keys():
+            # 检查是否有有效数据
+            ch_data = self.frame_buffer[ch]
+            if isinstance(ch_data, dict):
+                if ch_data.get('amplitude'):
+                    channels.append(ch)
+            elif isinstance(ch_data, list) and ch_data:
+                channels.append(ch)
+        return sorted(channels)
     
     def calculate_frequency(self, var_name: str, duration: float = 15.0) -> Optional[float]:
         """
@@ -221,18 +248,20 @@ class DataProcessor:
             'count': len(values)
         }
     
-    def calculate_channel_frequency(self, channel: int, max_frames: int = None) -> Optional[float]:
+    def calculate_channel_frequency(self, channel: int, max_frames: int = None, 
+                                      data_type: str = 'amplitude') -> Optional[float]:
         """
         计算指定通道的频率（基于FFT，去掉直流成分，选择振幅最大的频率）
         
         Args:
             channel: 通道号
             max_frames: 最多使用多少帧，None表示全部
+            data_type: 数据类型，'amplitude', 'phase', 'I', 'Q'
         
         Returns:
             主频率（Hz），如果计算失败返回None
         """
-        indices, amplitudes = self.get_frame_data_range(channel, max_frames)
+        indices, amplitudes = self.get_frame_data_range(channel, max_frames, data_type)
         
         if len(amplitudes) < 4:
             self.logger.warning(f"通道{channel}数据点数不足，无法计算频率")
@@ -305,28 +334,30 @@ class DataProcessor:
             self.logger.error(f"通道{channel}频率计算错误: {e}")
             return None
     
-    def get_channel_statistics(self, channel: int, max_frames: int = None) -> Optional[Dict]:
+    def get_channel_statistics(self, channel: int, max_frames: int = None, 
+                                data_type: str = 'amplitude') -> Optional[Dict]:
         """
         计算指定通道的统计信息
         
         Args:
             channel: 通道号
             max_frames: 最多使用多少帧，None表示全部
+            data_type: 数据类型，'amplitude', 'phase', 'I', 'Q'
         
         Returns:
             统计信息字典
         """
-        _, amplitudes = self.get_frame_data_range(channel, max_frames)
+        _, values = self.get_frame_data_range(channel, max_frames, data_type)
         
-        if len(amplitudes) == 0:
+        if len(values) == 0:
             return None
         
         return {
-            'mean': np.mean(amplitudes),
-            'max': np.max(amplitudes),
-            'min': np.min(amplitudes),
-            'std': np.std(amplitudes),
-            'count': len(amplitudes)
+            'mean': np.mean(values),
+            'max': np.max(values),
+            'min': np.min(values),
+            'std': np.std(values),
+            'count': len(values)
         }
     
     def clear_buffer(self, var_name: str = None, clear_frames: bool = False):
