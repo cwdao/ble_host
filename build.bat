@@ -8,8 +8,15 @@ pip install -r requirements.txt
 echo 正在安装PyInstaller...
 pip install pyinstaller
 
+echo 正在读取版本号...
+for /f %%a in ('python get_version.py') do set VERSION=%%a
+echo 版本号: %VERSION%
+
+echo 正在更新 build.spec 文件...
+python update_spec_version.py %VERSION%
+
 echo 正在打包...
 python -m PyInstaller --clean build.spec
 
-echo 打包完成！可执行文件位于 dist\BLEHost.exe
+echo 打包完成！可执行文件位于 dist\BLEHost-v%VERSION%.exe
 
