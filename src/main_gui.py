@@ -236,10 +236,10 @@ class BLEHostGUI:
         tab_configs = [
             ('amplitude', '幅值', 'Amplitude', 'amplitude'),
             ('phase', '相位', 'Phase (rad)', 'phase'),
-            ('local_amplitude', 'Local幅值', 'Local Amplitude', 'local_amplitude'),
-            ('local_phase', 'Local相位', 'Local Phase (rad)', 'local_phase'),
-            ('remote_amplitude', 'Remote幅值', 'Remote Amplitude', 'remote_amplitude'),
-            ('remote_phase', 'Remote相位', 'Remote Phase (rad)', 'remote_phase'),
+            ('local_amplitude', 'Local观测Ref幅值', 'Local Amplitude', 'local_amplitude'),
+            ('local_phase', 'Local观测Ref相位', 'Local Phase (rad)', 'local_phase'),
+            ('remote_amplitude', 'Remote观测Ini幅值', 'Remote Amplitude', 'remote_amplitude'),
+            ('remote_phase', 'Remote观测Ini相位', 'Remote Phase (rad)', 'remote_phase'),
         ]
         
         for tab_key, tab_name, y_label, data_type in tab_configs:
