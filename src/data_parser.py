@@ -131,6 +131,9 @@ class DataParser:
         解析接收到的文本数据
         支持两种模式：
         1. 帧模式：解析BLE CS Report帧格式
+           - 帧头：== Basic Report == index:X, timestamp:Y
+           - 帧尾：== End Report ==（检测到帧尾时完成当前帧）
+           - IQ数据：ch:0:il,ql,ir,qr;ch:1:...
         2. 简单模式：解析JSON或键值对格式（向后兼容）
         
         Args:
@@ -152,16 +155,12 @@ class DataParser:
             index = frame_header['index']
             timestamp_ms = frame_header['timestamp_ms']
             
-            # 如果之前有未完成的帧，先完成它并返回
-            completed_frame = None
+            # 如果之前有未完成的帧，记录警告（正常情况下应该已经通过帧尾完成）
             if self.current_frame is not None:
                 old_index = self.current_frame['index']
-                # 完成旧帧
-                completed_frame = self.finalize_frame()
-                if completed_frame:
-                    self.logger.info(f"[帧解析] 检测到新帧头，完成上一帧: index={old_index}, 通道数={len(completed_frame.get('channels', {}))}")
-                else:
-                    self.logger.warning(f"[帧解析] 检测到新帧头，但上一帧无法完成: index={old_index}")
+                self.logger.warning(f"[帧解析] 检测到新帧头，但上一帧未完成（缺少帧尾）: index={old_index}")
+                # 清空未完成的帧
+                self.current_frame = None
             
             # 创建新帧
             self.current_frame = {
@@ -171,8 +170,8 @@ class DataParser:
             }
             self.logger.info(f"[帧解析] 开始新帧: index={index}, timestamp={timestamp_ms}")
             
-            # 返回完成的帧（如果有）
-            return completed_frame
+            # 新帧头不返回数据，等待帧尾
+            return None
         
         # 尝试解析帧尾（在解析IQ数据之前）
         if self.current_frame is not None:

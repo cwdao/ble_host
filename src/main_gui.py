@@ -24,7 +24,7 @@ except ImportError:
     from plotter import Plotter
 
 # 版本信息
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __version_date__ = "2025-12-05"
 __version_author__ = "chwn@outlook.ie, HKUST(GZ)"
 
@@ -55,10 +55,7 @@ class BLEHostGUI:
         self.stop_event = threading.Event()
         
         # 帧数据处理
-        self.last_frame_time = time.time()
-        self.frame_timeout = 0.5  # 500ms超时，如果500ms没有新数据，认为帧完成
         self.frame_mode = False  # 是否启用帧模式
-        self.max_channel_count = 80  # 最大信道数（判断帧完整）
         self.display_channel_list = list(range(10))  # 展示的信道列表，默认0-9
         self.display_max_frames = 100  # 显示和计算使用的最大帧数（用于plot和统计信息）
         
@@ -126,13 +123,6 @@ class BLEHostGUI:
         # 第二行：帧模式相关控件
         frame_control_frame = ttk.Frame(control_frame)
         frame_control_frame.grid(row=1, column=0, columnspan=10, sticky="ew", padx=5, pady=5)
-        
-        # 最大信道数
-        ttk.Label(frame_control_frame, text="最大信道数:").pack(side=tk.LEFT, padx=5)
-        self.max_channels_var = tk.StringVar(value="80")
-        max_channels_entry = ttk.Entry(frame_control_frame, textvariable=self.max_channels_var, width=10)
-        max_channels_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Label(frame_control_frame, text="(判断帧完整)").pack(side=tk.LEFT, padx=2)
         
         # 展示信道选择
         ttk.Label(frame_control_frame, text="展示信道:").pack(side=tk.LEFT, padx=5)
@@ -372,21 +362,6 @@ class BLEHostGUI:
     
     def _apply_frame_settings(self):
         """应用帧模式设置"""
-        try:
-            # 解析最大信道数
-            max_count = int(self.max_channels_var.get())
-            if max_count > 0:
-                self.max_channel_count = max_count
-                self.logger.info(f"最大信道数设置为: {max_count}")
-            else:
-                self.logger.warning("最大信道数必须大于0，使用默认值80")
-                self.max_channel_count = 80
-                self.max_channels_var.set("80")
-        except ValueError:
-            self.logger.warning("最大信道数无效，使用默认值80")
-            self.max_channel_count = 80
-            self.max_channels_var.set("80")
-        
         # 解析展示帧数
         try:
             display_frames = int(self.display_max_frames_var.get())
@@ -580,7 +555,7 @@ class BLEHostGUI:
                                 # 解析数据（会更新内部状态，累积IQ数据）
                                 parsed = self.data_parser.parse(data['text'])
                                 
-                                # 如果parse返回了完成的帧（检测到新帧头时自动完成旧帧）
+                                # 如果parse返回了完成的帧（检测到帧尾时完成）
                                 if parsed and parsed.get('frame'):
                                     frame_data = parsed
                                     if len(frame_data.get('channels', {})) > 0:
@@ -596,59 +571,6 @@ class BLEHostGUI:
                                         self.data_processor.add_frame_data(frame_data)
                                         self._update_frame_plots()
                                         self._refresh_all_plotters()
-                                    
-                                    # 初始化时间戳（新帧开始）
-                                    self.last_frame_time = current_time
-                                # 如果正在累积帧数据，检查是否完成
-                                elif self.data_parser.current_frame is not None:
-                                    # 检查当前帧的IQ数据量（parse已经更新了current_frame）
-                                    iq_data = self.data_parser.current_frame.get('iq_data', {})
-                                    iq_count = len(iq_data)
-                                    
-                                    # 如果有IQ数据，更新时间戳
-                                    if iq_count > 0:
-                                        self.last_frame_time = current_time
-                                        
-                                        self.logger.debug(
-                                            f"[帧累积] index={self.data_parser.current_frame['index']}, "
-                                            f"当前通道数={iq_count}"
-                                        )
-                                        
-                                        # 如果IQ数据足够多（达到最大信道数），认为帧完整了，立即完成
-                                        if iq_count >= self.max_channel_count:
-                                            frame_data = self.data_parser.flush_frame()
-                                            if frame_data and len(frame_data.get('channels', {})) > 0:
-                                                channels = sorted(frame_data['channels'].keys())
-                                                self.logger.info(
-                                                    f"[帧完成-数据完整] index={frame_data['index']}, "
-                                                    f"timestamp={frame_data['timestamp_ms']}ms, "
-                                                    f"通道数={len(channels)}"
-                                                )
-                                                self.data_processor.add_frame_data(frame_data)
-                                                self._update_frame_plots()
-                                                self._refresh_all_plotters()
-                                                self.last_frame_time = current_time  # 重置时间戳
-                                
-                                # 检查是否应该完成当前帧（超时判断，作为备份）
-                                if self.data_parser.current_frame is not None:
-                                    # 检查超时
-                                    if current_time - self.last_frame_time > self.frame_timeout:
-                                        iq_data = self.data_parser.current_frame.get('iq_data', {})
-                                        if len(iq_data) > 0:  # 至少有一些数据才完成
-                                            # 超时完成帧
-                                            frame_data = self.data_parser.flush_frame()
-                                            if frame_data and len(frame_data.get('channels', {})) > 0:
-                                                channels = sorted(frame_data['channels'].keys())
-                                                self.logger.info(
-                                                    f"[帧完成-超时] index={frame_data['index']}, "
-                                                    f"timestamp={frame_data['timestamp_ms']}ms, "
-                                                    f"通道数={len(channels)}, "
-                                                    f"超时={current_time - self.last_frame_time:.2f}秒"
-                                                )
-                                                self.data_processor.add_frame_data(frame_data)
-                                                self._update_frame_plots()
-                                                self._refresh_all_plotters()
-                                                self.last_frame_time = current_time  # 重置时间戳
                                 
                                 # 帧模式下不处理其他数据
                                 continue
