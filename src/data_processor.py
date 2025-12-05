@@ -257,6 +257,124 @@ class DataProcessor:
         
         return uniform_times, uniform_values
     
+    def _prepare_fft_data(self, values: np.ndarray, apply_window: bool = True) -> Tuple[np.ndarray, int]:
+        """
+        准备FFT数据：调整长度为2的幂次方，应用窗函数
+        
+        Args:
+            values: 原始数据数组
+            apply_window: 是否应用汉明窗
+        
+        Returns:
+            (处理后的数据数组, 原始数据长度)
+        """
+        n_original = len(values)
+        
+        if n_original < 4:
+            return values, n_original
+        
+        # 将长度调整为2的幂次方（向下取整，避免增加数据）
+        # 如果已经是2的幂次方，直接使用
+        is_power2 = (n_original & (n_original - 1)) == 0 and n_original > 0
+        
+        if is_power2:
+            n_fft = n_original
+        else:
+            # 找到小于等于n_original的最大2的幂次方
+            n_power2 = 2 ** int(np.log2(n_original))
+            
+            # 如果长度差异太大（超过50%），使用原始长度
+            # 否则截取到2的幂次方长度
+            if n_power2 < n_original * 0.5:
+                n_fft = n_original
+            else:
+                n_fft = n_power2
+        
+        # 截取数据到目标长度（从末尾取，使用最新数据）
+        values_fft = values[-n_fft:].copy() if n_fft < n_original else values.copy()
+        
+        # 应用汉明窗以减少频谱泄漏
+        if apply_window and len(values_fft) > 1:
+            window = np.hamming(len(values_fft))
+            values_fft = values_fft * window
+        
+        return values_fft, n_original
+    
+    def calculate_frequency_detailed(self, var_name: str, duration: float = 15.0) -> Optional[Dict]:
+        """
+        计算指定变量的频率（基于FFT），返回详细信息
+        
+        Args:
+            var_name: 变量名
+            duration: 分析的时间长度（秒），默认15秒
+        
+        Returns:
+            包含频率和详细信息的字典，如果计算失败返回None
+            {
+                'frequency': float,  # 主频率（Hz）
+                'n_original': int,   # 原始数据点数
+                'n_fft': int,        # FFT点数
+                'fft_size_info': str, # FFT点数信息（如 "2^9"）
+                'dt': float,         # 采样间隔（秒）
+                'is_uniform': bool,   # 是否均匀采样
+                'window_applied': bool # 是否应用了窗函数
+            }
+        """
+        times, values = self.get_data_range(var_name, duration)
+        
+        if len(values) < 4:
+            return None
+        
+        try:
+            # 检查采样是否均匀
+            is_uniform, mean_dt = self._check_sampling_uniformity(times)
+            
+            if not is_uniform:
+                times, values = self._resample_to_uniform(times, values, mean_dt)
+                dt = mean_dt
+            else:
+                dt = mean_dt
+            
+            if dt <= 0:
+                return None
+            
+            # 去除直流成分
+            values_dc_removed = values - np.mean(values)
+            
+            # 准备FFT数据
+            values_fft, n_original = self._prepare_fft_data(values_dc_removed, apply_window=True)
+            n_fft = len(values_fft)
+            
+            # FFT计算频率
+            fft_vals = np.fft.rfft(values_fft)
+            fft_freq = np.fft.rfftfreq(n_fft, dt)
+            
+            # 找到主频率
+            power = np.abs(fft_vals)
+            if len(power) > 1:
+                main_freq_idx = np.argmax(power[1:]) + 1
+                main_freq = fft_freq[main_freq_idx]
+                
+                # 检查是否是2的幂次方
+                is_power2 = (n_fft & (n_fft - 1)) == 0 and n_fft > 0
+                fft_size_info = f"2^{int(np.log2(n_fft))}" if is_power2 else str(n_fft)
+                
+                return {
+                    'frequency': main_freq,
+                    'n_original': n_original,
+                    'n_fft': n_fft,
+                    'fft_size_info': fft_size_info,
+                    'dt': dt,
+                    'is_uniform': is_uniform,
+                    'window_applied': True
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"频率计算错误: {e}")
+            return None
+    
     def calculate_frequency(self, var_name: str, duration: float = 15.0) -> Optional[float]:
         """
         计算指定变量的频率（基于FFT）
@@ -269,58 +387,15 @@ class DataProcessor:
         Returns:
             主频率（Hz），如果计算失败返回None
         """
-        times, values = self.get_data_range(var_name, duration)
-        
-        if len(values) < 4:
+        freq_info = self.calculate_frequency_detailed(var_name, duration)
+        if freq_info is None:
             self.logger.warning(f"数据点数不足，无法计算频率: {var_name}")
             return None
         
-        try:
-            # 检查采样是否均匀
-            is_uniform, mean_dt = self._check_sampling_uniformity(times)
-            
-            if not is_uniform:
-                # 非均匀采样：重采样到均匀网格
-                self.logger.debug(
-                    f"检测到非均匀采样 ({var_name})，进行重采样。"
-                    f"采样间隔变异系数: {np.std(np.diff(times)) / mean_dt:.3f}"
-                )
-                times, values = self._resample_to_uniform(times, values, mean_dt)
-                dt = mean_dt
-            else:
-                # 均匀采样：直接使用平均间隔
-                dt = mean_dt
-            
-            if dt <= 0:
-                return None
-            
-            # 去除直流成分（提高频率检测精度）
-            values_dc_removed = values - np.mean(values)
-            
-            # FFT计算频率
-            n = len(values_dc_removed)
-            fft_vals = np.fft.rfft(values_dc_removed)
-            fft_freq = np.fft.rfftfreq(n, dt)
-            
-            # 找到主频率（排除DC分量）
-            power = np.abs(fft_vals)
-            if len(power) > 1:
-                # 跳过DC分量（索引0）
-                main_freq_idx = np.argmax(power[1:]) + 1
-                main_freq = fft_freq[main_freq_idx]
-                
-                self.logger.debug(
-                    f"{var_name}频率计算: 主频率={main_freq:.4f} Hz, "
-                    f"采样间隔={dt:.6f}秒, 均匀采样={is_uniform}, 数据点数={n}"
-                )
-                
-                return main_freq
-            else:
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"频率计算错误: {e}")
-            return None
+        # 简化日志输出
+        self.logger.info(f"{var_name}频率计算: {freq_info['frequency']:.4f} Hz")
+        
+        return freq_info['frequency']
     
     def calculate_statistics(self, var_name: str, duration: float = None) -> Optional[Dict]:
         """
@@ -352,6 +427,110 @@ class DataProcessor:
             'count': len(values)
         }
     
+    def calculate_channel_frequency_detailed(self, channel: int, max_frames: int = None, 
+                                             data_type: str = 'amplitude') -> Optional[Dict]:
+        """
+        计算指定通道的频率（基于FFT），返回详细信息
+        
+        Args:
+            channel: 通道号
+            max_frames: 最多使用多少帧，None表示全部
+            data_type: 数据类型
+        
+        Returns:
+            包含频率和详细信息的字典，如果计算失败返回None
+            {
+                'frequency': float,  # 主频率（Hz）
+                'amplitude': float,  # 主频率的振幅
+                'n_original': int,   # 原始帧数
+                'n_fft': int,       # FFT点数
+                'fft_size_info': str, # FFT点数信息（如 "2^9"）
+                'dt': float,         # 采样间隔（秒）
+                'is_uniform': bool,   # 是否均匀采样
+                'window_applied': bool # 是否应用了窗函数
+            }
+        """
+        indices, amplitudes = self.get_frame_data_range(channel, max_frames, data_type)
+        
+        if len(amplitudes) < 4:
+            return None
+        
+        try:
+            # 去除直流成分
+            amplitudes_dc_removed = amplitudes - np.mean(amplitudes)
+            
+            # 计算采样率（基于timestamp_ms）
+            idx_to_ts = {frame_idx: ts_ms for frame_idx, ts_ms in self.frame_metadata}
+            timestamps_ms = []
+            for idx in indices:
+                if idx in idx_to_ts:
+                    timestamps_ms.append(idx_to_ts[idx] / 1000.0)
+                else:
+                    break
+            
+            # 如果找到了时间戳，使用真实采样率
+            if len(timestamps_ms) == len(indices) and len(timestamps_ms) > 1:
+                timestamps = np.array(timestamps_ms)
+                is_uniform, mean_dt = self._check_sampling_uniformity(timestamps)
+                
+                if not is_uniform:
+                    timestamps, amplitudes_dc_removed = self._resample_to_uniform(
+                        timestamps, amplitudes_dc_removed, mean_dt
+                    )
+                    dt = mean_dt
+                else:
+                    dt = mean_dt
+                
+                if dt <= 0:
+                    di = np.mean(np.diff(indices)) if len(indices) > 1 else 1.0
+                    dt = di
+            else:
+                if len(indices) > 1:
+                    di = np.mean(np.diff(indices))
+                    if di <= 0:
+                        return None
+                    dt = 0.45  # 默认帧间隔
+                    is_uniform = False  # 使用默认值，认为非均匀
+                else:
+                    return None
+            
+            # 准备FFT数据
+            amplitudes_fft, n_original = self._prepare_fft_data(amplitudes_dc_removed, apply_window=True)
+            n_fft = len(amplitudes_fft)
+            
+            # FFT计算频率
+            fft_vals = np.fft.rfft(amplitudes_fft)
+            fft_freq = np.fft.rfftfreq(n_fft, dt)
+            
+            # 计算功率谱
+            power = np.abs(fft_vals)
+            
+            if len(power) > 1:
+                main_freq_idx = np.argmax(power[1:]) + 1
+                main_freq = fft_freq[main_freq_idx]
+                main_amplitude = power[main_freq_idx]
+                
+                # 检查是否是2的幂次方
+                is_power2 = (n_fft & (n_fft - 1)) == 0 and n_fft > 0
+                fft_size_info = f"2^{int(np.log2(n_fft))}" if is_power2 else str(n_fft)
+                
+                return {
+                    'frequency': main_freq,
+                    'amplitude': main_amplitude,
+                    'n_original': n_original,
+                    'n_fft': n_fft,
+                    'fft_size_info': fft_size_info,
+                    'dt': dt,
+                    'is_uniform': is_uniform,
+                    'window_applied': True
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"通道{channel}频率计算错误: {e}")
+            return None
+    
     def calculate_channel_frequency(self, channel: int, max_frames: int = None, 
                                       data_type: str = 'amplitude') -> Optional[float]:
         """
@@ -372,94 +551,15 @@ class DataProcessor:
         Returns:
             主频率（Hz），如果计算失败返回None
         """
-        indices, amplitudes = self.get_frame_data_range(channel, max_frames, data_type)
-        
-        if len(amplitudes) < 4:
+        freq_info = self.calculate_channel_frequency_detailed(channel, max_frames, data_type)
+        if freq_info is None:
             self.logger.warning(f"通道{channel}数据点数不足，无法计算频率")
             return None
         
-        try:
-            # 去除直流成分（减去均值）
-            amplitudes_dc_removed = amplitudes - np.mean(amplitudes)
-            
-            # 计算采样率（基于timestamp_ms）
-            # 创建index到timestamp的映射以提高查找效率
-            idx_to_ts = {frame_idx: ts_ms for frame_idx, ts_ms in self.frame_metadata}
-            timestamps_ms = []
-            for idx in indices:
-                if idx in idx_to_ts:
-                    timestamps_ms.append(idx_to_ts[idx] / 1000.0)  # 转换为秒
-                else:
-                    # 如果找不到时间戳，使用默认值
-                    break
-            
-            # 如果找到了时间戳，使用真实采样率
-            if len(timestamps_ms) == len(indices) and len(timestamps_ms) > 1:
-                timestamps = np.array(timestamps_ms)
-                
-                # 检查采样是否均匀
-                is_uniform, mean_dt = self._check_sampling_uniformity(timestamps)
-                
-                if not is_uniform:
-                    # 非均匀采样：重采样到均匀网格
-                    self.logger.debug(
-                        f"通道{channel}检测到非均匀采样，进行重采样。"
-                        f"采样间隔变异系数: {np.std(np.diff(timestamps)) / mean_dt:.3f}"
-                    )
-                    timestamps, amplitudes_dc_removed = self._resample_to_uniform(
-                        timestamps, amplitudes_dc_removed, mean_dt
-                    )
-                    dt = mean_dt
-                else:
-                    # 均匀采样：直接使用平均间隔
-                    dt = mean_dt
-                
-                if dt <= 0:
-                    # 如果时间戳有问题，使用帧index作为备用
-                    di = np.mean(np.diff(indices)) if len(indices) > 1 else 1.0
-                    dt = di
-                    self.logger.debug(f"通道{channel}: 使用帧index间隔计算采样率")
-            else:
-                # 如果没有时间戳或时间戳不完整，使用帧index间隔作为备用
-                if len(indices) > 1:
-                    di = np.mean(np.diff(indices))
-                    if di <= 0:
-                        return None
-                    # 假设帧间隔为固定值（例如每帧450ms，可根据实际情况调整）
-                    dt = 0.45  # 默认帧间隔450ms
-                    self.logger.debug(f"通道{channel}: 使用默认帧间隔{dt:.2f}秒计算采样率")
-                else:
-                    return None
-            
-            # FFT计算频率
-            n = len(amplitudes_dc_removed)
-            fft_vals = np.fft.rfft(amplitudes_dc_removed)
-            fft_freq = np.fft.rfftfreq(n, dt)
-            
-            # 计算功率谱（振幅）
-            power = np.abs(fft_vals)
-            
-            if len(power) > 1:
-                # 跳过DC分量（索引0），因为已经去除了直流成分
-                # 找到振幅最大的频率（排除DC分量后）
-                main_freq_idx = np.argmax(power[1:]) + 1
-                main_freq = fft_freq[main_freq_idx]
-                
-                # 记录主要频率的振幅
-                main_amplitude = power[main_freq_idx]
-                
-                self.logger.debug(
-                    f"通道{channel}频率计算: 主频率={main_freq:.4f} Hz, "
-                    f"振幅={main_amplitude:.2f}, 帧数={n}, 采样间隔={dt:.3f}秒"
-                )
-                
-                return main_freq
-            else:
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"通道{channel}频率计算错误: {e}")
-            return None
+        # 简化日志输出
+        self.logger.info(f"通道{channel}频率计算: {freq_info['frequency']:.4f} Hz")
+        
+        return freq_info['frequency']
     
     def get_channel_statistics(self, channel: int, max_frames: int = None, 
                                 data_type: str = 'amplitude') -> Optional[Dict]:

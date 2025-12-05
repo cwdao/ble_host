@@ -65,6 +65,13 @@ class BLEHostGUI:
         # 创建界面
         self._create_widgets()
         
+        # 同步帧模式状态（确保self.frame_mode与GUI复选框一致）
+        self.frame_mode = self.frame_mode_var.get()
+        if self.frame_mode:
+            # 如果默认启用帧模式，应用设置（但不清空缓冲区，因为这是初始化阶段）
+            self._apply_frame_settings()
+            self.logger.info("帧模式已默认启用")
+        
         # 定时刷新
         self._start_update_loop()
     
@@ -448,7 +455,7 @@ class BLEHostGUI:
                 
                 if freq is not None:
                     self.freq_result_var.set(f"通道{channel}频率: {freq:.4f} Hz")
-                    self.logger.info(f"通道{channel}频率: {freq:.4f} Hz")
+                    # 详细日志已在 data_processor 中记录
                 else:
                     self.freq_result_var.set("频率计算失败")
                     messagebox.showwarning("警告", f"通道{channel}频率计算失败，可能需要更多数据")
@@ -460,7 +467,7 @@ class BLEHostGUI:
             
             if freq is not None:
                 self.freq_result_var.set(f"频率: {freq:.2f} Hz")
-                self.logger.info(f"{selected} 频率: {freq:.2f} Hz")
+                # 详细日志已在 data_processor 中记录
             else:
                 self.freq_result_var.set("频率计算失败")
                 messagebox.showwarning("警告", "频率计算失败，可能需要更多数据")
@@ -497,13 +504,18 @@ class BLEHostGUI:
                 # 计算统计信息
                 stats = self.data_processor.get_channel_statistics(channel, max_frames=max_frames)
                 
-                # 计算频率（基于当前plot显示的数据范围）
-                freq = self.data_processor.calculate_channel_frequency(channel, max_frames=max_frames)
-                freq_min = 60/(1/freq)
+                # 计算频率（基于当前plot显示的数据范围）- 获取详细信息
+                freq_info = self.data_processor.calculate_channel_frequency_detailed(channel, max_frames=max_frames)
 
-                if freq is not None:
+                if freq_info is not None:
+                    freq = freq_info['frequency']
+                    freq_min = 60 * freq  # 转换为次/分钟
                     self.stats_text.insert(tk.END, f"频率估计值（基于{stats['count'] if stats else 0}帧）:\n")
                     self.stats_text.insert(tk.END, f"  主频率: {freq_min:.1f}次/分钟 - ({freq:.4f} Hz)\n")
+                    self.stats_text.insert(tk.END, f"  振幅: {freq_info['amplitude']:.2f}\n")
+                    self.stats_text.insert(tk.END, f"  原始帧数: {freq_info['n_original']}, FFT点数: {freq_info['n_fft']} ({freq_info['fft_size_info']})\n")
+                    self.stats_text.insert(tk.END, f"  采样间隔: {freq_info['dt']:.3f}秒, 均匀采样: {'是' if freq_info['is_uniform'] else '否'}\n")
+                    self.stats_text.insert(tk.END, f"  已应用汉明窗: {'是' if freq_info['window_applied'] else '否'}\n")
                 else:
                     self.stats_text.insert(tk.END, "频率估计值: 计算失败（数据不足）\n")
 
@@ -538,12 +550,16 @@ class BLEHostGUI:
                 self.stats_text.insert(tk.END, f"  数据点数: {stats['count']}\n")
                 self.stats_text.insert(tk.END, "\n")
             
-            # 计算频率（最近15秒）
-            freq = self.data_processor.calculate_frequency(selected, duration=duration)
+            # 计算频率（最近15秒）- 获取详细信息
+            freq_info = self.data_processor.calculate_frequency_detailed(selected, duration=duration)
             
-            if freq is not None:
+            if freq_info is not None:
+                freq = freq_info['frequency']
                 self.stats_text.insert(tk.END, f"频率估计值（基于{stats['count'] if stats else 0}个数据点）:\n")
                 self.stats_text.insert(tk.END, f"  主频率: {freq:.4f} Hz\n")
+                self.stats_text.insert(tk.END, f"  原始点数: {freq_info['n_original']}, FFT点数: {freq_info['n_fft']} ({freq_info['fft_size_info']})\n")
+                self.stats_text.insert(tk.END, f"  采样间隔: {freq_info['dt']:.6f}秒, 均匀采样: {'是' if freq_info['is_uniform'] else '否'}\n")
+                self.stats_text.insert(tk.END, f"  已应用汉明窗: {'是' if freq_info['window_applied'] else '否'}\n")
             else:
                 self.stats_text.insert(tk.END, "频率估计值: 计算失败（数据不足）\n")
     
