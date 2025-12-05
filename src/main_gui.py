@@ -24,8 +24,8 @@ except ImportError:
     from plotter import Plotter
 
 # 版本信息
-__version__ = "1.1.0"
-__version_date__ = "2025-11-28"
+__version__ = "1.1.1"
+__version_date__ = "2025-12-02"
 __version_author__ = "chwn@outlook.ie, HKUST(GZ)"
 
 

@@ -190,9 +190,77 @@ class DataProcessor:
                 channels.append(ch)
         return sorted(channels)
     
+    def _check_sampling_uniformity(self, times: np.ndarray, threshold: float = 0.1) -> Tuple[bool, float]:
+        """
+        检查采样是否均匀
+        
+        Args:
+            times: 时间戳数组
+            threshold: 相对变化阈值，如果采样间隔的相对标准差超过此值，认为非均匀
+        
+        Returns:
+            (是否均匀, 平均采样间隔)
+        """
+        if len(times) < 2:
+            return False, 0.0
+        
+        intervals = np.diff(times)
+        mean_interval = np.mean(intervals)
+        
+        if mean_interval <= 0:
+            return False, 0.0
+        
+        # 计算相对标准差（变异系数）
+        relative_std = np.std(intervals) / mean_interval
+        
+        is_uniform = relative_std < threshold
+        
+        return is_uniform, mean_interval
+    
+    def _resample_to_uniform(self, times: np.ndarray, values: np.ndarray, 
+                             target_dt: float = None) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        将非均匀采样数据重采样到均匀网格
+        
+        Args:
+            times: 原始时间戳数组
+            values: 原始数值数组
+            target_dt: 目标采样间隔，None表示使用平均间隔
+        
+        Returns:
+            (均匀时间数组, 重采样后的数值数组)
+        """
+        if target_dt is None:
+            target_dt = np.mean(np.diff(times))
+        
+        if target_dt <= 0:
+            return times, values
+        
+        # 创建均匀时间网格
+        t_start = times[0]
+        t_end = times[-1]
+        uniform_times = np.arange(t_start, t_end + target_dt, target_dt)
+        
+        # 使用numpy的线性插值重采样
+        if len(times) > 1:
+            # numpy.interp 进行线性插值
+            # 对于超出范围的值，使用边界值填充
+            uniform_values = np.interp(
+                uniform_times, 
+                times, 
+                values,
+                left=values[0],
+                right=values[-1]
+            )
+        else:
+            uniform_values = np.full_like(uniform_times, values[0])
+        
+        return uniform_times, uniform_values
+    
     def calculate_frequency(self, var_name: str, duration: float = 15.0) -> Optional[float]:
         """
         计算指定变量的频率（基于FFT）
+        支持非均匀采样：自动检测采样均匀性，必要时进行重采样
         
         Args:
             var_name: 变量名
@@ -208,18 +276,30 @@ class DataProcessor:
             return None
         
         try:
-            # 计算采样率
-            if len(times) > 1:
-                dt = np.mean(np.diff(times))
-                if dt <= 0:
-                    return None
-                sample_rate = 1.0 / dt
+            # 检查采样是否均匀
+            is_uniform, mean_dt = self._check_sampling_uniformity(times)
+            
+            if not is_uniform:
+                # 非均匀采样：重采样到均匀网格
+                self.logger.debug(
+                    f"检测到非均匀采样 ({var_name})，进行重采样。"
+                    f"采样间隔变异系数: {np.std(np.diff(times)) / mean_dt:.3f}"
+                )
+                times, values = self._resample_to_uniform(times, values, mean_dt)
+                dt = mean_dt
             else:
+                # 均匀采样：直接使用平均间隔
+                dt = mean_dt
+            
+            if dt <= 0:
                 return None
             
+            # 去除直流成分（提高频率检测精度）
+            values_dc_removed = values - np.mean(values)
+            
             # FFT计算频率
-            n = len(values)
-            fft_vals = np.fft.rfft(values)
+            n = len(values_dc_removed)
+            fft_vals = np.fft.rfft(values_dc_removed)
             fft_freq = np.fft.rfftfreq(n, dt)
             
             # 找到主频率（排除DC分量）
@@ -228,6 +308,12 @@ class DataProcessor:
                 # 跳过DC分量（索引0）
                 main_freq_idx = np.argmax(power[1:]) + 1
                 main_freq = fft_freq[main_freq_idx]
+                
+                self.logger.debug(
+                    f"{var_name}频率计算: 主频率={main_freq:.4f} Hz, "
+                    f"采样间隔={dt:.6f}秒, 均匀采样={is_uniform}, 数据点数={n}"
+                )
+                
                 return main_freq
             else:
                 return None
@@ -270,6 +356,7 @@ class DataProcessor:
                                       data_type: str = 'amplitude') -> Optional[float]:
         """
         计算指定通道的频率（基于FFT，去掉直流成分，选择振幅最大的频率）
+        支持非均匀采样：自动检测采样均匀性，必要时进行重采样
         
         Args:
             channel: 通道号
@@ -309,8 +396,24 @@ class DataProcessor:
             # 如果找到了时间戳，使用真实采样率
             if len(timestamps_ms) == len(indices) and len(timestamps_ms) > 1:
                 timestamps = np.array(timestamps_ms)
-                # 计算平均采样间隔（秒）
-                dt = np.mean(np.diff(timestamps))
+                
+                # 检查采样是否均匀
+                is_uniform, mean_dt = self._check_sampling_uniformity(timestamps)
+                
+                if not is_uniform:
+                    # 非均匀采样：重采样到均匀网格
+                    self.logger.debug(
+                        f"通道{channel}检测到非均匀采样，进行重采样。"
+                        f"采样间隔变异系数: {np.std(np.diff(timestamps)) / mean_dt:.3f}"
+                    )
+                    timestamps, amplitudes_dc_removed = self._resample_to_uniform(
+                        timestamps, amplitudes_dc_removed, mean_dt
+                    )
+                    dt = mean_dt
+                else:
+                    # 均匀采样：直接使用平均间隔
+                    dt = mean_dt
+                
                 if dt <= 0:
                     # 如果时间戳有问题，使用帧index作为备用
                     di = np.mean(np.diff(indices)) if len(indices) > 1 else 1.0
