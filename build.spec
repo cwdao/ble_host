@@ -37,7 +37,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='BLEHost-v1.1.1',
+    name='BLEHost-v1.2.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
