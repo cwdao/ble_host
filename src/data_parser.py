@@ -21,6 +21,7 @@ class DataParser:
         # 正则表达式：匹配帧头和数据
         self.ANSI_ESCAPE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
         self.re_basic = re.compile(r"== Basic Report == index:(\d+), timestamp:(\d+)")
+        self.re_end_report = re.compile(r"== End Report ==")
         
         # IQ数据格式：ch:<idx>:<il>,<ql>,<ir>,<qr>;
         self.NUM = r"[+-]?(?:\d+(?:\.\d+)?|nan|inf|-inf)"
@@ -82,6 +83,16 @@ class DataParser:
             }
         return None
     
+    def parse_frame_footer(self, text: str) -> bool:
+        """
+        解析帧尾：== End Report ==
+        
+        Returns:
+            True 如果检测到帧尾，否则 False
+        """
+        line = self.ANSI_ESCAPE.sub("", text).strip()
+        return bool(self.re_end_report.search(line))
+    
     def parse_iq_data(self, text: str) -> Dict[int, List[float]]:
         """
         解析IQ数据行
@@ -134,7 +145,7 @@ class DataParser:
         if not text:
             return None
         
-        # 尝试解析帧头
+        # 优先尝试解析帧头
         frame_header = self.parse_frame_header(text)
         if frame_header:
             # 开始新帧
@@ -163,16 +174,24 @@ class DataParser:
             # 返回完成的帧（如果有）
             return completed_frame
         
+        # 尝试解析帧尾（在解析IQ数据之前）
+        if self.current_frame is not None:
+            if self.parse_frame_footer(text):
+                # 检测到帧尾，立即完成当前帧
+                completed_frame = self.finalize_frame()
+                if completed_frame:
+                    self.logger.info(f"[帧解析] 检测到帧尾，完成当前帧: index={completed_frame['index']}, 通道数={len(completed_frame.get('channels', {}))}")
+                else:
+                    self.logger.warning(f"[帧解析] 检测到帧尾，但当前帧无法完成")
+                return completed_frame
+        
         # 尝试解析IQ数据
         if self.current_frame is not None:
             iq_data = self.parse_iq_data(text)
             if iq_data:
                 # 合并IQ数据到当前帧
                 self.current_frame['iq_data'].update(iq_data)
-                
-                # 如果IQ数据足够多（假设每帧大约80个通道），可以认为帧完整了
-                # 这里先不立即返回，继续累积数据
-                # 可以设置一个延迟或者通过特定的标记来判断帧是否完整
+                # 继续累积数据，等待帧尾标记
                 return None
         
         # 如果既不是帧头也不是IQ数据，尝试向后兼容的简单格式
