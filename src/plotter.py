@@ -47,6 +47,27 @@ class Plotter:
         self.canvas.draw()
         return self.canvas.get_tk_widget()
     
+    def resize_figure(self, width_px, height_px, dpi=100):
+        """
+        根据实际像素尺寸调整figure大小
+        
+        Args:
+            width_px: 目标宽度（像素）
+            height_px: 目标高度（像素）
+            dpi: DPI值，默认100
+        """
+        # 计算英寸尺寸
+        width_inch = width_px / dpi
+        height_inch = height_px / dpi
+        
+        # 设置figure大小和DPI
+        self.figure.set_size_inches(width_inch, height_inch)
+        self.figure.set_dpi(dpi)
+        
+        # 刷新画布
+        if self.canvas:
+            self.canvas.draw()
+    
     def add_line(self, var_name: str, color=None, label=None):
         """
         添加一条数据线（如果不存在）

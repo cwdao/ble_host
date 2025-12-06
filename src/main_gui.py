@@ -209,12 +209,31 @@ class BLEHostGUI:
         # 创建多个选项卡
         self._create_plot_tabs()
         
+        # 延迟调整plot尺寸（等待窗口完全初始化）
+        self.root.after_idle(self._adjust_plot_sizes)
+        
         # 右侧：控制面板
-        right_frame = ttk.Frame(paned, width=300)
-        paned.add(right_frame, weight=1)
+        self.right_frame = ttk.Frame(paned, width=300)
+        paned.add(self.right_frame, weight=1)
+        
+        # DPI信息显示区域（调试用）
+        dpi_info_frame = ttk.LabelFrame(self.right_frame, text="DPI缩放信息", padding="5")
+        dpi_info_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 创建DPI信息显示文本区域
+        self.dpi_info_text = scrolledtext.ScrolledText(dpi_info_frame, height=6, width=30, font=("Courier", 8))
+        self.dpi_info_text.pack(fill=tk.BOTH, expand=True)
+        self.dpi_info_text.config(state=tk.DISABLED)  # 只读
+        
+        # 绑定窗口大小变化事件和tab切换事件
+        self.root.bind('<Configure>', self._on_window_configure)
+        self.notebook.bind('<<NotebookTabChanged>>', self._on_tab_changed)
+        
+        # 延迟初始化DPI信息显示（等待窗口完全初始化）
+        self.root.after(100, self._update_dpi_info)
         
         # 数据处理区域
-        process_frame = ttk.LabelFrame(right_frame, text="数据处理", padding="10")
+        process_frame = ttk.LabelFrame(self.right_frame, text="数据处理", padding="10")
         process_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # 频率计算（帧模式：通道频率，非帧模式：变量频率）
@@ -242,7 +261,7 @@ class BLEHostGUI:
         self.freq_var_var.trace_add('write', self._on_freq_var_changed)
         
         # 日志显示区域
-        log_frame = ttk.LabelFrame(right_frame, text="日志", padding="10")
+        log_frame = ttk.LabelFrame(self.right_frame, text="日志", padding="10")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         self.log_text = scrolledtext.ScrolledText(log_frame, height=15, width=30)
@@ -256,7 +275,7 @@ class BLEHostGUI:
         logging.getLogger().addHandler(text_handler)
         
         # 版本信息显示（右下角，分两行显示）
-        version_frame = ttk.Frame(right_frame)
+        version_frame = ttk.Frame(self.right_frame)
         version_frame.pack(fill=tk.X, padx=5, pady=2)
         
         # 创建一个内部Frame用于垂直排列，然后整体右对齐
@@ -286,23 +305,158 @@ class BLEHostGUI:
         # 初始化串口列表
         self._refresh_ports()
     
+    def _update_dpi_info(self):
+        """更新DPI信息显示"""
+        self.dpi_info_text.config(state=tk.NORMAL)
+        self.dpi_info_text.delete(1.0, tk.END)
+        
+        # 获取系统DPI信息
+        info_lines = []
+        info_lines.append(f"系统DPI缩放: {self.scale_factor:.2f}x")
+        
+        # 获取实际DPI值
+        if platform.system() == 'Windows':
+            try:
+                from ctypes import windll
+                hdc = windll.user32.GetDC(0)
+                dpi = windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX = 88
+                windll.user32.ReleaseDC(0, hdc)
+                info_lines.append(f"系统DPI: {dpi} (标准96)")
+            except:
+                info_lines.append(f"系统DPI: 无法获取")
+        else:
+            info_lines.append(f"系统DPI: N/A (非Windows)")
+        
+        info_lines.append(f"字体大小: {self.font_size}pt")
+        info_lines.append("")
+        
+        # 获取窗口尺寸
+        window_width = self.root.winfo_width()
+        window_height = self.root.winfo_height()
+        if window_width > 1 and window_height > 1:  # 避免显示初始值1x1
+            info_lines.append(f"窗口尺寸: {window_width}x{window_height}px")
+        else:
+            info_lines.append(f"窗口尺寸: 初始化中...")
+        
+        # 获取当前选中的tab
+        try:
+            current_tab_index = self.notebook.index(self.notebook.select())
+            current_tab_text = self.notebook.tab(current_tab_index, "text")
+            info_lines.append(f"当前Tab: {current_tab_text} (#{current_tab_index})")
+        except:
+            info_lines.append(f"当前Tab: 无")
+        
+        # 获取notebook尺寸
+        try:
+            nb_width = self.notebook.winfo_width()
+            nb_height = self.notebook.winfo_height()
+            if nb_width > 1 and nb_height > 1:  # 避免显示初始值1x1
+                info_lines.append(f"Tab区域: {nb_width}x{nb_height}px")
+            else:
+                info_lines.append(f"Tab区域: 计算中...")
+        except:
+            info_lines.append(f"Tab区域: 计算中...")
+        
+        # 获取右侧面板尺寸
+        try:
+            if hasattr(self, 'right_frame'):
+                rf_width = self.right_frame.winfo_width()
+                rf_height = self.right_frame.winfo_height()
+                if rf_width > 1 and rf_height > 1:  # 避免显示初始值1x1
+                    info_lines.append(f"右侧面板: {rf_width}x{rf_height}px")
+        except:
+            pass
+        
+        # 获取当前plot的尺寸信息
+        try:
+            if hasattr(self, 'plotters') and self.plotters:
+                # 获取当前tab对应的plotter信息
+                current_tab_index = None
+                try:
+                    current_tab_index = self.notebook.index(self.notebook.select())
+                    current_tab_text = self.notebook.tab(current_tab_index, "text")
+                except:
+                    pass
+                
+                # 根据tab名称找到对应的plotter
+                plotter = None
+                if current_tab_index is not None:
+                    tab_configs = [
+                        ('amplitude', '幅值'),
+                        ('phase', '相位'),
+                        ('local_amplitude', 'Local观测Ref幅值'),
+                        ('local_phase', 'Local观测Ref相位'),
+                        ('remote_amplitude', 'Remote观测Ini幅值'),
+                        ('remote_phase', 'Remote观测Ini相位'),
+                    ]
+                    if current_tab_index < len(tab_configs):
+                        tab_key = tab_configs[current_tab_index][0]
+                        if tab_key in self.plotters:
+                            plotter = self.plotters[tab_key]['plotter']
+                
+                # 如果没找到，使用第一个plotter
+                if plotter is None:
+                    plotter = list(self.plotters.values())[0]['plotter']
+                
+                fig_width = plotter.figure.get_figwidth()
+                fig_height = plotter.figure.get_figheight()
+                fig_dpi = plotter.figure.dpi
+                # 计算实际像素尺寸
+                plot_px_width = int(fig_width * fig_dpi)
+                plot_px_height = int(fig_height * fig_dpi)
+                info_lines.append("")
+                info_lines.append(f"Plot尺寸: {fig_width:.2f}\"x{fig_height:.2f}\"")
+                info_lines.append(f"Plot像素: {plot_px_width}x{plot_px_height}px")
+                info_lines.append(f"Plot DPI: {fig_dpi}")
+                # 添加说明：英寸尺寸看起来大是因为DPI=100，但像素尺寸是正确的
+                if fig_dpi == 100:
+                    info_lines.append("(英寸×100=像素)")
+        except:
+            pass
+        
+        # 写入信息
+        self.dpi_info_text.insert(tk.END, "\n".join(info_lines))
+        self.dpi_info_text.config(state=tk.DISABLED)
+    
+    def _on_window_configure(self, event):
+        """窗口大小变化时的回调"""
+        # 只响应主窗口的大小变化
+        if event.widget == self.root:
+            # 延迟更新，避免频繁刷新
+            if hasattr(self, '_dpi_info_update_scheduled'):
+                self.root.after_cancel(self._dpi_info_update_scheduled)
+            self._dpi_info_update_scheduled = self.root.after(200, self._update_dpi_info)
+            
+            # 同时调整plot尺寸
+            if hasattr(self, '_plot_resize_scheduled'):
+                self.root.after_cancel(self._plot_resize_scheduled)
+            self._plot_resize_scheduled = self.root.after(300, self._adjust_plot_sizes)
+    
+    def _on_tab_changed(self, event):
+        """Tab切换时的回调"""
+        # Tab切换时也调整plot尺寸（确保当前tab的plot尺寸正确）
+        self.root.after(50, self._adjust_plot_sizes)
+        self._update_dpi_info()
+    
     def _create_plot_tabs(self):
         """创建多选项卡绘图区域"""
         # 根据窗口大小计算plot的初始大小
-        # 窗口大小：base_width * scale_factor, base_height * scale_factor
-        # plot区域大约占窗口的2/3宽度（paned weight=2:1），高度约窗口高度减去控制面板
-        base_width = 1200
-        base_height = 800
+        # 使用基础尺寸，然后根据DPI适度缩放，但不过度放大
+        # matplotlib的figure_size单位是英寸，DPI固定为100
+        base_width_inch = 12.0  # 基础宽度12英寸（约1200像素@100DPI）
+        base_height_inch = 6.3  # 基础高度6.3英寸（约630像素@100DPI）
         
-        # plot区域估算：
-        # - 宽度：窗口宽度的约2/3，减去padding（约20像素）
-        plot_width_px = int((base_width * self.scale_factor) * 2 / 3) - 20
-        # - 高度：窗口高度减去顶部控制面板（约150像素）和padding（约20像素）
-        plot_height_px = int(base_height * self.scale_factor) - 150 - 20
+        # 根据DPI缩放，但使用更温和的缩放策略
+        # 不完全按scale_factor缩放，避免plot过大
+        # 使用平方根缩放，让缩放更温和
+        scale_adjustment = 1.0 + (self.scale_factor - 1.0) * 0.5  # 缩放调整：只应用50%的缩放增量
         
-        # 转换为英寸（matplotlib使用DPI=100）
-        plot_width_inch = plot_width_px / 100.0
-        plot_height_inch = plot_height_px / 100.0
+        plot_width_inch = base_width_inch * scale_adjustment
+        plot_height_inch = base_height_inch * scale_adjustment
+        
+        # 限制最大尺寸，避免过大
+        plot_width_inch = min(plot_width_inch, 16.0)  # 最大16英寸
+        plot_height_inch = min(plot_height_inch, 10.0)  # 最大10英寸
         
         # 定义选项卡配置：(tab_key, tab_name, y_label, data_type)
         tab_configs = [
@@ -333,6 +487,47 @@ class BLEHostGUI:
                 'data_type': data_type,
                 'frame': tab_frame
             }
+    
+    def _adjust_plot_sizes(self):
+        """根据实际容器大小调整plot尺寸"""
+        try:
+            # 获取notebook的实际尺寸
+            self.root.update_idletasks()  # 确保窗口已经布局完成
+            nb_width = self.notebook.winfo_width()
+            nb_height = self.notebook.winfo_height()
+            
+            # 如果尺寸还不可用，延迟重试
+            if nb_width <= 1 or nb_height <= 1:
+                self.root.after(100, self._adjust_plot_sizes)
+                return
+            
+            # 减去一些边距（约20像素）
+            plot_width_px = max(100, nb_width - 20)
+            plot_height_px = max(100, nb_height - 20)
+            
+            # 根据系统DPI缩放比例调整DPI，使字体和元素更大更清晰
+            # 使用系统DPI缩放比例，但限制在合理范围内（100-200）
+            plot_dpi = int(100 * self.scale_factor)
+            plot_dpi = max(100, min(plot_dpi, 200))  # 限制在100-200之间
+            
+            # 根据DPI计算英寸尺寸，确保像素尺寸与容器匹配
+            plot_width_inch = plot_width_px / plot_dpi
+            plot_height_inch = plot_height_px / plot_dpi
+            
+            # 调整所有plot的尺寸
+            adjusted_count = 0
+            for tab_key, plotter_info in self.plotters.items():
+                plotter = plotter_info['plotter']
+                # 使用调整后的DPI，使字体和元素更大更清晰
+                plotter.resize_figure(plot_width_px, plot_height_px, dpi=plot_dpi)
+                adjusted_count += 1
+            
+            self.logger.debug(f"调整了{adjusted_count}个plot尺寸: {plot_width_inch:.2f}\"x{plot_height_inch:.2f}\" ({plot_width_px}x{plot_height_px}px @ {plot_dpi}DPI)")
+            
+            # 更新DPI信息显示
+            self._update_dpi_info()
+        except Exception as e:
+            self.logger.warning(f"调整plot尺寸时出错: {e}")
     
     def _refresh_ports(self):
         """刷新串口列表"""
