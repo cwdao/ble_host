@@ -4,12 +4,28 @@
 BLE Host上位机主程序
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext, font
 import threading
 import time
 import logging
 from pathlib import Path
 from typing import List
+import sys
+import platform
+
+# Windows 高 DPI 支持
+if platform.system() == 'Windows':
+    try:
+        # 启用 DPI 感知，避免在 4K 屏幕上模糊
+        from ctypes import windll
+        # 设置进程 DPI 感知为系统级别（Windows 8.1+）
+        windll.shcore.SetProcessDpiAwareness(1)
+    except (ImportError, AttributeError, OSError):
+        # 如果失败，尝试旧版 API（Windows Vista+）
+        try:
+            windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
 
 try:
     from .serial_reader import SerialReader
@@ -36,7 +52,48 @@ class BLEHostGUI:
         self.root = root
         # 标题栏显示版本号
         self.root.title(f"BLE CS Host v{__version__}")
-        self.root.geometry("1200x800")
+        
+        # 高 DPI 字体和控件大小调整
+        self.scale_factor = 1.0  # 默认缩放比例
+        if platform.system() == 'Windows':
+            try:
+                from ctypes import windll
+                # 获取系统 DPI 缩放比例
+                hdc = windll.user32.GetDC(0)
+                dpi = windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX = 88
+                windll.user32.ReleaseDC(0, hdc)
+                self.scale_factor = dpi / 96.0  # 96 是标准 DPI
+                
+                # 调整默认字体大小（使用更温和的缩放策略）
+                # 基础字体大小，然后根据DPI适度增加，但不完全按比例
+                base_font_size = 9
+                # 使用更温和的缩放：基础大小 + (缩放比例-1) * 调整值
+                # 这样字体不会过大，但会适度增大以保持清晰度
+                font_size = int(base_font_size + (self.scale_factor - 1.0) * 2)
+                # 限制最大字体大小，避免过大
+                font_size = min(font_size, 12)
+                self.font_size = font_size
+                
+                if self.scale_factor > 1.0:
+                    default_font = font.nametofont("TkDefaultFont")
+                    default_font.configure(size=font_size)
+                    
+                    text_font = font.nametofont("TkTextFont")
+                    text_font.configure(size=font_size)
+                    
+                    fixed_font = font.nametofont("TkFixedFont")
+                    fixed_font.configure(size=font_size)
+            except (ImportError, AttributeError, OSError):
+                self.font_size = 9  # 默认字体大小
+        else:
+            self.font_size = 9  # 默认字体大小
+        
+        # 根据DPI缩放比例调整窗口大小
+        base_width = 1200
+        base_height = 800
+        window_width = int(base_width * self.scale_factor)
+        window_height = int(base_height * self.scale_factor)
+        self.root.geometry(f"{window_width}x{window_height}")
         
         # 设置日志
         self._setup_logging()
@@ -207,10 +264,12 @@ class BLEHostGUI:
         version_inner.pack(side=tk.RIGHT, anchor=tk.E)
         
         # 第一行：版本号和日期
+        # 版本信息使用较小的字体，但也根据DPI适度调整
+        version_font_size = max(7, int(self.font_size - 1))  # 比主字体小1，但至少为7
         version_line1 = ttk.Label(
             version_inner, 
             text=f"版本 v{__version__} | {__version_date__}",
-            font=("TkDefaultFont", 8),
+            font=("TkDefaultFont", version_font_size),
             foreground="gray"
         )
         version_line1.pack(anchor=tk.E)
@@ -219,7 +278,7 @@ class BLEHostGUI:
         version_line2 = ttk.Label(
             version_inner, 
             text=f"{__version_author__}",
-            font=("TkDefaultFont", 8),
+            font=("TkDefaultFont", version_font_size),
             foreground="gray"
         )
         version_line2.pack(anchor=tk.E)
@@ -229,6 +288,22 @@ class BLEHostGUI:
     
     def _create_plot_tabs(self):
         """创建多选项卡绘图区域"""
+        # 根据窗口大小计算plot的初始大小
+        # 窗口大小：base_width * scale_factor, base_height * scale_factor
+        # plot区域大约占窗口的2/3宽度（paned weight=2:1），高度约窗口高度减去控制面板
+        base_width = 1200
+        base_height = 800
+        
+        # plot区域估算：
+        # - 宽度：窗口宽度的约2/3，减去padding（约20像素）
+        plot_width_px = int((base_width * self.scale_factor) * 2 / 3) - 20
+        # - 高度：窗口高度减去顶部控制面板（约150像素）和padding（约20像素）
+        plot_height_px = int(base_height * self.scale_factor) - 150 - 20
+        
+        # 转换为英寸（matplotlib使用DPI=100）
+        plot_width_inch = plot_width_px / 100.0
+        plot_height_inch = plot_height_px / 100.0
+        
         # 定义选项卡配置：(tab_key, tab_name, y_label, data_type)
         tab_configs = [
             ('amplitude', '幅值', 'Amplitude', 'amplitude'),
@@ -244,8 +319,8 @@ class BLEHostGUI:
             tab_frame = ttk.Frame(self.notebook)
             self.notebook.add(tab_frame, text=tab_name)
             
-            # 创建绘图器
-            plotter = Plotter(figure_size=(12, 8))
+            # 创建绘图器（根据窗口大小计算合适的初始大小）
+            plotter = Plotter(figure_size=(plot_width_inch, plot_height_inch))
             plotter.ax.set_ylabel(y_label)
             
             # 附加到界面

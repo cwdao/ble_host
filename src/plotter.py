@@ -20,9 +20,12 @@ class Plotter:
         初始化绘图器
         
         Args:
-            figure_size: 图形大小 (width, height)
+            figure_size: 图形大小 (width, height)，单位：英寸
+                        这个大小应该根据窗口大小和布局在调用时计算好
         """
         self.logger = logging.getLogger(__name__)
+        # 使用固定DPI 100，figure_size由调用者根据窗口大小计算
+        # 这样图形大小更可控，不会因为DPI缩放导致过大或过小
         self.figure = Figure(figsize=figure_size, dpi=100)
         self.canvas = None
         # 使用单个axes显示所有数据
