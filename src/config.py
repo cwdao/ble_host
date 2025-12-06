@@ -41,7 +41,9 @@ class AppConfig:
     freq_list_update_interval_sec: float = 1.0  # 频率列表更新间隔（秒）
     
     # 帧模式默认配置
-    default_frame_mode: bool = True
+    default_frame_mode: bool = True  # 保留用于向后兼容，但不再使用
+    default_frame_type: str = "演示帧"  # 默认帧类型
+    frame_type_options: List[str] = None  # 帧类型列表
     default_display_channels: str = "0-9"
     default_display_max_frames: int = 50
     max_display_max_frames: int = 100
@@ -63,6 +65,9 @@ class AppConfig:
         """初始化后处理"""
         if self.baudrate_options is None:
             self.baudrate_options = ["9600", "19200", "38400", "57600", "115200", "230400"]
+        if self.frame_type_options is None:
+            # 帧类型列表：演示帧对应原来的帧模式，其他选项可以后续添加（目前先留空）
+            self.frame_type_options = ["演示帧"]
 
 
 # 全局配置实例

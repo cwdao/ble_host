@@ -75,15 +75,23 @@ class SerialReader:
             return False
     
     def disconnect(self):
-        """断开串口连接"""
+        """断开串口连接（改进版本，避免阻塞）"""
         self.is_running = False
         self.stop_event.set()
         
-        if self.read_thread and self.read_thread.is_alive():
-            self.read_thread.join(timeout=2.0)
-        
+        # 先尝试关闭串口（可能会中断阻塞的read操作）
         if self.serial and self.serial.is_open:
-            self.serial.close()
+            try:
+                self.serial.close()
+            except Exception as e:
+                self.logger.warning(f"关闭串口时出错: {e}")
+        
+        # 等待读取线程结束（设置较短的超时，避免长时间阻塞）
+        if self.read_thread and self.read_thread.is_alive():
+            self.read_thread.join(timeout=0.5)  # 减少超时时间到0.5秒
+        
+        # 清空队列
+        self.clear_queue()
         
         self.logger.info("串口已断开")
     
@@ -93,35 +101,46 @@ class SerialReader:
         
         while self.is_running and not self.stop_event.is_set():
             try:
-                if self.serial.in_waiting > 0:
-                    data = self.serial.read(self.serial.in_waiting)
-                    buffer += data
-                    
-                    # 假设数据以换行符结尾，可以自定义协议
-                    while b'\n' in buffer:
-                        line, buffer = buffer.split(b'\n', 1)
-                        try:
-                            # 尝试解码为字符串
-                            text = line.decode('utf-8').strip()
-                            if text:
+                # 检查串口是否打开
+                if not self.serial or not self.serial.is_open:
+                    break
+                
+                # 使用try-except包装，避免in_waiting或read()阻塞
+                try:
+                    if self.serial.in_waiting > 0:
+                        data = self.serial.read(self.serial.in_waiting)
+                        buffer += data
+                        
+                        # 假设数据以换行符结尾，可以自定义协议
+                        while b'\n' in buffer:
+                            line, buffer = buffer.split(b'\n', 1)
+                            try:
+                                # 尝试解码为字符串
+                                text = line.decode('utf-8').strip()
+                                if text:
+                                    self.data_queue.put({
+                                        'timestamp': time.time(),
+                                        'raw': line,
+                                        'text': text
+                                    })
+                            except UnicodeDecodeError:
+                                # 如果不是文本数据，可以按字节处理
                                 self.data_queue.put({
                                     'timestamp': time.time(),
                                     'raw': line,
-                                    'text': text
+                                    'text': None
                                 })
-                        except UnicodeDecodeError:
-                            # 如果不是文本数据，可以按字节处理
-                            self.data_queue.put({
-                                'timestamp': time.time(),
-                                'raw': line,
-                                'text': None
-                            })
+                except (serial.SerialException, OSError, ValueError) as e:
+                    # 串口操作异常（可能是设备断开）
+                    if self.is_running:
+                        self.logger.error(f"串口读取错误: {e}")
+                    break
                 
                 time.sleep(0.01)  # 避免CPU占用过高
                 
             except Exception as e:
                 if self.is_running:
-                    self.logger.error(f"串口读取错误: {e}")
+                    self.logger.error(f"串口读取循环错误: {e}")
                 break
     
     def get_data(self, block=False, timeout=None):

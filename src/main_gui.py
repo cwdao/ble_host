@@ -63,22 +63,25 @@ class BLEHostGUI:
         # 控制变量
         self.is_running = False
         self.update_thread = None
-        self.stop_event = threading.Event()
+        self.freq_list_thread = None
+        self.stop_event = threading.Event()  # 用于通知线程停止
         
         # 帧数据处理
-        self.frame_mode = config.default_frame_mode  # 是否启用帧模式
+        self.frame_type = config.default_frame_type  # 当前选择的帧类型（字符串）
+        self.frame_mode = (self.frame_type == "演示帧")  # 兼容性：是否启用帧模式（演示帧对应原来的帧模式）
         self.display_channel_list = list(range(10))  # 展示的信道列表，默认0-9
         self.display_max_frames = config.default_display_max_frames  # 显示和计算使用的最大帧数
         
         # 创建界面
         self._create_widgets()
         
-        # 同步帧模式状态（确保self.frame_mode与GUI复选框一致）
-        self.frame_mode = self.frame_mode_var.get()
+        # 同步帧类型状态（确保self.frame_type与GUI下拉框一致）
+        self.frame_type = self.frame_type_var.get()
+        self.frame_mode = (self.frame_type == "演示帧")  # 更新兼容性变量
         if self.frame_mode:
             # 如果默认启用帧模式，应用设置（但不清空缓冲区，因为这是初始化阶段）
             self._apply_frame_settings()
-            self.logger.info("帧模式已默认启用")
+            self.logger.info(f"帧类型已设置为: {self.frame_type}")
         
         # 定时刷新
         self._start_update_loop()
@@ -125,32 +128,31 @@ class BLEHostGUI:
         # 清空数据按钮
         ttk.Button(control_frame, text="清空数据", command=self._clear_data).grid(row=0, column=7, padx=5, pady=5)
         
-        # 帧模式开关
-        self.frame_mode_var = tk.BooleanVar(value=config.default_frame_mode)
-        frame_mode_check = ttk.Checkbutton(control_frame, text="帧模式", variable=self.frame_mode_var,
-                                           command=self._toggle_frame_mode)
-        frame_mode_check.grid(row=0, column=8, padx=5, pady=5)
+        # 帧类型选择（下拉列表，类似串口选择）
+        ttk.Label(control_frame, text="帧类型:").grid(row=0, column=8, padx=5, pady=5)
+        self.frame_type_var = tk.StringVar(value=config.default_frame_type)
+        self.frame_type_combo = ttk.Combobox(control_frame, textvariable=self.frame_type_var, 
+                                            values=config.frame_type_options, width=12, state="readonly")
+        self.frame_type_combo.grid(row=0, column=9, padx=5, pady=5)
+        self.frame_type_combo.bind("<<ComboboxSelected>>", lambda e: self._on_frame_type_changed())
         
-        # 第二行：帧模式相关控件
-        frame_control_frame = ttk.Frame(control_frame)
-        frame_control_frame.grid(row=1, column=0, columnspan=10, sticky="ew", padx=5, pady=5)
-        
+        # 第二行：帧模式相关控件（使用grid布局，与第一行对齐）
         # 展示信道选择
-        ttk.Label(frame_control_frame, text="展示信道:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(control_frame, text="展示信道:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
         self.display_channels_var = tk.StringVar(value=config.default_display_channels)
-        display_channels_entry = ttk.Entry(frame_control_frame, textvariable=self.display_channels_var, width=20)
-        display_channels_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Label(frame_control_frame, text="(如: 0-9 或 0,2,4,6,8)").pack(side=tk.LEFT, padx=2)
+        display_channels_entry = ttk.Entry(control_frame, textvariable=self.display_channels_var, width=20)
+        display_channels_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        ttk.Label(control_frame, text="(如: 0-9 或 0,2,4,6,8)").grid(row=1, column=2, padx=2, pady=5, sticky="w")
         
         # 显示帧数（用于plot和计算）
-        ttk.Label(frame_control_frame, text="显示帧数:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(control_frame, text="显示帧数:").grid(row=1, column=3, padx=5, pady=5, sticky="w")
         self.display_max_frames_var = tk.StringVar(value=str(config.default_display_max_frames))
-        display_frames_entry = ttk.Entry(frame_control_frame, textvariable=self.display_max_frames_var, width=10)
-        display_frames_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Label(frame_control_frame, text="(plot和计算范围)").pack(side=tk.LEFT, padx=2)
+        display_frames_entry = ttk.Entry(control_frame, textvariable=self.display_max_frames_var, width=10)
+        display_frames_entry.grid(row=1, column=4, padx=5, pady=5, sticky="w")
+        ttk.Label(control_frame, text="(plot和计算范围)").grid(row=1, column=5, padx=2, pady=5, sticky="w")
         
         # 应用按钮
-        ttk.Button(frame_control_frame, text="应用", command=self._apply_frame_settings).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="应用", command=self._apply_frame_settings).grid(row=1, column=6, padx=5, pady=5, sticky="w")
         
         # 左右分栏
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -511,13 +513,34 @@ class BLEHostGUI:
             self.logger.error("串口连接失败")
     
     def _disconnect(self):
-        """断开串口"""
-        if self.serial_reader:
-            self.serial_reader.disconnect()
-            self.serial_reader = None
-        
+        """断开串口（改进版本，避免GUI阻塞）"""
+        # 先设置标志，停止数据处理
         self.is_running = False
-        self.connect_btn.config(text="连接")
+        
+        # 立即更新UI状态
+        self.connect_btn.config(text="连接", state="disabled")  # 暂时禁用按钮，防止重复点击
+        self.status_var.set("断开中...")
+        self.logger.info("正在断开串口...")
+        
+        # 在后台线程中断开串口，避免阻塞GUI
+        def disconnect_in_thread():
+            try:
+                if self.serial_reader:
+                    self.serial_reader.disconnect()
+                    self.serial_reader = None
+            except Exception as e:
+                self.logger.error(f"断开串口时出错: {e}")
+            finally:
+                # 在主线程中更新UI（使用after确保在主线程执行）
+                self.root.after(0, self._update_disconnect_ui)
+        
+        # 启动后台线程执行断开操作
+        disconnect_thread = threading.Thread(target=disconnect_in_thread, daemon=True)
+        disconnect_thread.start()
+    
+    def _update_disconnect_ui(self):
+        """更新断开连接后的UI状态（在主线程中执行）"""
+        self.connect_btn.config(text="连接", state="normal")  # 恢复按钮
         self.status_var.set("未连接")
         self.logger.info("串口已断开")
     
@@ -597,26 +620,36 @@ class BLEHostGUI:
             # 同时更新统计信息（因为使用了新的帧数范围）
             self._update_statistics()
     
-    def _toggle_frame_mode(self):
-        """切换帧模式"""
-        self.frame_mode = self.frame_mode_var.get()
-        if self.frame_mode:
-            self.logger.info("启用帧模式 - 清空之前的非帧数据")
-            # 切换到帧模式时，清空之前的非帧数据（只保留帧数据）
-            self.data_processor.clear_buffer(clear_frames=False)  # 不清空帧数据
-            # 清空所有绘图，只显示帧数据
-            for plotter_info in self.plotters.values():
-                plotter_info['plotter'].clear_plot()
-            # 清空解析器状态
-            self.data_parser.clear_buffer()
-            # 应用当前设置
-            self._apply_frame_settings()
+    def _on_frame_type_changed(self):
+        """帧类型选择变化时的回调"""
+        old_frame_type = self.frame_type
+        self.frame_type = self.frame_type_var.get()
+        old_frame_mode = self.frame_mode
+        self.frame_mode = (self.frame_type == "演示帧")  # 更新兼容性变量
+        
+        # 如果从非演示帧切换到演示帧，或从演示帧切换到非演示帧，需要清空数据
+        if old_frame_mode != self.frame_mode:
+            if self.frame_mode:
+                self.logger.info(f"切换到帧类型: {self.frame_type} - 清空之前的非帧数据")
+                # 切换到帧模式时，清空之前的非帧数据（只保留帧数据）
+                self.data_processor.clear_buffer(clear_frames=False)  # 不清空帧数据
+                # 清空所有绘图，只显示帧数据
+                for plotter_info in self.plotters.values():
+                    plotter_info['plotter'].clear_plot()
+                # 清空解析器状态
+                self.data_parser.clear_buffer()
+                # 应用当前设置
+                self._apply_frame_settings()
+            else:
+                self.logger.info(f"切换到帧类型: {self.frame_type} - 清空帧数据")
+                # 切换到非帧模式时，清空帧数据
+                self.data_processor.clear_buffer(clear_frames=True)
+                for plotter_info in self.plotters.values():
+                    plotter_info['plotter'].clear_plot()
         else:
-            self.logger.info("禁用帧模式")
-            # 切换到非帧模式时，清空帧数据
-            self.data_processor.clear_buffer(clear_frames=True)
-            for plotter_info in self.plotters.values():
-                plotter_info['plotter'].clear_plot()
+            # 帧模式状态没有变化，只是类型变化（比如从演示帧切换到快速帧）
+            self.logger.info(f"帧类型从 {old_frame_type} 切换到 {self.frame_type}")
+            # 这里可以添加特定类型的处理逻辑
     
     def _calculate_frequency(self):
         """计算频率"""
@@ -750,7 +783,7 @@ class BLEHostGUI:
     def _start_update_loop(self):
         """启动数据更新循环"""
         def update_loop():
-            while True:
+            while not self.stop_event.is_set():
                 try:
                     if self.is_running and self.serial_reader:
                         # 获取串口数据
@@ -813,14 +846,17 @@ class BLEHostGUI:
                     time.sleep(config.update_interval_sec)
                     
                 except Exception as e:
-                    self.logger.error(f"更新循环错误: {e}")
+                    if not self.stop_event.is_set():
+                        self.logger.error(f"更新循环错误: {e}")
+                    else:
+                        break  # 如果正在停止，直接退出
         
         self.update_thread = threading.Thread(target=update_loop, daemon=True)
         self.update_thread.start()
         
         # 启动频率列表更新线程和统计信息自动更新
         def update_freq_list_and_stats():
-            while True:
+            while not self.stop_event.is_set():
                 try:
                     if self.frame_mode:
                         # 帧模式：显示可用通道
@@ -851,11 +887,14 @@ class BLEHostGUI:
                     
                     time.sleep(config.freq_list_update_interval_sec)
                 except Exception as e:
-                    self.logger.error(f"更新频率列表错误: {e}")
-                    time.sleep(1.0)
+                    if not self.stop_event.is_set():
+                        self.logger.error(f"更新频率列表错误: {e}")
+                        time.sleep(1.0)
+                    else:
+                        break  # 如果正在停止，直接退出
         
-        freq_list_thread = threading.Thread(target=update_freq_list_and_stats, daemon=True)
-        freq_list_thread.start()
+        self.freq_list_thread = threading.Thread(target=update_freq_list_and_stats, daemon=True)
+        self.freq_list_thread.start()
     
     def _update_frame_plots(self):
         """更新帧数据绘图 - 根据设置显示指定通道的数据（所有选项卡）"""
@@ -908,8 +947,32 @@ class BLEHostGUI:
     
     def on_closing(self):
         """窗口关闭事件"""
+        self.logger.info("正在关闭程序...")
+        
+        # 设置停止事件，通知所有线程退出
+        self.stop_event.set()
+        
+        # 断开串口连接
         if self.is_running:
-            self._disconnect()
+            self.is_running = False
+            if self.serial_reader:
+                try:
+                    # 快速断开，不等待线程
+                    self.serial_reader.is_running = False
+                    self.serial_reader.stop_event.set()
+                    if self.serial_reader.serial and self.serial_reader.serial.is_open:
+                        self.serial_reader.serial.close()
+                except Exception as e:
+                    self.logger.error(f"关闭串口时出错: {e}")
+        
+        # 等待更新线程结束（最多等待1秒）
+        if self.update_thread and self.update_thread.is_alive():
+            self.update_thread.join(timeout=1.0)
+        
+        if self.freq_list_thread and self.freq_list_thread.is_alive():
+            self.freq_list_thread.join(timeout=1.0)
+        
+        self.logger.info("程序已关闭")
         self.root.destroy()
 
 
