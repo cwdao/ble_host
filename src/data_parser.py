@@ -11,6 +11,11 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from collections import OrderedDict
 
+try:
+    from .utils.text_utils import remove_ansi_escape, safe_float
+except ImportError:
+    from utils.text_utils import remove_ansi_escape, safe_float
+
 
 class DataParser:
     """数据解析类"""
@@ -19,7 +24,6 @@ class DataParser:
         self.logger = logging.getLogger(__name__)
         
         # 正则表达式：匹配帧头和数据
-        self.ANSI_ESCAPE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
         self.re_basic = re.compile(r"== Basic Report == index:(\d+), timestamp:(\d+)")
         self.re_end_report = re.compile(r"== End Report ==")
         
@@ -31,13 +35,6 @@ class DataParser:
         # 缓冲区：用于存储多行的帧数据
         self.frame_buffer = {}  # {index: {'timestamp': ts, 'iq_data': {ch: [il,ql,ir,qr]}}}
         self.current_frame = None
-    
-    def to_float(self, x: str) -> float:
-        """安全转换为浮点数"""
-        try:
-            return float(x)
-        except Exception:
-            return float('nan')
     
     def combine_iq(self, il: float, ql: float, ir: float, qr: float) -> Tuple[float, float]:
         """
@@ -74,7 +71,7 @@ class DataParser:
         Returns:
             {'index': int, 'timestamp_ms': int} 或 None
         """
-        line = self.ANSI_ESCAPE.sub("", text).strip()
+        line = remove_ansi_escape(text)
         m = self.re_basic.search(line)
         if m:
             return {
@@ -90,7 +87,7 @@ class DataParser:
         Returns:
             True 如果检测到帧尾，否则 False
         """
-        line = self.ANSI_ESCAPE.sub("", text).strip()
+        line = remove_ansi_escape(text)
         return bool(self.re_end_report.search(line))
     
     def parse_iq_data(self, text: str) -> Dict[int, List[float]]:
@@ -104,7 +101,7 @@ class DataParser:
             {channel_index: [il, ql, ir, qr], ...}
         """
         iq_data = {}
-        line = self.ANSI_ESCAPE.sub("", text).strip()
+        line = remove_ansi_escape(text)
         
         # 尝试匹配 "IQ: ..." 格式
         payload = None
@@ -118,10 +115,10 @@ class DataParser:
         if payload:
             for match in self.re_iq_tokens.finditer(payload):
                 ch = int(match.group(1))
-                il = self.to_float(match.group(2))
-                ql = self.to_float(match.group(3))
-                ir = self.to_float(match.group(4))
-                qr = self.to_float(match.group(5))
+                il = safe_float(match.group(2))
+                ql = safe_float(match.group(3))
+                ir = safe_float(match.group(4))
+                qr = safe_float(match.group(5))
                 iq_data[ch] = [il, ql, ir, qr]
         
         return iq_data

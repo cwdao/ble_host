@@ -4,45 +4,32 @@
 BLE Host上位机主程序
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext, font
+from tkinter import ttk, messagebox, scrolledtext
 import threading
 import time
 import logging
-from pathlib import Path
 from typing import List
-import sys
-import platform
-
-# Windows 高 DPI 支持
-if platform.system() == 'Windows':
-    try:
-        # 启用 DPI 感知，避免在 4K 屏幕上模糊
-        from ctypes import windll
-        # 设置进程 DPI 感知为系统级别（Windows 8.1+）
-        windll.shcore.SetProcessDpiAwareness(1)
-    except (ImportError, AttributeError, OSError):
-        # 如果失败，尝试旧版 API（Windows Vista+）
-        try:
-            windll.user32.SetProcessDPIAware()
-        except (AttributeError, OSError):
-            pass
 
 try:
     from .serial_reader import SerialReader
     from .data_parser import DataParser
     from .data_processor import DataProcessor
     from .plotter import Plotter
+    from .config import config
+    from .gui.dpi_manager import DPIManager
 except ImportError:
     # 直接运行时使用绝对导入
     from serial_reader import SerialReader
     from data_parser import DataParser
     from data_processor import DataProcessor
     from plotter import Plotter
+    from config import config
+    from gui.dpi_manager import DPIManager
 
-# 版本信息
-__version__ = "2.0.1"
-__version_date__ = "2025-12-05"
-__version_author__ = "chwn@outlook.ie, HKUST(GZ)"
+# 版本信息（从config导入）
+__version__ = config.version
+__version_date__ = config.version_date
+__version_author__ = config.version_author
 
 
 class BLEHostGUI:
@@ -53,46 +40,13 @@ class BLEHostGUI:
         # 标题栏显示版本号
         self.root.title(f"BLE CS Host v{__version__}")
         
-        # 高 DPI 字体和控件大小调整
-        self.scale_factor = 1.0  # 默认缩放比例
-        if platform.system() == 'Windows':
-            try:
-                from ctypes import windll
-                # 获取系统 DPI 缩放比例
-                hdc = windll.user32.GetDC(0)
-                dpi = windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX = 88
-                windll.user32.ReleaseDC(0, hdc)
-                self.scale_factor = dpi / 96.0  # 96 是标准 DPI
-                
-                # 调整默认字体大小（使用更温和的缩放策略）
-                # 基础字体大小，然后根据DPI适度增加，但不完全按比例
-                base_font_size = 9
-                # 使用更温和的缩放：基础大小 + (缩放比例-1) * 调整值
-                # 这样字体不会过大，但会适度增大以保持清晰度
-                font_size = int(base_font_size + (self.scale_factor - 1.0) * 2)
-                # 限制最大字体大小，避免过大
-                font_size = min(font_size, 12)
-                self.font_size = font_size
-                
-                if self.scale_factor > 1.0:
-                    default_font = font.nametofont("TkDefaultFont")
-                    default_font.configure(size=font_size)
-                    
-                    text_font = font.nametofont("TkTextFont")
-                    text_font.configure(size=font_size)
-                    
-                    fixed_font = font.nametofont("TkFixedFont")
-                    fixed_font.configure(size=font_size)
-            except (ImportError, AttributeError, OSError):
-                self.font_size = 9  # 默认字体大小
-        else:
-            self.font_size = 9  # 默认字体大小
+        # DPI管理器应该在main()函数中创建（在创建root之前）
+        # 如果没有传入，则创建一个（向后兼容）
+        if not hasattr(self, 'dpi_manager'):
+            self.dpi_manager = DPIManager()
         
         # 根据DPI缩放比例调整窗口大小
-        base_width = 1200
-        base_height = 800
-        window_width = int(base_width * self.scale_factor)
-        window_height = int(base_height * self.scale_factor)
+        window_width, window_height = self.dpi_manager.get_window_size()
         self.root.geometry(f"{window_width}x{window_height}")
         
         # 设置日志
@@ -112,9 +66,9 @@ class BLEHostGUI:
         self.stop_event = threading.Event()
         
         # 帧数据处理
-        self.frame_mode = False  # 是否启用帧模式
+        self.frame_mode = config.default_frame_mode  # 是否启用帧模式
         self.display_channel_list = list(range(10))  # 展示的信道列表，默认0-9
-        self.display_max_frames = 100  # 显示和计算使用的最大帧数（用于plot和统计信息）
+        self.display_max_frames = config.default_display_max_frames  # 显示和计算使用的最大帧数
         
         # 创建界面
         self._create_widgets()
@@ -154,9 +108,9 @@ class BLEHostGUI:
         
         # 波特率
         ttk.Label(control_frame, text="波特率:").grid(row=0, column=3, padx=5, pady=5)
-        self.baudrate_var = tk.StringVar(value="230400")
+        self.baudrate_var = tk.StringVar(value=config.default_baudrate)
         baudrate_combo = ttk.Combobox(control_frame, textvariable=self.baudrate_var, 
-                                      values=["9600", "19200", "38400", "57600", "115200", "230400"], width=10)
+                                      values=config.baudrate_options, width=10)
         baudrate_combo.grid(row=0, column=4, padx=5, pady=5)
         
         # 连接/断开按钮
@@ -172,7 +126,7 @@ class BLEHostGUI:
         ttk.Button(control_frame, text="清空数据", command=self._clear_data).grid(row=0, column=7, padx=5, pady=5)
         
         # 帧模式开关
-        self.frame_mode_var = tk.BooleanVar(value=True)
+        self.frame_mode_var = tk.BooleanVar(value=config.default_frame_mode)
         frame_mode_check = ttk.Checkbutton(control_frame, text="帧模式", variable=self.frame_mode_var,
                                            command=self._toggle_frame_mode)
         frame_mode_check.grid(row=0, column=8, padx=5, pady=5)
@@ -183,14 +137,14 @@ class BLEHostGUI:
         
         # 展示信道选择
         ttk.Label(frame_control_frame, text="展示信道:").pack(side=tk.LEFT, padx=5)
-        self.display_channels_var = tk.StringVar(value="0-9")
+        self.display_channels_var = tk.StringVar(value=config.default_display_channels)
         display_channels_entry = ttk.Entry(frame_control_frame, textvariable=self.display_channels_var, width=20)
         display_channels_entry.pack(side=tk.LEFT, padx=5)
         ttk.Label(frame_control_frame, text="(如: 0-9 或 0,2,4,6,8)").pack(side=tk.LEFT, padx=2)
         
         # 显示帧数（用于plot和计算）
         ttk.Label(frame_control_frame, text="显示帧数:").pack(side=tk.LEFT, padx=5)
-        self.display_max_frames_var = tk.StringVar(value="50")
+        self.display_max_frames_var = tk.StringVar(value=str(config.default_display_max_frames))
         display_frames_entry = ttk.Entry(frame_control_frame, textvariable=self.display_max_frames_var, width=10)
         display_frames_entry.pack(side=tk.LEFT, padx=5)
         ttk.Label(frame_control_frame, text="(plot和计算范围)").pack(side=tk.LEFT, padx=2)
@@ -284,7 +238,7 @@ class BLEHostGUI:
         
         # 第一行：版本号和日期
         # 版本信息使用较小的字体，但也根据DPI适度调整
-        version_font_size = max(7, int(self.font_size - 1))  # 比主字体小1，但至少为7
+        version_font_size = self.dpi_manager.get_version_font_size()
         version_line1 = ttk.Label(
             version_inner, 
             text=f"版本 v{__version__} | {__version_date__}",
@@ -312,22 +266,20 @@ class BLEHostGUI:
         
         # 获取系统DPI信息
         info_lines = []
-        info_lines.append(f"系统DPI缩放: {self.scale_factor:.2f}x")
+        info_lines.append(f"系统DPI缩放: {self.dpi_manager.scale_factor:.2f}x")
         
         # 获取实际DPI值
-        if platform.system() == 'Windows':
-            try:
-                from ctypes import windll
-                hdc = windll.user32.GetDC(0)
-                dpi = windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX = 88
-                windll.user32.ReleaseDC(0, hdc)
-                info_lines.append(f"系统DPI: {dpi} (标准96)")
-            except:
-                info_lines.append(f"系统DPI: 无法获取")
+        system_dpi = self.dpi_manager.get_system_dpi()
+        if system_dpi:
+            info_lines.append(f"系统DPI: {system_dpi} (标准96)")
         else:
-            info_lines.append(f"系统DPI: N/A (非Windows)")
+            import platform
+            if platform.system() == 'Windows':
+                info_lines.append(f"系统DPI: 无法获取")
+            else:
+                info_lines.append(f"系统DPI: N/A (非Windows)")
         
-        info_lines.append(f"字体大小: {self.font_size}pt")
+        info_lines.append(f"字体大小: {self.dpi_manager.font_size}pt")
         info_lines.append("")
         
         # 获取窗口尺寸
@@ -425,38 +377,27 @@ class BLEHostGUI:
             # 延迟更新，避免频繁刷新
             if hasattr(self, '_dpi_info_update_scheduled'):
                 self.root.after_cancel(self._dpi_info_update_scheduled)
-            self._dpi_info_update_scheduled = self.root.after(200, self._update_dpi_info)
+            self._dpi_info_update_scheduled = self.root.after(
+                config.dpi_info_update_delay_ms, self._update_dpi_info
+            )
             
             # 同时调整plot尺寸
             if hasattr(self, '_plot_resize_scheduled'):
                 self.root.after_cancel(self._plot_resize_scheduled)
-            self._plot_resize_scheduled = self.root.after(300, self._adjust_plot_sizes)
+            self._plot_resize_scheduled = self.root.after(
+                config.plot_resize_delay_ms, self._adjust_plot_sizes
+            )
     
     def _on_tab_changed(self, event):
         """Tab切换时的回调"""
         # Tab切换时也调整plot尺寸（确保当前tab的plot尺寸正确）
-        self.root.after(50, self._adjust_plot_sizes)
+        self.root.after(config.tab_changed_delay_ms, self._adjust_plot_sizes)
         self._update_dpi_info()
     
     def _create_plot_tabs(self):
         """创建多选项卡绘图区域"""
-        # 根据窗口大小计算plot的初始大小
-        # 使用基础尺寸，然后根据DPI适度缩放，但不过度放大
-        # matplotlib的figure_size单位是英寸，DPI固定为100
-        base_width_inch = 12.0  # 基础宽度12英寸（约1200像素@100DPI）
-        base_height_inch = 6.3  # 基础高度6.3英寸（约630像素@100DPI）
-        
-        # 根据DPI缩放，但使用更温和的缩放策略
-        # 不完全按scale_factor缩放，避免plot过大
-        # 使用平方根缩放，让缩放更温和
-        scale_adjustment = 1.0 + (self.scale_factor - 1.0) * 0.5  # 缩放调整：只应用50%的缩放增量
-        
-        plot_width_inch = base_width_inch * scale_adjustment
-        plot_height_inch = base_height_inch * scale_adjustment
-        
-        # 限制最大尺寸，避免过大
-        plot_width_inch = min(plot_width_inch, 16.0)  # 最大16英寸
-        plot_height_inch = min(plot_height_inch, 10.0)  # 最大10英寸
+        # 根据窗口大小计算plot的初始大小（使用DPI管理器）
+        plot_width_inch, plot_height_inch = self.dpi_manager.get_plot_size()
         
         # 定义选项卡配置：(tab_key, tab_name, y_label, data_type)
         tab_configs = [
@@ -501,14 +442,12 @@ class BLEHostGUI:
                 self.root.after(100, self._adjust_plot_sizes)
                 return
             
-            # 减去一些边距（约20像素）
-            plot_width_px = max(100, nb_width - 20)
-            plot_height_px = max(100, nb_height - 20)
+            # 减去一些边距
+            plot_width_px = max(100, nb_width - config.plot_margin_px)
+            plot_height_px = max(100, nb_height - config.plot_margin_px)
             
             # 根据系统DPI缩放比例调整DPI，使字体和元素更大更清晰
-            # 使用系统DPI缩放比例，但限制在合理范围内（100-200）
-            plot_dpi = int(100 * self.scale_factor)
-            plot_dpi = max(100, min(plot_dpi, 200))  # 限制在100-200之间
+            plot_dpi = self.dpi_manager.get_plot_dpi()
             
             # 根据DPI计算英寸尺寸，确保像素尺寸与容器匹配
             plot_width_inch = plot_width_px / plot_dpi
@@ -636,16 +575,16 @@ class BLEHostGUI:
         try:
             display_frames = int(self.display_max_frames_var.get())
             if display_frames > 0:
-                self.display_max_frames = display_frames
-                self.logger.info(f"显示帧数设置为: {display_frames}（用于plot和计算）")
+                self.display_max_frames = min(display_frames, config.max_display_max_frames)
+                self.logger.info(f"显示帧数设置为: {self.display_max_frames}（用于plot和计算）")
             else:
-                self.logger.warning("显示帧数必须大于0，使用默认值100")
-                self.display_max_frames = 100
-                self.display_max_frames_var.set("100")
+                self.logger.warning(f"显示帧数必须大于0，使用默认值{config.default_display_max_frames}")
+                self.display_max_frames = config.default_display_max_frames
+                self.display_max_frames_var.set(str(config.default_display_max_frames))
         except ValueError:
-            self.logger.warning("显示帧数无效，使用默认值100")
-            self.display_max_frames = 100
-            self.display_max_frames_var.set("100")
+            self.logger.warning(f"显示帧数无效，使用默认值{config.default_display_max_frames}")
+            self.display_max_frames = config.default_display_max_frames
+            self.display_max_frames_var.set(str(config.default_display_max_frames))
         
         # 解析展示信道
         display_text = self.display_channels_var.get()
@@ -708,7 +647,7 @@ class BLEHostGUI:
                 messagebox.showerror("错误", f"无效的通道号: {selected}")
         else:
             # 非帧模式：计算变量频率
-            freq = self.data_processor.calculate_frequency(selected, duration=15.0)
+            freq = self.data_processor.calculate_frequency(selected, duration=config.default_frequency_duration)
             
             if freq is not None:
                 self.freq_result_var.set(f"频率: {freq:.2f} Hz")
@@ -782,8 +721,8 @@ class BLEHostGUI:
                 self.stats_text.insert(tk.END, f"变量 '{selected}' 不存在\n")
                 return
             
-            # 计算统计信息（最近15秒）
-            duration = 15.0
+            # 计算统计信息
+            duration = config.default_frequency_duration
             stats = self.data_processor.calculate_statistics(selected, duration=duration)
             
             if stats:
@@ -795,7 +734,7 @@ class BLEHostGUI:
                 self.stats_text.insert(tk.END, f"  数据点数: {stats['count']}\n")
                 self.stats_text.insert(tk.END, "\n")
             
-            # 计算频率（最近15秒）- 获取详细信息
+            # 计算频率 - 获取详细信息
             freq_info = self.data_processor.calculate_frequency_detailed(selected, duration=duration)
             
             if freq_info is not None:
@@ -852,10 +791,12 @@ class BLEHostGUI:
                             if parsed and not parsed.get('frame'):
                                 self.data_processor.add_data(data['timestamp'], parsed)
                                 
-                                # 更新绘图（最近15秒的数据）- 使用第一个绘图器
+                                # 更新绘图 - 使用第一个绘图器
                                 plotter = self.plotters['amplitude']['plotter']
                                 for var_name, value in parsed.items():
-                                    times, values = self.data_processor.get_data_range(var_name, duration=15.0)
+                                    times, values = self.data_processor.get_data_range(
+                                        var_name, duration=config.default_frequency_duration
+                                    )
                                     if len(times) > 0:
                                         plotter.update_plot(var_name, times, values)
                                 
@@ -869,7 +810,7 @@ class BLEHostGUI:
                         # 定期刷新绘图
                         self._refresh_all_plotters()
                     
-                    time.sleep(0.05)  # 50ms更新间隔，更快响应
+                    time.sleep(config.update_interval_sec)
                     
                 except Exception as e:
                     self.logger.error(f"更新循环错误: {e}")
@@ -886,7 +827,7 @@ class BLEHostGUI:
                         channels = self.data_processor.get_all_frame_channels()
                         if channels:
                             # 格式化为 "ch0", "ch1"
-                            channel_list = [f"ch{ch}" for ch in channels[:20]]  # 最多显示20个
+                            channel_list = [f"ch{ch}" for ch in channels[:config.max_freq_list_channels]]
                             # 获取当前选项列表（使用字典访问方式）
                             current_values = list(self.freq_var_combo['values'] or [])
                             if set(channel_list) != set(current_values):
@@ -908,7 +849,7 @@ class BLEHostGUI:
                     # 定期自动更新统计信息（即使选择没有变化，数据可能更新了）
                     self.root.after(0, self._update_statistics)
                     
-                    time.sleep(1.0)  # 1秒更新一次
+                    time.sleep(config.freq_list_update_interval_sec)
                 except Exception as e:
                     self.logger.error(f"更新频率列表错误: {e}")
                     time.sleep(1.0)
@@ -987,8 +928,16 @@ class TextHandler(logging.Handler):
 
 def main():
     """主函数"""
+    # 在创建root窗口之前初始化DPI管理器（计算缩放比例）
+    dpi_manager = DPIManager()
+    
     root = tk.Tk()
+    # 在创建root后立即应用字体设置
+    dpi_manager.apply_fonts()
+    
     app = BLEHostGUI(root)
+    # 将DPI管理器传递给应用
+    app.dpi_manager = dpi_manager
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
 
