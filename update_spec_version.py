@@ -37,11 +37,11 @@ def update_spec_version(version):
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        # 如果没有提供版本号，尝试从 main_gui.py 读取
+        # 如果没有提供版本号，尝试从 config.py 读取
         sys.path.insert(0, str(Path(__file__).parent / 'src'))
         try:
-            from main_gui import __version__
-            version = __version__
+            from config import config
+            version = config.version
         except Exception as e:
             print(f"错误: 无法读取版本号: {e}", file=sys.stderr)
             sys.exit(1)

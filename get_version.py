@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 提取版本号的辅助脚本
+从 config.py 中读取版本信息
 """
 import sys
 from pathlib import Path
@@ -10,8 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 try:
-    from main_gui import __version__
-    print(__version__)
+    from config import config
+    print(config.version)
 except Exception as e:
     print("1.0.0", file=sys.stderr)  # 默认版本号
     sys.exit(1)
