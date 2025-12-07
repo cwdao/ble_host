@@ -73,6 +73,10 @@ class BLEHostGUI:
         self.use_auto_save = user_settings.get_use_auto_save_path()  # 自动保存模式
         self.auto_save_var = tk.BooleanVar(value=self.use_auto_save)  # 菜单checkbutton变量
         
+        # 绘图刷新节流控制（避免频繁刷新导致GUI卡顿）
+        self.last_plot_refresh_time = 0
+        self.plot_refresh_interval = 0.2  # 最多每200ms刷新一次绘图
+        
         # 帧数据处理
         self.frame_type = config.default_frame_type  # 当前选择的帧类型（字符串）
         self.frame_mode = (self.frame_type == "演示帧")  # 兼容性：是否启用帧模式（演示帧对应原来的帧模式）
@@ -80,7 +84,6 @@ class BLEHostGUI:
         self.display_max_frames = config.default_display_max_frames  # 显示和计算使用的最大帧数
         
         # 创建界面
-        self._create_menu()  # 先创建菜单栏
         self._create_widgets()
         
         # 同步帧类型状态（确保self.frame_type与GUI下拉框一致）
@@ -102,36 +105,6 @@ class BLEHostGUI:
         )
         self.logger = logging.getLogger(__name__)
     
-    def _create_menu(self):
-        """创建菜单栏"""
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
-        
-        # File 菜单
-        file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="文件", menu=file_menu)
-        
-        # 设置保存路径
-        file_menu.add_command(label="设置保存路径...", command=self._set_save_path)
-        file_menu.add_separator()
-        
-        # 显示当前保存路径（只读，不可点击）
-        current_path = user_settings.get_save_directory()
-        # 如果路径太长，截断显示
-        display_path = current_path if len(current_path) <= 50 else "..." + current_path[-47:]
-        file_menu.add_command(
-            label=f"当前路径: {display_path}",
-            state="disabled"
-        )
-        
-        # 切换自动保存模式
-        file_menu.add_separator()
-        file_menu.add_checkbutton(
-            label="使用自动保存路径（不弹出对话框）",
-            variable=self.auto_save_var,
-            command=self._toggle_auto_save
-        )
-    
     def _set_save_path(self):
         """设置保存路径"""
         from tkinter import filedialog
@@ -147,8 +120,8 @@ class BLEHostGUI:
             user_settings.set_save_directory(new_path)
             self.logger.info(f"保存路径已设置为: {new_path}")
             messagebox.showinfo("成功", f"保存路径已设置为:\n{new_path}")
-            # 更新菜单显示
-            self._update_menu_path()
+            # 更新文件选项卡中的路径显示
+            self._update_path_display()
     
     def _toggle_auto_save(self):
         """切换自动保存模式"""
@@ -158,78 +131,133 @@ class BLEHostGUI:
         mode_text = "启用" if self.use_auto_save else "禁用"
         self.logger.info(f"自动保存路径模式已{mode_text}")
     
-    def _update_menu_path(self):
-        """更新菜单中的路径显示"""
-        # 重新创建菜单以更新路径显示
-        self._create_menu()
+    def _update_path_display(self):
+        """更新文件选项卡中的路径显示"""
+        if hasattr(self, 'path_label'):
+            current_path = user_settings.get_save_directory()
+            # 如果路径太长，截断显示
+            display_path = current_path if len(current_path) <= 50 else "..." + current_path[-47:]
+            self.path_label.config(text=f"当前路径: {display_path}")
     
-    def _create_widgets(self):
-        """创建GUI组件"""
-        # 顶部控制面板
-        control_frame = ttk.Frame(self.root, padding="10")
-        control_frame.pack(fill=tk.X)
+    def _create_connection_tab(self, notebook):
+        """创建连接配置选项卡"""
+        connection_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(connection_frame, text="连接")
         
         # 串口选择
-        ttk.Label(control_frame, text="串口:").grid(row=0, column=0, padx=5, pady=5)
+        ttk.Label(connection_frame, text="串口:").grid(row=0, column=0, padx=5, pady=5)
         self.port_var = tk.StringVar()
-        self.port_combo = ttk.Combobox(control_frame, textvariable=self.port_var, width=15)
+        self.port_combo = ttk.Combobox(connection_frame, textvariable=self.port_var, width=15)
         self.port_combo.grid(row=0, column=1, padx=5, pady=5)
         
         # 刷新串口按钮
-        ttk.Button(control_frame, text="刷新串口", command=self._refresh_ports).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Button(connection_frame, text="刷新串口", command=self._refresh_ports).grid(row=0, column=2, padx=5, pady=5)
         
         # 波特率
-        ttk.Label(control_frame, text="波特率:").grid(row=0, column=3, padx=5, pady=5)
+        ttk.Label(connection_frame, text="波特率:").grid(row=0, column=3, padx=5, pady=5)
         self.baudrate_var = tk.StringVar(value=config.default_baudrate)
-        baudrate_combo = ttk.Combobox(control_frame, textvariable=self.baudrate_var, 
+        baudrate_combo = ttk.Combobox(connection_frame, textvariable=self.baudrate_var, 
                                       values=config.baudrate_options, width=10)
         baudrate_combo.grid(row=0, column=4, padx=5, pady=5)
         
         # 连接/断开按钮
-        self.connect_btn = ttk.Button(control_frame, text="连接", command=self._toggle_connection)
+        self.connect_btn = ttk.Button(connection_frame, text="连接", command=self._toggle_connection)
         self.connect_btn.grid(row=0, column=5, padx=5, pady=5)
         
-        # 状态显示
-        self.status_var = tk.StringVar(value="未连接")
-        status_label = ttk.Label(control_frame, textvariable=self.status_var, foreground="red")
-        status_label.grid(row=0, column=6, padx=5, pady=5)
-        
-        # 清空数据按钮
-        ttk.Button(control_frame, text="清空数据", command=self._clear_data).grid(row=0, column=7, padx=5, pady=5)
-        
-        # 保存数据按钮（使用Menubutton）
-        self.save_menubtn = ttk.Menubutton(control_frame, text="保存数据")
-        save_menu = tk.Menu(self.save_menubtn, tearoff=0)
-        save_menu.add_command(label="保存所有帧", command=self._save_all_frames)
-        save_menu.add_command(label="保存最近N帧", command=self._save_recent_frames)
-        self.save_menubtn['menu'] = save_menu
-        self.save_menubtn.grid(row=0, column=8, padx=5, pady=5)
-        
-        # 帧类型选择（下拉列表，类似串口选择）
-        ttk.Label(control_frame, text="帧类型:").grid(row=0, column=9, padx=5, pady=5)
+        # 帧类型选择（下拉列表，决定帧的解析方式）
+        ttk.Label(connection_frame, text="帧类型:").grid(row=0, column=6, padx=5, pady=5)
         self.frame_type_var = tk.StringVar(value=config.default_frame_type)
-        self.frame_type_combo = ttk.Combobox(control_frame, textvariable=self.frame_type_var, 
+        self.frame_type_combo = ttk.Combobox(connection_frame, textvariable=self.frame_type_var, 
                                             values=config.frame_type_options, width=12, state="readonly")
-        self.frame_type_combo.grid(row=0, column=10, padx=5, pady=5)
+        self.frame_type_combo.grid(row=0, column=7, padx=5, pady=5)
         self.frame_type_combo.bind("<<ComboboxSelected>>", lambda e: self._on_frame_type_changed())
+    
+    def _create_channel_config_tab(self, notebook):
+        """创建信道配置选项卡"""
+        channel_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(channel_frame, text="信道配置")
         
-        # 第二行：帧模式相关控件（使用grid布局，与第一行对齐）
         # 展示信道选择
-        ttk.Label(control_frame, text="展示信道:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        ttk.Label(channel_frame, text="展示信道:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.display_channels_var = tk.StringVar(value=config.default_display_channels)
-        display_channels_entry = ttk.Entry(control_frame, textvariable=self.display_channels_var, width=20)
-        display_channels_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
-        ttk.Label(control_frame, text="(如: 0-9 或 0,2,4,6,8)").grid(row=1, column=2, padx=2, pady=5, sticky="w")
+        display_channels_entry = ttk.Entry(channel_frame, textvariable=self.display_channels_var, width=20)
+        display_channels_entry.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        ttk.Label(channel_frame, text="(如: 0-9 或 0,2,4,6,8)").grid(row=0, column=2, padx=2, pady=5, sticky="w")
         
         # 显示帧数（用于plot和计算）
-        ttk.Label(control_frame, text="显示帧数:").grid(row=1, column=3, padx=5, pady=5, sticky="w")
+        ttk.Label(channel_frame, text="显示帧数:").grid(row=0, column=3, padx=5, pady=5, sticky="w")
         self.display_max_frames_var = tk.StringVar(value=str(config.default_display_max_frames))
-        display_frames_entry = ttk.Entry(control_frame, textvariable=self.display_max_frames_var, width=10)
-        display_frames_entry.grid(row=1, column=4, padx=5, pady=5, sticky="w")
-        ttk.Label(control_frame, text="(plot和计算范围)").grid(row=1, column=5, padx=2, pady=5, sticky="w")
+        display_frames_entry = ttk.Entry(channel_frame, textvariable=self.display_max_frames_var, width=10)
+        display_frames_entry.grid(row=0, column=4, padx=5, pady=5, sticky="w")
+        ttk.Label(channel_frame, text="(plot和计算范围)").grid(row=0, column=5, padx=2, pady=5, sticky="w")
         
         # 应用按钮
-        ttk.Button(control_frame, text="应用", command=self._apply_frame_settings).grid(row=1, column=6, padx=5, pady=5, sticky="w")
+        ttk.Button(channel_frame, text="应用", command=self._apply_frame_settings).grid(row=0, column=6, padx=5, pady=5, sticky="w")
+    
+    def _create_data_and_save_tab(self, notebook):
+        """创建数据与保存选项卡（合并了文件和数据操作功能）"""
+        data_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(data_frame, text="数据与保存")
+        
+        # 第一行：设置保存路径、自动保存路径复选框、当前路径显示
+        ttk.Button(data_frame, text="设置保存路径...", command=self._set_save_path).grid(row=0, column=0, padx=5, pady=5)
+        
+        auto_save_check = ttk.Checkbutton(
+            data_frame,
+            text="使用自动保存路径",
+            variable=self.auto_save_var,
+            command=self._toggle_auto_save
+        )
+        auto_save_check.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        
+        # 显示当前保存路径（只读）
+        current_path = user_settings.get_save_directory()
+        # 如果路径太长，截断显示
+        display_path = current_path if len(current_path) <= 50 else "..." + current_path[-47:]
+        path_label = ttk.Label(data_frame, text=f"当前路径: {display_path}", foreground="gray")
+        path_label.grid(row=0, column=2, padx=5, pady=5, sticky="w")
+        self.path_label = path_label  # 保存引用以便更新
+        
+        # 第二行：保存数据按钮、保存选项、清空数据按钮
+        self.save_btn = ttk.Button(data_frame, text="保存数据", command=self._save_data)
+        self.save_btn.grid(row=1, column=0, padx=5, pady=5)
+        
+        # 保存选项（全部保存或最近N帧）
+        self.save_option_var = tk.StringVar(value="全部保存")
+        save_option_frame = ttk.Frame(data_frame)
+        save_option_frame.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        ttk.Radiobutton(save_option_frame, text="全部保存", variable=self.save_option_var, 
+                       value="全部保存").pack(side=tk.LEFT, padx=2)
+        ttk.Radiobutton(save_option_frame, text="最近N帧", variable=self.save_option_var, 
+                       value="最近N帧").pack(side=tk.LEFT, padx=2)
+        
+        ttk.Button(data_frame, text="清空当前数据", command=self._clear_data).grid(row=1, column=2, padx=5, pady=5)
+        
+        # 第三行：保存状态显示
+        ttk.Label(data_frame, text="保存状态:", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        self.save_status_var = tk.StringVar(value="")
+        self.save_status_label = ttk.Label(data_frame, textvariable=self.save_status_var, font=("TkDefaultFont", 9))
+        self.save_status_label.grid(row=2, column=1, columnspan=2, padx=5, pady=5, sticky="w")
+    
+    def _create_widgets(self):
+        """创建GUI组件"""
+        # 连接状态显示（在主界面上，不在tab中）
+        status_frame = ttk.Frame(self.root, padding="5")
+        status_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
+        
+        ttk.Label(status_frame, text="连接状态:", font=("TkDefaultFont", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        self.status_var = tk.StringVar(value="未连接")
+        status_label = ttk.Label(status_frame, textvariable=self.status_var, foreground="red", font=("TkDefaultFont", 9))
+        status_label.pack(side=tk.LEFT, padx=5)
+        
+        # 顶部配置选项卡区域（类似Office 2007的Ribbon风格）
+        config_notebook = ttk.Notebook(self.root)
+        config_notebook.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 创建各个配置选项卡（按使用频率排序）
+        self._create_connection_tab(config_notebook)
+        self._create_channel_config_tab(config_notebook)
+        self._create_data_and_save_tab(config_notebook)
         
         # 左右分栏
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -469,9 +497,10 @@ class BLEHostGUI:
     
     def _on_tab_changed(self, event):
         """Tab切换时的回调"""
-        # Tab切换时也调整plot尺寸（确保当前tab的plot尺寸正确）
-        self.root.after(config.tab_changed_delay_ms, self._adjust_plot_sizes)
-        self._update_dpi_info()
+        # Tab切换时只调整当前可见tab的plot尺寸（优化性能）
+        self.root.after(config.tab_changed_delay_ms, self._adjust_current_plot_size)
+        # 延迟更新DPI信息，避免阻塞
+        self.root.after(config.tab_changed_delay_ms + 50, self._update_dpi_info)
     
     def _create_plot_tabs(self):
         """创建多选项卡绘图区域"""
@@ -508,8 +537,54 @@ class BLEHostGUI:
                 'frame': tab_frame
             }
     
+    def _adjust_current_plot_size(self):
+        """只调整当前可见tab的plot尺寸（优化性能）"""
+        try:
+            # 获取当前选中的tab
+            try:
+                current_tab_index = self.notebook.index(self.notebook.select())
+            except:
+                return  # 没有选中的tab
+            
+            # 获取notebook的实际尺寸
+            self.root.update_idletasks()  # 确保窗口已经布局完成
+            nb_width = self.notebook.winfo_width()
+            nb_height = self.notebook.winfo_height()
+            
+            # 如果尺寸还不可用，延迟重试
+            if nb_width <= 1 or nb_height <= 1:
+                self.root.after(100, self._adjust_current_plot_size)
+                return
+            
+            # 减去一些边距
+            plot_width_px = max(100, nb_width - config.plot_margin_px)
+            plot_height_px = max(100, nb_height - config.plot_margin_px)
+            
+            # 根据系统DPI缩放比例调整DPI，使字体和元素更大更清晰
+            plot_dpi = self.dpi_manager.get_plot_dpi()
+            
+            # 根据tab索引找到对应的plotter
+            tab_configs = [
+                ('amplitude', '幅值'),
+                ('phase', '相位'),
+                ('local_amplitude', 'Local观测Ref幅值'),
+                ('local_phase', 'Local观测Ref相位'),
+                ('remote_amplitude', 'Remote观测Ini幅值'),
+                ('remote_phase', 'Remote观测Ini相位'),
+            ]
+            
+            if current_tab_index < len(tab_configs):
+                tab_key = tab_configs[current_tab_index][0]
+                if tab_key in self.plotters:
+                    plotter = self.plotters[tab_key]['plotter']
+                    # 只调整当前可见的plot尺寸
+                    plotter.resize_figure(plot_width_px, plot_height_px, dpi=plot_dpi)
+                    self.logger.debug(f"调整了当前tab ({tab_key}) 的plot尺寸: {plot_width_px}x{plot_height_px}px @ {plot_dpi}DPI")
+        except Exception as e:
+            self.logger.warning(f"调整当前plot尺寸时出错: {e}")
+    
     def _adjust_plot_sizes(self):
-        """根据实际容器大小调整plot尺寸"""
+        """根据实际容器大小调整所有plot尺寸（用于窗口大小变化时）"""
         try:
             # 获取notebook的实际尺寸
             self.root.update_idletasks()  # 确保窗口已经布局完成
@@ -532,7 +607,7 @@ class BLEHostGUI:
             plot_width_inch = plot_width_px / plot_dpi
             plot_height_inch = plot_height_px / plot_dpi
             
-            # 调整所有plot的尺寸
+            # 调整所有plot的尺寸（窗口大小变化时需要调整所有）
             adjusted_count = 0
             for tab_key, plotter_info in self.plotters.items():
                 plotter = plotter_info['plotter']
@@ -631,6 +706,14 @@ class BLEHostGUI:
         self.data_parser.clear_buffer()
         self.logger.info("数据已清空")
     
+    def _save_data(self):
+        """统一的保存数据方法，根据选项执行相应的保存操作"""
+        option = self.save_option_var.get()
+        if option == "全部保存":
+            self._save_all_frames()
+        elif option == "最近N帧":
+            self._save_recent_frames()
+    
     def _save_all_frames(self):
         """保存所有帧数据（在后台线程中执行）"""
         if not self.frame_mode:
@@ -670,29 +753,37 @@ class BLEHostGUI:
             try:
                 self.is_saving = True
                 # 更新UI状态
-                self.root.after(0, lambda: self.save_menubtn.config(state="disabled"))
-                self.root.after(0, lambda: self.status_var.set(f"正在保存 {len(frames)} 帧数据..."))
+                def show_progress():
+                    self.save_btn.config(state="disabled")
+                    self.save_status_var.set(f"正在保存 {len(frames)} 帧数据...")
+                    self.save_status_label.config(foreground="black")
+                self.root.after(0, show_progress)
                 
                 # 执行保存（在后台线程中）
                 success = self.data_saver.save_frames(frames, filepath, max_frames=None)
                 
                 # 在主线程中更新UI
                 if success:
-                    self.root.after(0, lambda: messagebox.showinfo(
-                        "成功", f"已保存 {len(frames)} 帧数据到:\n{filepath}"
-                    ))
+                    # 显示成功消息（绿色文字）
+                    def show_success():
+                        self.save_status_var.set(f"✓ 已保存 {len(frames)} 帧数据到: {filepath}")
+                        self.save_status_label.config(foreground="green")
+                    self.root.after(0, show_success)
                 else:
-                    self.root.after(0, lambda: messagebox.showerror("错误", "保存失败，请查看日志"))
+                    def show_error():
+                        self.save_status_var.set("✗ 保存失败，请查看日志")
+                        self.save_status_label.config(foreground="red")
+                    self.root.after(0, show_error)
             except Exception as e:
                 self.logger.error(f"保存数据时出错: {e}")
-                self.root.after(0, lambda: messagebox.showerror("错误", f"保存失败: {str(e)}"))
+                def show_exception():
+                    self.save_status_var.set(f"✗ 保存失败: {str(e)}")
+                    self.save_status_label.config(foreground="red")
+                self.root.after(0, show_exception)
             finally:
                 self.is_saving = False
                 # 恢复UI状态
-                self.root.after(0, lambda: self.save_menubtn.config(state="normal"))
-                self.root.after(0, lambda: self.status_var.set(
-                    "未连接" if not self.is_running else f"已连接: {self.serial_reader.port if self.serial_reader else 'N/A'}"
-                ))
+                self.root.after(0, lambda: self.save_btn.config(state="normal"))
         
         # 启动后台线程
         save_thread = threading.Thread(target=save_in_thread, daemon=True)
@@ -752,29 +843,37 @@ class BLEHostGUI:
             try:
                 self.is_saving = True
                 # 更新UI状态
-                self.root.after(0, lambda: self.save_menubtn.config(state="disabled"))
-                self.root.after(0, lambda: self.status_var.set(f"正在保存最近 {saved_count} 帧数据..."))
+                def show_progress():
+                    self.save_btn.config(state="disabled")
+                    self.save_status_var.set(f"正在保存最近 {saved_count} 帧数据...")
+                    self.save_status_label.config(foreground="black")
+                self.root.after(0, show_progress)
                 
                 # 执行保存（在后台线程中）
                 success = self.data_saver.save_frames(frames, filepath, max_frames=max_frames)
                 
                 # 在主线程中更新UI
                 if success:
-                    self.root.after(0, lambda: messagebox.showinfo(
-                        "成功", f"已保存最近 {saved_count} 帧数据到:\n{filepath}"
-                    ))
+                    # 显示成功消息（绿色文字）
+                    def show_success():
+                        self.save_status_var.set(f"✓ 已保存最近 {saved_count} 帧数据到: {filepath}")
+                        self.save_status_label.config(foreground="green")
+                    self.root.after(0, show_success)
                 else:
-                    self.root.after(0, lambda: messagebox.showerror("错误", "保存失败，请查看日志"))
+                    def show_error():
+                        self.save_status_var.set("✗ 保存失败，请查看日志")
+                        self.save_status_label.config(foreground="red")
+                    self.root.after(0, show_error)
             except Exception as e:
                 self.logger.error(f"保存数据时出错: {e}")
-                self.root.after(0, lambda: messagebox.showerror("错误", f"保存失败: {str(e)}"))
+                def show_exception():
+                    self.save_status_var.set(f"✗ 保存失败: {str(e)}")
+                    self.save_status_label.config(foreground="red")
+                self.root.after(0, show_exception)
             finally:
                 self.is_saving = False
                 # 恢复UI状态
-                self.root.after(0, lambda: self.save_menubtn.config(state="normal"))
-                self.root.after(0, lambda: self.status_var.set(
-                    "未连接" if not self.is_running else f"已连接: {self.serial_reader.port if self.serial_reader else 'N/A'}"
-                ))
+                self.root.after(0, lambda: self.save_btn.config(state="normal"))
         
         # 启动后台线程
         save_thread = threading.Thread(target=save_in_thread, daemon=True)
@@ -1038,7 +1137,8 @@ class BLEHostGUI:
                                         
                                         self.data_processor.add_frame_data(frame_data)
                                         self._update_frame_plots()
-                                        self._refresh_all_plotters()
+                                        # 使用节流刷新，避免频繁刷新导致GUI卡顿
+                                        self._refresh_plotters_throttled()
                                 
                                 # 帧模式下不处理其他数据
                                 continue
@@ -1065,9 +1165,9 @@ class BLEHostGUI:
                                 if vars_list and not self.freq_var_var.get():
                                     self.freq_var_combo.current(0)
                                     self.freq_var_var.set(vars_list[0])
-                        
-                        # 定期刷新绘图
-                        self._refresh_all_plotters()
+                                
+                                # 使用节流刷新，避免频繁刷新导致GUI卡顿
+                                self._refresh_plotters_throttled()
                     
                     time.sleep(config.update_interval_sec)
                     
@@ -1167,9 +1267,41 @@ class BLEHostGUI:
         self.logger.debug(f"[绘图调试] 更新帧数据绘图: {len(display_channels)} 个通道")
     
     def _refresh_all_plotters(self):
-        """刷新所有绘图器"""
+        """刷新所有绘图器（立即刷新，用于tab切换等场景）"""
         for plotter_info in self.plotters.values():
             plotter_info['plotter'].refresh()
+    
+    def _refresh_plotters_throttled(self):
+        """节流刷新绘图器（限制刷新频率，避免GUI卡顿）"""
+        current_time = time.time()
+        # 如果距离上次刷新时间超过间隔，才执行刷新
+        if current_time - self.last_plot_refresh_time >= self.plot_refresh_interval:
+            self.last_plot_refresh_time = current_time
+            # 只刷新当前可见的plot，而不是所有plot（进一步优化性能）
+            self._refresh_current_plotter()
+    
+    def _refresh_current_plotter(self):
+        """只刷新当前可见的绘图器"""
+        try:
+            # 获取当前选中的绘图tab
+            current_tab_index = self.notebook.index(self.notebook.select())
+            tab_configs = [
+                ('amplitude', '幅值'),
+                ('phase', '相位'),
+                ('local_amplitude', 'Local观测Ref幅值'),
+                ('local_phase', 'Local观测Ref相位'),
+                ('remote_amplitude', 'Remote观测Ini幅值'),
+                ('remote_phase', 'Remote观测Ini相位'),
+            ]
+            
+            if current_tab_index < len(tab_configs):
+                tab_key = tab_configs[current_tab_index][0]
+                if tab_key in self.plotters:
+                    # 只刷新当前可见的plot
+                    self.plotters[tab_key]['plotter'].refresh()
+        except:
+            # 如果获取当前tab失败，刷新所有plot（兜底）
+            self._refresh_all_plotters()
     
     def on_closing(self):
         """窗口关闭事件"""

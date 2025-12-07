@@ -47,7 +47,7 @@ class Plotter:
         self.canvas.draw()
         return self.canvas.get_tk_widget()
     
-    def resize_figure(self, width_px, height_px, dpi=100):
+    def resize_figure(self, width_px, height_px, dpi=100, use_idle=True):
         """
         根据实际像素尺寸调整figure大小
         
@@ -55,6 +55,7 @@ class Plotter:
             width_px: 目标宽度（像素）
             height_px: 目标高度（像素）
             dpi: DPI值，默认100
+            use_idle: 是否使用draw_idle（非阻塞），默认True
         """
         # 计算英寸尺寸
         width_inch = width_px / dpi
@@ -64,9 +65,12 @@ class Plotter:
         self.figure.set_size_inches(width_inch, height_inch)
         self.figure.set_dpi(dpi)
         
-        # 刷新画布
+        # 刷新画布（使用draw_idle避免阻塞GUI）
         if self.canvas:
-            self.canvas.draw()
+            if use_idle:
+                self.canvas.draw_idle()  # 非阻塞，在空闲时绘制
+            else:
+                self.canvas.draw()  # 阻塞，立即绘制
     
     def add_line(self, var_name: str, color=None, label=None):
         """
