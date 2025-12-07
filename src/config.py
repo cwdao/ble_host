@@ -4,16 +4,19 @@
 配置管理模块
 统一管理应用程序的配置项
 """
-from dataclasses import dataclass
-from typing import List
+import os
+import sys
+import json
+from dataclasses import dataclass, asdict
+from typing import List, Optional
 
 
 @dataclass
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "2.1.0"
-    version_date: str = "2025-12-06"
+    version: str = "2.1.9"
+    version_date: str = "2025-12-07"
     version_author: str = "chwn@outlook.ie, HKUST(GZ)"
     
     # 窗口配置
@@ -61,6 +64,10 @@ class AppConfig:
     plot_resize_delay_ms: int = 300
     tab_changed_delay_ms: int = 50
     
+    # 数据保存配置
+    default_save_directory: str = "./saveData"  # 默认保存目录
+    use_auto_save_path: bool = True  # 是否使用自动保存路径（不弹出对话框）
+    
     def __post_init__(self):
         """初始化后处理"""
         if self.baudrate_options is None:
@@ -70,6 +77,79 @@ class AppConfig:
             self.frame_type_options = ["演示帧"]
 
 
+class UserSettings:
+    """用户设置管理类（保存到文件）"""
+    
+    def __init__(self, config_file: str = "user_settings.json"):
+        """
+        初始化用户设置
+        
+        Args:
+            config_file: 配置文件路径（相对于程序运行目录）
+        """
+        self.config_file = config_file
+        self.settings = {
+            'save_directory': config.default_save_directory,
+            'use_auto_save_path': config.use_auto_save_path
+        }
+        self.load()
+    
+    def get_config_path(self) -> str:
+        """获取配置文件完整路径"""
+        # 获取程序运行目录
+        if getattr(sys, 'frozen', False):
+            # PyInstaller 打包后的程序
+            base_path = os.path.dirname(sys.executable)
+        else:
+            # 开发环境，使用脚本所在目录
+            base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base_path, self.config_file)
+    
+    def load(self):
+        """从文件加载用户设置"""
+        config_path = self.get_config_path()
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                    # 更新设置，保留默认值
+                    self.settings.update(loaded)
+            except Exception as e:
+                print(f"加载用户设置失败: {e}，使用默认设置")
+    
+    def save(self):
+        """保存用户设置到文件"""
+        config_path = self.get_config_path()
+        try:
+            # 确保目录存在
+            os.makedirs(os.path.dirname(config_path) if os.path.dirname(config_path) else '.', exist_ok=True)
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.settings, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"保存用户设置失败: {e}")
+    
+    def get_save_directory(self) -> str:
+        """获取保存目录"""
+        return self.settings.get('save_directory', config.default_save_directory)
+    
+    def set_save_directory(self, directory: str):
+        """设置保存目录"""
+        self.settings['save_directory'] = directory
+        self.save()
+    
+    def get_use_auto_save_path(self) -> bool:
+        """获取是否使用自动保存路径"""
+        return self.settings.get('use_auto_save_path', config.use_auto_save_path)
+    
+    def set_use_auto_save_path(self, use_auto: bool):
+        """设置是否使用自动保存路径"""
+        self.settings['use_auto_save_path'] = use_auto
+        self.save()
+
+
 # 全局配置实例
 config = AppConfig()
+
+# 全局用户设置实例
+user_settings = UserSettings()
 

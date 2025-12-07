@@ -8,6 +8,7 @@ from tkinter import ttk, messagebox, scrolledtext
 import threading
 import time
 import logging
+import os
 from typing import List
 
 try:
@@ -15,7 +16,7 @@ try:
     from .data_parser import DataParser
     from .data_processor import DataProcessor
     from .plotter import Plotter
-    from .config import config
+    from .config import config, user_settings
     from .gui.dpi_manager import DPIManager
     from .data_saver import DataSaver
 except ImportError:
@@ -24,7 +25,7 @@ except ImportError:
     from data_parser import DataParser
     from data_processor import DataProcessor
     from plotter import Plotter
-    from config import config
+    from config import config, user_settings
     from gui.dpi_manager import DPIManager
     from data_saver import DataSaver
 
@@ -69,6 +70,8 @@ class BLEHostGUI:
         self.freq_list_thread = None
         self.stop_event = threading.Event()  # 用于通知线程停止
         self.is_saving = False  # 保存操作进行中标志
+        self.use_auto_save = user_settings.get_use_auto_save_path()  # 自动保存模式
+        self.auto_save_var = tk.BooleanVar(value=self.use_auto_save)  # 菜单checkbutton变量
         
         # 帧数据处理
         self.frame_type = config.default_frame_type  # 当前选择的帧类型（字符串）
@@ -77,6 +80,7 @@ class BLEHostGUI:
         self.display_max_frames = config.default_display_max_frames  # 显示和计算使用的最大帧数
         
         # 创建界面
+        self._create_menu()  # 先创建菜单栏
         self._create_widgets()
         
         # 同步帧类型状态（确保self.frame_type与GUI下拉框一致）
@@ -97,6 +101,67 @@ class BLEHostGUI:
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(__name__)
+    
+    def _create_menu(self):
+        """创建菜单栏"""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # File 菜单
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="文件", menu=file_menu)
+        
+        # 设置保存路径
+        file_menu.add_command(label="设置保存路径...", command=self._set_save_path)
+        file_menu.add_separator()
+        
+        # 显示当前保存路径（只读，不可点击）
+        current_path = user_settings.get_save_directory()
+        # 如果路径太长，截断显示
+        display_path = current_path if len(current_path) <= 50 else "..." + current_path[-47:]
+        file_menu.add_command(
+            label=f"当前路径: {display_path}",
+            state="disabled"
+        )
+        
+        # 切换自动保存模式
+        file_menu.add_separator()
+        file_menu.add_checkbutton(
+            label="使用自动保存路径（不弹出对话框）",
+            variable=self.auto_save_var,
+            command=self._toggle_auto_save
+        )
+    
+    def _set_save_path(self):
+        """设置保存路径"""
+        from tkinter import filedialog
+        current_path = user_settings.get_save_directory()
+        
+        # 选择目录
+        new_path = filedialog.askdirectory(
+            title="选择保存目录",
+            initialdir=current_path if os.path.exists(current_path) else "."
+        )
+        
+        if new_path:
+            user_settings.set_save_directory(new_path)
+            self.logger.info(f"保存路径已设置为: {new_path}")
+            messagebox.showinfo("成功", f"保存路径已设置为:\n{new_path}")
+            # 更新菜单显示
+            self._update_menu_path()
+    
+    def _toggle_auto_save(self):
+        """切换自动保存模式"""
+        # 从变量获取当前状态
+        self.use_auto_save = self.auto_save_var.get()
+        user_settings.set_use_auto_save_path(self.use_auto_save)
+        mode_text = "启用" if self.use_auto_save else "禁用"
+        self.logger.info(f"自动保存路径模式已{mode_text}")
+    
+    def _update_menu_path(self):
+        """更新菜单中的路径显示"""
+        # 重新创建菜单以更新路径显示
+        self._create_menu()
     
     def _create_widgets(self):
         """创建GUI组件"""
@@ -581,18 +646,24 @@ class BLEHostGUI:
             messagebox.showwarning("警告", "没有可保存的帧数据")
             return
         
-        # 选择保存路径（在主线程中执行，因为需要GUI交互）
-        from tkinter import filedialog
-        default_filename = self.data_saver.get_default_filename(prefix="frames", save_all=True)
-        filepath = filedialog.asksaveasfilename(
-            title="保存所有帧数据",
-            defaultextension=".json",
-            filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")],
-            initialfile=default_filename
-        )
-        
-        if not filepath:
-            return  # 用户取消了保存
+        # 根据设置决定是否弹出对话框
+        if self.use_auto_save:
+            # 使用自动保存路径
+            filepath = self.data_saver.get_auto_save_path(prefix="frames", save_all=True)
+            self.logger.info(f"使用自动保存路径: {filepath}")
+        else:
+            # 弹出对话框让用户选择路径
+            from tkinter import filedialog
+            default_filename = self.data_saver.get_default_filename(prefix="frames", save_all=True)
+            filepath = filedialog.asksaveasfilename(
+                title="保存所有帧数据",
+                defaultextension=".json",
+                filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")],
+                initialfile=default_filename
+            )
+            
+            if not filepath:
+                return  # 用户取消了保存
         
         # 在后台线程中执行保存操作
         def save_in_thread():
@@ -651,20 +722,28 @@ class BLEHostGUI:
             max_frames = config.default_display_max_frames
             self.logger.warning(f"显示帧数无效，使用默认值: {max_frames}")
         
-        # 选择保存路径（在主线程中执行，因为需要GUI交互）
-        from tkinter import filedialog
-        default_filename = self.data_saver.get_default_filename(
-            prefix="frames", save_all=False, max_frames=max_frames
-        )
-        filepath = filedialog.asksaveasfilename(
-            title=f"保存最近{max_frames}帧数据",
-            defaultextension=".json",
-            filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")],
-            initialfile=default_filename
-        )
-        
-        if not filepath:
-            return  # 用户取消了保存
+        # 根据设置决定是否弹出对话框
+        if self.use_auto_save:
+            # 使用自动保存路径
+            filepath = self.data_saver.get_auto_save_path(
+                prefix="frames", save_all=False, max_frames=max_frames
+            )
+            self.logger.info(f"使用自动保存路径: {filepath}")
+        else:
+            # 弹出对话框让用户选择路径
+            from tkinter import filedialog
+            default_filename = self.data_saver.get_default_filename(
+                prefix="frames", save_all=False, max_frames=max_frames
+            )
+            filepath = filedialog.asksaveasfilename(
+                title=f"保存最近{max_frames}帧数据",
+                defaultextension=".json",
+                filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")],
+                initialfile=default_filename
+            )
+            
+            if not filepath:
+                return  # 用户取消了保存
         
         saved_count = min(max_frames, len(frames))
         

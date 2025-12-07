@@ -10,6 +10,11 @@ from datetime import datetime
 from typing import List, Dict, Optional
 import logging
 
+try:
+    from .config import user_settings
+except ImportError:
+    from config import user_settings
+
 
 class DataSaver:
     """数据保存和加载类"""
@@ -124,4 +129,25 @@ class DataSaver:
             return f"{prefix}_all_{timestamp}.json"
         else:
             return f"{prefix}_recent{max_frames}_{timestamp}.json"
+    
+    def get_auto_save_path(self, prefix: str = "frames",
+                           save_all: bool = True,
+                           max_frames: Optional[int] = None) -> str:
+        """
+        获取自动保存路径（基于用户设置的保存目录）
+        
+        Args:
+            prefix: 文件名前缀
+            save_all: 是否保存全部帧
+            max_frames: 如果保存最近N帧，指定N
+        
+        Returns:
+            完整的保存路径
+        """
+        save_dir = user_settings.get_save_directory()
+        # 确保目录存在
+        os.makedirs(save_dir, exist_ok=True)
+        
+        filename = self.get_default_filename(prefix, save_all, max_frames)
+        return os.path.join(save_dir, filename)
 
