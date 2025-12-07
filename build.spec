@@ -10,7 +10,9 @@ a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ('assets', 'assets'),  # 包含 assets 目录，用于图标文件
+    ],
     hiddenimports=[
         'src.serial_reader',
         'src.data_parser',
@@ -50,6 +52,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # 可以指定图标文件路径
+    icon='assets/ico.ico',  # 设置 .exe 文件的图标（使用包含多尺寸的 ICO 文件以支持 Windows 缩略图）
 )
 

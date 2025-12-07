@@ -12,6 +12,12 @@ echo 正在读取版本号...
 for /f %%a in ('python get_version.py') do set VERSION=%%a
 echo 版本号: %VERSION%
 
+echo 正在生成 ICO 图标文件...
+python create_icon.py
+if errorlevel 1 (
+    echo 警告: ICO 文件生成失败，将使用 PNG 文件
+)
+
 echo 正在更新 build.spec 文件...
 python update_spec_version.py %VERSION%
 

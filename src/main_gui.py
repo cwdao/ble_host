@@ -998,6 +998,78 @@ def main():
     # 在创建root后立即应用字体设置
     dpi_manager.apply_fonts()
     
+    # 设置窗口图标
+    try:
+        import os
+        import sys
+        from PIL import Image, ImageTk
+        
+        # 获取图标文件路径
+        # PyInstaller 打包后的程序使用 sys._MEIPASS 获取临时目录
+        if getattr(sys, 'frozen', False):
+            # 打包后的环境
+            base_path = sys._MEIPASS
+        else:
+            # 开发环境
+            base_path = os.path.dirname(os.path.dirname(__file__))
+        
+        # 图标文件路径
+        icon_path_ico = os.path.join(base_path, 'assets', 'ico.ico')
+        icon_path_png = os.path.join(base_path, 'assets', 'ico.png')
+        
+        icon_set = False
+        
+        # 优先使用高分辨率的 PNG 文件（用于窗口和任务栏图标，获得最佳清晰度）
+        # ICO 文件主要用于 .exe 文件的图标，运行时窗口图标使用 PNG 可以获得更好的质量
+        if os.path.exists(icon_path_png):
+            try:
+                # 直接使用 PNG 文件，保持原始高分辨率以获得最佳质量
+                # iconphoto 方法支持 PNG，并且会自动缩放以适应不同场景
+                img = Image.open(icon_path_png)
+                photo = ImageTk.PhotoImage(img)
+                root.iconphoto(True, photo)
+                root._icon_photo = photo
+                icon_set = True
+            except Exception as e:
+                logging.getLogger(__name__).debug(f"无法加载 PNG 图标: {e}")
+        
+        # 如果 PNG 不存在或加载失败，尝试使用 .ico 文件
+        if not icon_set and os.path.exists(icon_path_ico):
+            try:
+                # 使用 iconbitmap 方法（直接支持 .ico 文件，Windows 会自动选择最佳尺寸）
+                root.iconbitmap(icon_path_ico)
+                icon_set = True
+            except Exception:
+                # 如果 iconbitmap 失败，尝试用 PIL 加载
+                try:
+                    img = Image.open(icon_path_ico)
+                    photo = ImageTk.PhotoImage(img)
+                    root.iconphoto(True, photo)
+                    root._icon_photo = photo
+                    icon_set = True
+                except Exception as e:
+                    logging.getLogger(__name__).debug(f"无法加载 ICO 文件: {e}")
+        
+        if not icon_set:
+            logging.getLogger(__name__).warning(f"未找到图标文件: {icon_path_ico} 或 {icon_path_png}")
+            
+    except ImportError:
+        # Pillow未安装，只能尝试使用 iconbitmap（仅支持.ico文件）
+        try:
+            import os
+            import sys
+            if getattr(sys, 'frozen', False):
+                base_path = sys._MEIPASS
+            else:
+                base_path = os.path.dirname(os.path.dirname(__file__))
+            icon_path = os.path.join(base_path, 'assets', 'ico.ico')
+            if os.path.exists(icon_path):
+                root.iconbitmap(icon_path)
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"无法设置图标: {e}")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"设置图标时出错: {e}")
+    
     app = BLEHostGUI(root)
     # 将DPI管理器传递给应用
     app.dpi_manager = dpi_manager
