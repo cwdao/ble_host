@@ -5,6 +5,7 @@
 包含频率计算等数据处理功能，支持多通道帧数据
 """
 import numpy as np
+import copy
 from typing import Dict, List, Tuple, Optional
 from collections import OrderedDict, defaultdict
 import logging
@@ -21,6 +22,9 @@ class DataProcessor:
         # 帧数据缓冲区：{channel: [(timestamp, amplitude), ...]}
         self.frame_buffer = {}  # {channel: [(index_or_timestamp, amplitude), ...]}
         self.frame_metadata = []  # [(index, timestamp_ms), ...] 保持顺序
+        
+        # 原始帧数据列表：用于保存功能，保存完整的帧数据
+        self.raw_frames = []  # [frame_data, ...] 按接收顺序保存
     
     def add_data(self, timestamp: float, data: Dict[str, float]):
         """
@@ -56,6 +60,17 @@ class DataProcessor:
         channels = frame_data.get('channels', {})
         
         self.logger.debug(f"[数据存储] 添加帧 index={index}, 通道数={len(channels)}")
+        
+        # 保存原始帧数据
+        # 使用浅拷贝+channels的浅拷贝，因为frame_data在解析后不会被修改
+        # 深拷贝会在保存时进行，避免每次添加时的性能开销
+        frame_copy = {
+            'frame': frame_data.get('frame'),
+            'index': frame_data.get('index'),
+            'timestamp_ms': frame_data.get('timestamp_ms'),
+            'channels': {ch: ch_data.copy() for ch, ch_data in channels.items()}
+        }
+        self.raw_frames.append(frame_copy)
         
         # 保存元数据
         self.frame_metadata.append((index, timestamp_ms))
@@ -610,6 +625,7 @@ class DataProcessor:
         if clear_frames:
             self.frame_buffer.clear()
             self.frame_metadata.clear()
+            self.raw_frames.clear()
     
     def get_all_variables(self) -> List[str]:
         """获取所有简单变量名"""

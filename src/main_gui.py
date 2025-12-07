@@ -17,6 +17,7 @@ try:
     from .plotter import Plotter
     from .config import config
     from .gui.dpi_manager import DPIManager
+    from .data_saver import DataSaver
 except ImportError:
     # 直接运行时使用绝对导入
     from serial_reader import SerialReader
@@ -25,6 +26,7 @@ except ImportError:
     from plotter import Plotter
     from config import config
     from gui.dpi_manager import DPIManager
+    from data_saver import DataSaver
 
 # 版本信息（从config导入）
 __version__ = config.version
@@ -56,6 +58,7 @@ class BLEHostGUI:
         self.serial_reader = None
         self.data_parser = DataParser()
         self.data_processor = DataProcessor()
+        self.data_saver = DataSaver()
         
         # 多个绘图器（用于不同选项卡）
         self.plotters = {}
@@ -65,6 +68,7 @@ class BLEHostGUI:
         self.update_thread = None
         self.freq_list_thread = None
         self.stop_event = threading.Event()  # 用于通知线程停止
+        self.is_saving = False  # 保存操作进行中标志
         
         # 帧数据处理
         self.frame_type = config.default_frame_type  # 当前选择的帧类型（字符串）
@@ -128,12 +132,20 @@ class BLEHostGUI:
         # 清空数据按钮
         ttk.Button(control_frame, text="清空数据", command=self._clear_data).grid(row=0, column=7, padx=5, pady=5)
         
+        # 保存数据按钮（使用Menubutton）
+        self.save_menubtn = ttk.Menubutton(control_frame, text="保存数据")
+        save_menu = tk.Menu(self.save_menubtn, tearoff=0)
+        save_menu.add_command(label="保存所有帧", command=self._save_all_frames)
+        save_menu.add_command(label="保存最近N帧", command=self._save_recent_frames)
+        self.save_menubtn['menu'] = save_menu
+        self.save_menubtn.grid(row=0, column=8, padx=5, pady=5)
+        
         # 帧类型选择（下拉列表，类似串口选择）
-        ttk.Label(control_frame, text="帧类型:").grid(row=0, column=8, padx=5, pady=5)
+        ttk.Label(control_frame, text="帧类型:").grid(row=0, column=9, padx=5, pady=5)
         self.frame_type_var = tk.StringVar(value=config.default_frame_type)
         self.frame_type_combo = ttk.Combobox(control_frame, textvariable=self.frame_type_var, 
                                             values=config.frame_type_options, width=12, state="readonly")
-        self.frame_type_combo.grid(row=0, column=9, padx=5, pady=5)
+        self.frame_type_combo.grid(row=0, column=10, padx=5, pady=5)
         self.frame_type_combo.bind("<<ComboboxSelected>>", lambda e: self._on_frame_type_changed())
         
         # 第二行：帧模式相关控件（使用grid布局，与第一行对齐）
@@ -553,6 +565,141 @@ class BLEHostGUI:
             plotter_info['plotter'].refresh()
         self.data_parser.clear_buffer()
         self.logger.info("数据已清空")
+    
+    def _save_all_frames(self):
+        """保存所有帧数据（在后台线程中执行）"""
+        if not self.frame_mode:
+            messagebox.showwarning("警告", "当前不是帧模式，无法保存帧数据")
+            return
+        
+        if self.is_saving:
+            messagebox.showwarning("警告", "保存操作正在进行中，请稍候...")
+            return
+        
+        frames = self.data_processor.raw_frames
+        if not frames:
+            messagebox.showwarning("警告", "没有可保存的帧数据")
+            return
+        
+        # 选择保存路径（在主线程中执行，因为需要GUI交互）
+        from tkinter import filedialog
+        default_filename = self.data_saver.get_default_filename(prefix="frames", save_all=True)
+        filepath = filedialog.asksaveasfilename(
+            title="保存所有帧数据",
+            defaultextension=".json",
+            filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")],
+            initialfile=default_filename
+        )
+        
+        if not filepath:
+            return  # 用户取消了保存
+        
+        # 在后台线程中执行保存操作
+        def save_in_thread():
+            try:
+                self.is_saving = True
+                # 更新UI状态
+                self.root.after(0, lambda: self.save_menubtn.config(state="disabled"))
+                self.root.after(0, lambda: self.status_var.set(f"正在保存 {len(frames)} 帧数据..."))
+                
+                # 执行保存（在后台线程中）
+                success = self.data_saver.save_frames(frames, filepath, max_frames=None)
+                
+                # 在主线程中更新UI
+                if success:
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "成功", f"已保存 {len(frames)} 帧数据到:\n{filepath}"
+                    ))
+                else:
+                    self.root.after(0, lambda: messagebox.showerror("错误", "保存失败，请查看日志"))
+            except Exception as e:
+                self.logger.error(f"保存数据时出错: {e}")
+                self.root.after(0, lambda: messagebox.showerror("错误", f"保存失败: {str(e)}"))
+            finally:
+                self.is_saving = False
+                # 恢复UI状态
+                self.root.after(0, lambda: self.save_menubtn.config(state="normal"))
+                self.root.after(0, lambda: self.status_var.set(
+                    "未连接" if not self.is_running else f"已连接: {self.serial_reader.port if self.serial_reader else 'N/A'}"
+                ))
+        
+        # 启动后台线程
+        save_thread = threading.Thread(target=save_in_thread, daemon=True)
+        save_thread.start()
+    
+    def _save_recent_frames(self):
+        """保存最近N帧数据（在后台线程中执行）"""
+        if not self.frame_mode:
+            messagebox.showwarning("警告", "当前不是帧模式，无法保存帧数据")
+            return
+        
+        if self.is_saving:
+            messagebox.showwarning("警告", "保存操作正在进行中，请稍候...")
+            return
+        
+        frames = self.data_processor.raw_frames
+        if not frames:
+            messagebox.showwarning("警告", "没有可保存的帧数据")
+            return
+        
+        # 获取显示帧数参数
+        try:
+            max_frames = int(self.display_max_frames_var.get())
+            if max_frames <= 0:
+                raise ValueError("显示帧数必须大于0")
+        except ValueError:
+            max_frames = config.default_display_max_frames
+            self.logger.warning(f"显示帧数无效，使用默认值: {max_frames}")
+        
+        # 选择保存路径（在主线程中执行，因为需要GUI交互）
+        from tkinter import filedialog
+        default_filename = self.data_saver.get_default_filename(
+            prefix="frames", save_all=False, max_frames=max_frames
+        )
+        filepath = filedialog.asksaveasfilename(
+            title=f"保存最近{max_frames}帧数据",
+            defaultextension=".json",
+            filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")],
+            initialfile=default_filename
+        )
+        
+        if not filepath:
+            return  # 用户取消了保存
+        
+        saved_count = min(max_frames, len(frames))
+        
+        # 在后台线程中执行保存操作
+        def save_in_thread():
+            try:
+                self.is_saving = True
+                # 更新UI状态
+                self.root.after(0, lambda: self.save_menubtn.config(state="disabled"))
+                self.root.after(0, lambda: self.status_var.set(f"正在保存最近 {saved_count} 帧数据..."))
+                
+                # 执行保存（在后台线程中）
+                success = self.data_saver.save_frames(frames, filepath, max_frames=max_frames)
+                
+                # 在主线程中更新UI
+                if success:
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "成功", f"已保存最近 {saved_count} 帧数据到:\n{filepath}"
+                    ))
+                else:
+                    self.root.after(0, lambda: messagebox.showerror("错误", "保存失败，请查看日志"))
+            except Exception as e:
+                self.logger.error(f"保存数据时出错: {e}")
+                self.root.after(0, lambda: messagebox.showerror("错误", f"保存失败: {str(e)}"))
+            finally:
+                self.is_saving = False
+                # 恢复UI状态
+                self.root.after(0, lambda: self.save_menubtn.config(state="normal"))
+                self.root.after(0, lambda: self.status_var.set(
+                    "未连接" if not self.is_running else f"已连接: {self.serial_reader.port if self.serial_reader else 'N/A'}"
+                ))
+        
+        # 启动后台线程
+        save_thread = threading.Thread(target=save_in_thread, daemon=True)
+        save_thread.start()
     
     def _parse_display_channels(self, text: str) -> List[int]:
         """
