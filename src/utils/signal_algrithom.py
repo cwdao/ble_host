@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.ndimage import median_filter
+from scipy.signal import butter, filtfilt
 
 def median_filter_1d(data, window_size=3):
     """
@@ -47,5 +48,30 @@ def hampel_filter(data, window_size=3, n_sigma=3):
         else:
             # 保留原值
             filtered_data[i] = data[i]
+    
+    return filtered_data
+
+def highpass_filter_zero_phase(data, cutoff_freq, sampling_rate, order=1):
+    """
+    Zero-phase highpass filter using Butterworth filter with filtfilt
+    
+    Parameters:
+    - data: Input signal
+    - cutoff_freq: Cutoff frequency in Hz
+    - sampling_rate: Sampling rate in Hz
+    - order: Filter order (1 or 2)
+    
+    Returns:
+    - filtered_data: Zero-phase filtered signal
+    """
+    # Normalize cutoff frequency (Nyquist frequency = sampling_rate / 2)
+    nyquist = sampling_rate / 2.0
+    normal_cutoff = cutoff_freq / nyquist
+    
+    # Design Butterworth highpass filter
+    b, a = butter(order, normal_cutoff, btype='high', analog=False)
+    
+    # Apply zero-phase filtering using filtfilt
+    filtered_data = filtfilt(b, a, data)
     
     return filtered_data
