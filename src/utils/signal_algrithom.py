@@ -75,3 +75,30 @@ def highpass_filter_zero_phase(data, cutoff_freq, sampling_rate, order=1):
     filtered_data = filtfilt(b, a, data)
     
     return filtered_data
+
+def bandpass_filter_zero_phase(data, lowcut, highcut, sampling_rate, order=2):
+    """
+    Zero-phase bandpass filter using Butterworth filter with filtfilt
+    
+    Parameters:
+    - data: Input signal
+    - lowcut: Low cutoff frequency in Hz
+    - highcut: High cutoff frequency in Hz
+    - sampling_rate: Sampling rate in Hz
+    - order: Filter order (1 or 2)
+    
+    Returns:
+    - filtered_data: Zero-phase filtered signal
+    """
+    # Normalize cutoff frequencies (Nyquist frequency = sampling_rate / 2)
+    nyquist = sampling_rate / 2.0
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    
+    # Design Butterworth bandpass filter
+    b, a = butter(order, [low, high], btype='band', analog=False)
+    
+    # Apply zero-phase filtering using filtfilt
+    filtered_data = filtfilt(b, a, data)
+    
+    return filtered_data
