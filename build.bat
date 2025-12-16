@@ -2,11 +2,29 @@
 REM Windows打包脚本
 REM 使用方法: build.bat
 
+echo 检查 Python 环境...
+python --version
+if errorlevel 1 (
+    echo 错误: 未找到 Python，请确保 Python 已安装并添加到 PATH
+    exit /b 1
+)
+
 echo 正在安装依赖...
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+if errorlevel 1 (
+    echo 错误: 依赖安装失败
+    exit /b 1
+)
+
+echo 验证 pyserial 安装...
+python -c "import serial; print('pyserial 版本:', serial.__version__)"
+if errorlevel 1 (
+    echo 错误: pyserial 未正确安装
+    exit /b 1
+)
 
 echo 正在安装PyInstaller...
-pip install pyinstaller
+python -m pip install pyinstaller
 
 echo 正在读取版本号...
 for /f %%a in ('python get_version.py') do set VERSION=%%a

@@ -19,6 +19,12 @@ a = Analysis(
         'src.data_processor',
         'src.plotter',
         'src.main_gui',
+        # pyserial 相关模块（解决打包后无法连接串口的问题）
+        'serial',
+        'serial.tools',
+        'serial.tools.list_ports',
+        'serial.serialutil',
+        'serial.win32',  # Windows 平台特定模块
     ],
     hookspath=[],
     hooksconfig={},
@@ -39,7 +45,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='BLEHost-v2.2.0',
+    name='BLEHost-v2.3.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
