@@ -501,6 +501,8 @@ class BLEHostGUI:
         self.root.after(config.tab_changed_delay_ms, self._adjust_current_plot_size)
         # 延迟更新DPI信息，避免阻塞
         self.root.after(config.tab_changed_delay_ms + 50, self._update_dpi_info)
+        # 切换tab时，更新新打开的tab的plot数据（使用保存的数据快速绘制）
+        self.root.after(config.tab_changed_delay_ms, self._update_current_tab_plot)
     
     def _create_plot_tabs(self):
         """创建多选项卡绘图区域"""
@@ -1222,8 +1224,13 @@ class BLEHostGUI:
         self.freq_list_thread = threading.Thread(target=update_freq_list_and_stats, daemon=True)
         self.freq_list_thread.start()
     
-    def _update_frame_plots(self):
-        """更新帧数据绘图 - 根据设置显示指定通道的数据（所有选项卡）"""
+    def _update_frame_plots(self, tab_key=None):
+        """
+        更新帧数据绘图 - 根据设置显示指定通道的数据
+        
+        Args:
+            tab_key: 要更新的tab键，None表示只更新当前打开的tab（优化性能）
+        """
         all_channels = self.data_processor.get_all_frame_channels()
         
         self.logger.debug(f"[绘图调试] 所有可用通道: {all_channels}, 通道数: {len(all_channels)}")
@@ -1246,8 +1253,34 @@ class BLEHostGUI:
             self.logger.warning(f"[绘图调试] 设置的展示信道 {self.display_channel_list} 中没有可用数据")
             return
         
-        # 更新每个选项卡的绘图
-        for tab_key, plotter_info in self.plotters.items():
+        # 确定要更新的tab列表
+        if tab_key is None:
+            # 只更新当前打开的tab（优化性能）
+            try:
+                current_tab_index = self.notebook.index(self.notebook.select())
+                tab_configs = [
+                    ('amplitude', '幅值'),
+                    ('phase', '相位'),
+                    ('local_amplitude', 'Local观测Ref幅值'),
+                    ('local_phase', 'Local观测Ref相位'),
+                    ('remote_amplitude', 'Remote观测Ini幅值'),
+                    ('remote_phase', 'Remote观测Ini相位'),
+                ]
+                if current_tab_index < len(tab_configs):
+                    tab_key = tab_configs[current_tab_index][0]
+                    tabs_to_update = [tab_key] if tab_key in self.plotters else []
+                else:
+                    tabs_to_update = []
+            except:
+                # 如果获取当前tab失败，不更新任何tab
+                tabs_to_update = []
+        else:
+            # 更新指定的tab
+            tabs_to_update = [tab_key] if tab_key in self.plotters else []
+        
+        # 更新指定的选项卡的绘图
+        for tab_key_to_update in tabs_to_update:
+            plotter_info = self.plotters[tab_key_to_update]
             plotter = plotter_info['plotter']
             data_type = plotter_info['data_type']
             
@@ -1264,7 +1297,7 @@ class BLEHostGUI:
             if channel_data:
                 plotter.update_frame_data(channel_data, max_channels=len(display_channels))
         
-        self.logger.debug(f"[绘图调试] 更新帧数据绘图: {len(display_channels)} 个通道")
+        self.logger.debug(f"[绘图调试] 更新帧数据绘图: {len(display_channels)} 个通道, 更新了 {len(tabs_to_update)} 个tab")
     
     def _refresh_all_plotters(self):
         """刷新所有绘图器（立即刷新，用于tab切换等场景）"""
@@ -1302,6 +1335,29 @@ class BLEHostGUI:
         except:
             # 如果获取当前tab失败，刷新所有plot（兜底）
             self._refresh_all_plotters()
+    
+    def _update_current_tab_plot(self):
+        """更新当前打开的tab的plot数据（用于tab切换时快速绘制）"""
+        try:
+            current_tab_index = self.notebook.index(self.notebook.select())
+            tab_configs = [
+                ('amplitude', '幅值'),
+                ('phase', '相位'),
+                ('local_amplitude', 'Local观测Ref幅值'),
+                ('local_phase', 'Local观测Ref相位'),
+                ('remote_amplitude', 'Remote观测Ini幅值'),
+                ('remote_phase', 'Remote观测Ini相位'),
+            ]
+            
+            if current_tab_index < len(tab_configs):
+                tab_key = tab_configs[current_tab_index][0]
+                # 只更新当前打开的tab
+                self._update_frame_plots(tab_key=tab_key)
+                # 刷新显示
+                if tab_key in self.plotters:
+                    self.plotters[tab_key]['plotter'].refresh()
+        except Exception as e:
+            self.logger.warning(f"更新当前tab plot时出错: {e}")
     
     def on_closing(self):
         """窗口关闭事件"""

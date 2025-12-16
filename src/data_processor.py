@@ -181,8 +181,14 @@ class DataProcessor:
         else:
             return np.array([]), np.array([])
         
+        # 应用max_frames限制（确保新增信道也遵循此规则）
+        original_count = len(data_points)
         if max_frames and len(data_points) > max_frames:
             data_points = data_points[-max_frames:]
+            self.logger.debug(
+                f"[数据限制] 通道{channel} ({data_type}): "
+                f"原始数据点={original_count}, 限制后={len(data_points)} (max_frames={max_frames})"
+            )
         
         if not data_points:
             return np.array([]), np.array([])
