@@ -267,12 +267,50 @@ class BLEHostGUI:
         self.load_file_info_text.insert(tk.END, "\n".join(info_lines))
         self.load_file_info_text.config(state=tk.DISABLED)
     
-    def _on_slider_changed(self, value):
-        """滑动条变化时的回调"""
+    def _on_slider_released(self, event):
+        """滑动条鼠标释放时的回调（拖动结束后才更新绘图）"""
         try:
-            start = int(float(value))
+            # tk.Scale 的 get() 返回的是浮点数
+            value = self.time_window_slider.get()
+            start = int(round(value))  # 四舍五入到最近的整数
             self.current_window_start = start
             self.window_start_var.set(start)
+            self._update_loaded_mode_plots()
+        except:
+            pass
+    
+    def _on_slider_dragging(self, event):
+        """滑动条拖动时的回调（只更新输入框，不绘图，提高流畅度）"""
+        try:
+            # tk.Scale 的 get() 返回的是浮点数
+            value = self.time_window_slider.get()
+            start = int(round(value))  # 四舍五入到最近的整数
+            self.window_start_var.set(start)
+            # 不调用 _update_loaded_mode_plots()，等释放时再更新
+        except:
+            pass
+    
+    def _on_slider_left_click(self):
+        """左箭头按钮点击（单步减少）"""
+        try:
+            current = int(self.window_start_var.get())
+            new_value = max(0, current - 1)
+            self.current_window_start = new_value
+            self.window_start_var.set(new_value)
+            self.time_window_slider.set(new_value)
+            self._update_loaded_mode_plots()
+        except:
+            pass
+    
+    def _on_slider_right_click(self):
+        """右箭头按钮点击（单步增加）"""
+        try:
+            current = int(self.window_start_var.get())
+            max_start = max(0, len(self.loaded_frames) - self.display_max_frames) if self.loaded_frames else 0
+            new_value = min(max_start, current + 1)
+            self.current_window_start = new_value
+            self.window_start_var.set(new_value)
+            self.time_window_slider.set(new_value)
             self._update_loaded_mode_plots()
         except:
             pass
@@ -428,7 +466,7 @@ class BLEHostGUI:
         info_frame = ttk.LabelFrame(load_frame, text="文件信息", padding="5")
         info_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
-        self.load_file_info_text = scrolledtext.ScrolledText(info_frame, height=8, width=50, font=("Courier", 9))
+        self.load_file_info_text = scrolledtext.ScrolledText(info_frame, height=5, width=50, font=("Courier", 9))
         self.load_file_info_text.pack(fill=tk.BOTH, expand=True)
         self.load_file_info_text.config(state=tk.DISABLED)  # 只读
         
@@ -533,10 +571,36 @@ class BLEHostGUI:
         
         ttk.Label(slider_inner, text="(帧)").pack(side=tk.LEFT, padx=2)
         
-        # 滑动条
-        self.time_window_slider = ttk.Scale(slider_inner, from_=0, to=100, orient=tk.HORIZONTAL, 
-                                             length=400, command=self._on_slider_changed)
-        self.time_window_slider.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+        # 自定义滚动条控件（带左右箭头）
+        scrollbar_container = ttk.Frame(slider_inner)
+        scrollbar_container.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+        
+        # 左箭头按钮（增加宽度，方便点击）
+        self.slider_left_btn = ttk.Button(scrollbar_container, text="◄", width=4, 
+                                          command=self._on_slider_left_click)
+        self.slider_left_btn.pack(side=tk.LEFT, padx=(0, 2))
+        
+        # 滑动条（使用 tk.Scale 而不是 ttk.Scale，因为可以直接设置滑块大小）
+        # tk.Scale 有 sliderlength 参数可以直接控制滑块宽度
+        self.time_window_slider = tk.Scale(scrollbar_container, from_=0, to=100, 
+                                          orient=tk.HORIZONTAL,
+                                          sliderlength=60,  # 滑块宽度（像素），可以调整这个值来改变滑块大小
+                                          width=30,        # 滑块宽度（像素），可以调整这个值来改变滑块大小
+                                          tickinterval=100,  # 设置刻度间隔
+                                          length=400,       # 整个滑块的轨道长度
+                                          showvalue=False,  # 不显示当前值（我们用输入框显示）
+                                          resolution=1,     # 步长为1
+                                          command=None)     # 不绑定command，使用事件绑定
+        self.time_window_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # 绑定鼠标释放事件，而不是拖动事件
+        # tk.Scale 也没有 jump 参数，但我们可以通过事件绑定实现类似效果
+        self.time_window_slider.bind('<ButtonRelease-1>', self._on_slider_released)
+        self.time_window_slider.bind('<B1-Motion>', self._on_slider_dragging)  # 拖动时只更新输入框，不绘图
+        
+        # 右箭头按钮（增加宽度，方便点击）
+        self.slider_right_btn = ttk.Button(scrollbar_container, text="►", width=4,
+                                           command=self._on_slider_right_click)
+        self.slider_right_btn.pack(side=tk.LEFT, padx=(2, 0))
         
         # 时间窗长度显示
         self.window_length_label = ttk.Label(slider_inner, text="时间窗长度: -- 秒")
