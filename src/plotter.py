@@ -144,16 +144,27 @@ class Plotter:
             channel_data: {channel: (indices, amplitudes), ...}
             max_channels: 最多显示的通道数
         """
-        # 移除所有非通道的线（只保留通道数据）
+        # 获取要显示的通道列表
+        sorted_channels = sorted(channel_data.keys())[:max_channels]
+        channels_to_keep = set(sorted_channels)
+        
+        # 移除所有不在新列表中的通道线（包括非通道的线）
         lines_to_remove = []
         for var_name in self.data_lines.keys():
-            if not (var_name.startswith('ch') and var_name[2:].isdigit()):
+            if var_name.startswith('ch') and var_name[2:].isdigit():
+                # 检查是否是通道线，如果是，检查是否在新列表中
+                try:
+                    ch = int(var_name[2:])
+                    if ch not in channels_to_keep:
+                        lines_to_remove.append(var_name)
+                except ValueError:
+                    lines_to_remove.append(var_name)
+            else:
+                # 非通道线，直接移除
                 lines_to_remove.append(var_name)
+        
         for var_name in lines_to_remove:
             self.remove_line(var_name)
-        
-        # 只显示前max_channels个通道
-        sorted_channels = sorted(channel_data.keys())[:max_channels]
         
         # 更新每条线
         all_x = []
@@ -170,6 +181,14 @@ class Plotter:
         
         # 更新坐标轴范围（自动缩放）
         self._auto_scale_axes()
+        
+        # 确保图例显示（如果有数据线，重新创建图例以确保显示）
+        if self.data_lines:
+            # 移除旧的图例（如果存在）
+            if self.ax.get_legend():
+                self.ax.get_legend().remove()
+            # 重新创建图例
+            self.ax.legend(loc='upper right', fontsize=8)
     
     def refresh(self):
         """刷新画布"""

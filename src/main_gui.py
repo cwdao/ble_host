@@ -160,8 +160,10 @@ class BLEHostGUI:
                                       values=config.baudrate_options, width=10)
         baudrate_combo.grid(row=0, column=4, padx=5, pady=5)
         
-        # 连接/断开按钮
-        self.connect_btn = ttk.Button(connection_frame, text="连接", command=self._toggle_connection)
+        # 连接/断开按钮（使用tk.Button以便设置颜色）
+        self.connect_btn = tk.Button(connection_frame, text="连接", command=self._toggle_connection,
+                                     bg="#4CAF50", fg="white", activebackground="#45a049",
+                                     activeforeground="white", relief=tk.RAISED, bd=2)
         self.connect_btn.grid(row=0, column=5, padx=5, pady=5)
         
         # 帧类型选择（下拉列表，决定帧的解析方式）
@@ -177,22 +179,67 @@ class BLEHostGUI:
         channel_frame = ttk.Frame(notebook, padding="10")
         notebook.add(channel_frame, text="信道配置")
         
-        # 展示信道选择
-        ttk.Label(channel_frame, text="展示信道:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        # 第一行：信道选择模式
+        ttk.Label(channel_frame, text="选择模式:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self.channel_mode_var = tk.StringVar(value="手动输入")
+        self.channel_mode_combo = ttk.Combobox(
+            channel_frame, 
+            textvariable=self.channel_mode_var,
+            values=["间隔X信道", "信道范围", "手动输入"],
+            width=12,
+            state="readonly"
+        )
+        self.channel_mode_combo.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        self.channel_mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_channel_mode_changed())
+        
+        # 输入框容器（根据模式显示不同的输入框）
+        self.channel_input_frame = ttk.Frame(channel_frame)
+        self.channel_input_frame.grid(row=0, column=2, columnspan=3, padx=5, pady=5, sticky="w")
+        
+        # 间隔信道输入框
+        self.interval_input_var = tk.StringVar(value="4")
+        self.interval_entry = ttk.Entry(self.channel_input_frame, textvariable=self.interval_input_var, width=10)
+        self.interval_entry.grid(row=0, column=0, padx=2, sticky="w")
+        self.interval_label = ttk.Label(self.channel_input_frame, text="(间隔数，如4表示0,4,8,12...)", foreground="gray")
+        self.interval_label.grid(row=0, column=1, padx=2, sticky="w")
+        
+        # 信道范围输入框
+        self.range_input_var = tk.StringVar(value="0-9")
+        self.range_entry = ttk.Entry(self.channel_input_frame, textvariable=self.range_input_var, width=20)
+        self.range_entry.grid(row=0, column=0, padx=2, sticky="w")
+        self.range_label = ttk.Label(self.channel_input_frame, text="(如: 0-9 或 0-9,20-30)", foreground="gray")
+        self.range_label.grid(row=0, column=1, padx=2, sticky="w")
+        
+        # 手动输入框
         self.display_channels_var = tk.StringVar(value=config.default_display_channels)
-        display_channels_entry = ttk.Entry(channel_frame, textvariable=self.display_channels_var, width=20)
-        display_channels_entry.grid(row=0, column=1, padx=5, pady=5, sticky="w")
-        ttk.Label(channel_frame, text="(如: 0-9 或 0,2,4,6,8)").grid(row=0, column=2, padx=2, pady=5, sticky="w")
+        self.display_channels_entry = ttk.Entry(self.channel_input_frame, textvariable=self.display_channels_var, width=20)
+        self.display_channels_entry.grid(row=0, column=0, padx=2, sticky="w")
+        self.manual_label = ttk.Label(self.channel_input_frame, text="(如: 0-9 或 0,2,4,6,8)", foreground="gray")
+        self.manual_label.grid(row=0, column=1, padx=2, sticky="w")
+        
+        # 初始显示手动输入模式
+        self._show_channel_input_mode("手动输入")
         
         # 显示帧数（用于plot和计算）
-        ttk.Label(channel_frame, text="显示帧数:").grid(row=0, column=3, padx=5, pady=5, sticky="w")
+        ttk.Label(channel_frame, text="显示帧数:").grid(row=0, column=5, padx=5, pady=5, sticky="w")
         self.display_max_frames_var = tk.StringVar(value=str(config.default_display_max_frames))
-        display_frames_entry = ttk.Entry(channel_frame, textvariable=self.display_max_frames_var, width=10)
-        display_frames_entry.grid(row=0, column=4, padx=5, pady=5, sticky="w")
-        ttk.Label(channel_frame, text="(plot和计算范围)").grid(row=0, column=5, padx=2, pady=5, sticky="w")
+        self.display_frames_entry = ttk.Entry(channel_frame, textvariable=self.display_max_frames_var, width=10)
+        self.display_frames_entry.grid(row=0, column=6, padx=5, pady=5, sticky="w")
+        ttk.Label(channel_frame, text="(plot和计算范围)").grid(row=0, column=7, padx=2, pady=5, sticky="w")
         
         # 应用按钮
-        ttk.Button(channel_frame, text="应用", command=self._apply_frame_settings).grid(row=0, column=6, padx=5, pady=5, sticky="w")
+        self.apply_settings_btn = ttk.Button(channel_frame, text="应用", command=self._apply_frame_settings)
+        self.apply_settings_btn.grid(row=0, column=8, padx=5, pady=5, sticky="w")
+        
+        # 保存控件引用以便在连接/断开时启用/禁用
+        self.channel_config_widgets = [
+            self.channel_mode_combo,
+            self.interval_entry,
+            self.range_entry,
+            self.display_channels_entry,
+            self.display_frames_entry,
+            self.apply_settings_btn
+        ]
     
     def _create_data_and_save_tab(self, notebook):
         """创建数据与保存选项卡（合并了文件和数据操作功能）"""
@@ -219,7 +266,9 @@ class BLEHostGUI:
         self.path_label = path_label  # 保存引用以便更新
         
         # 第二行：保存数据按钮、保存选项、清空数据按钮
-        self.save_btn = ttk.Button(data_frame, text="保存数据", command=self._save_data)
+        self.save_btn = tk.Button(data_frame, text="保存数据", command=self._save_data, 
+                                  bg="#4CAF50", fg="white", activebackground="#45a049", 
+                                  activeforeground="white", relief=tk.RAISED, bd=2)
         self.save_btn.grid(row=1, column=0, padx=5, pady=5)
         
         # 保存选项（全部保存或最近N帧）
@@ -231,7 +280,10 @@ class BLEHostGUI:
         ttk.Radiobutton(save_option_frame, text="最近N帧", variable=self.save_option_var, 
                        value="最近N帧").pack(side=tk.LEFT, padx=2)
         
-        ttk.Button(data_frame, text="清空当前数据", command=self._clear_data).grid(row=1, column=2, padx=5, pady=5)
+        self.clear_data_btn = tk.Button(data_frame, text="清空当前数据", command=self._clear_data,
+                                        bg="#f44336", fg="white", activebackground="#da190b",
+                                        activeforeground="white", relief=tk.RAISED, bd=2)
+        self.clear_data_btn.grid(row=1, column=2, padx=5, pady=5)
         
         # 第三行：保存状态显示
         ttk.Label(data_frame, text="保存状态:", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=0, padx=5, pady=5, sticky="w")
@@ -659,8 +711,11 @@ class BLEHostGUI:
         
         if self.serial_reader.connect():
             self.is_running = True
-            self.connect_btn.config(text="断开")
+            # 更新连接按钮为红色（断开状态）
+            self.connect_btn.config(text="断开", bg="#f44336", activebackground="#da190b")
             self.status_var.set(f"已连接: {port}")
+            # 禁用信道配置tab的所有控件
+            self._set_channel_config_enabled(False)
             self.logger.info(f"串口连接成功: {port} @ {baudrate}")
         else:
             messagebox.showerror("错误", "串口连接失败")
@@ -694,17 +749,25 @@ class BLEHostGUI:
     
     def _update_disconnect_ui(self):
         """更新断开连接后的UI状态（在主线程中执行）"""
-        self.connect_btn.config(text="连接", state="normal")  # 恢复按钮
+        # 恢复连接按钮为绿色（连接状态）
+        self.connect_btn.config(text="连接", state="normal", bg="#4CAF50", activebackground="#45a049")
         self.status_var.set("未连接")
+        # 启用信道配置tab的所有控件
+        self._set_channel_config_enabled(True)
         self.logger.info("串口已断开")
     
     def _clear_data(self):
         """清空数据"""
         self.data_processor.clear_buffer(clear_frames=True)
-        # 清空所有绘图器
+        # 清空所有绘图器（包括图例）
         for plotter_info in self.plotters.values():
-            plotter_info['plotter'].clear_plot()
-            plotter_info['plotter'].refresh()
+            plotter = plotter_info['plotter']
+            # 清除所有数据线
+            plotter.clear_plot()
+            # 清除图例
+            if plotter.ax.get_legend():
+                plotter.ax.get_legend().remove()
+            plotter.refresh()
         self.data_parser.clear_buffer()
         self.logger.info("数据已清空")
     
@@ -881,16 +944,90 @@ class BLEHostGUI:
         save_thread = threading.Thread(target=save_in_thread, daemon=True)
         save_thread.start()
     
+    def _parse_interval_channels(self, interval_str: str) -> List[int]:
+        """
+        解析间隔信道模式
+        例如：输入4 -> [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72]
+        
+        Args:
+            interval_str: 间隔数（字符串）
+        
+        Returns:
+            信道号列表
+        """
+        try:
+            interval = int(interval_str.strip())
+            if interval <= 0:
+                self.logger.warning(f"间隔数必须大于0，使用默认值4")
+                interval = 4
+            
+            # 生成信道列表：0, interval, 2*interval, ... 直到不超过72
+            channels = []
+            ch = 0
+            while ch <= 72:
+                channels.append(ch)
+                ch += interval
+            
+            return channels
+        except (ValueError, AttributeError) as e:
+            self.logger.warning(f"解析间隔信道失败: {interval_str}, 错误: {e}, 使用默认值4")
+            return list(range(0, 73, 4))  # 默认间隔4
+    
+    def _parse_range_channels(self, range_str: str) -> List[int]:
+        """
+        解析信道范围模式
+        支持格式：
+        - "0-9" -> [0,1,2,3,4,5,6,7,8,9]
+        - "0-9,20-30" -> [0,1,2,...,9,20,21,...,30]
+        
+        Args:
+            range_str: 范围字符串
+        
+        Returns:
+            信道号列表
+        """
+        channels = []
+        range_str = range_str.strip()
+        if not range_str:
+            return list(range(10))  # 默认前10个
+        
+        try:
+            # 按逗号分割
+            parts = [p.strip() for p in range_str.split(',')]
+            for part in parts:
+                if '-' in part:
+                    # 范围格式 "0-9"
+                    start, end = part.split('-', 1)
+                    start = int(start.strip())
+                    end = int(end.strip())
+                    # 限制范围在0-72之间
+                    start = max(0, min(start, 72))
+                    end = max(0, min(end, 72))
+                    if start <= end:
+                        channels.extend(range(start, end + 1))
+                else:
+                    # 单个数字
+                    ch = int(part.strip())
+                    if 0 <= ch <= 72:
+                        channels.append(ch)
+            
+            # 去重并排序
+            channels = sorted(list(set(channels)))
+            return channels
+        except (ValueError, AttributeError) as e:
+            self.logger.warning(f"解析信道范围失败: {range_str}, 错误: {e}, 使用默认值")
+            return list(range(10))
+    
     def _parse_display_channels(self, text: str) -> List[int]:
         """
-        解析展示信道字符串
+        解析展示信道字符串（手动输入模式）
         支持格式：
         - "0-9" -> [0,1,2,3,4,5,6,7,8,9]
         - "0,2,4,6,8" -> [0,2,4,6,8]
         - "0-5,10,15-20" -> [0,1,2,3,4,5,10,15,16,17,18,19,20]
         
         Returns:
-            信道号列表
+            信道号列表（限制在0-72之间）
         """
         channels = []
         text = text.strip()
@@ -906,11 +1043,16 @@ class BLEHostGUI:
                     start, end = part.split('-', 1)
                     start = int(start.strip())
                     end = int(end.strip())
+                    # 限制范围在0-72之间
+                    start = max(0, min(start, 72))
+                    end = max(0, min(end, 72))
                     if start <= end:
                         channels.extend(range(start, end + 1))
                 else:
                     # 单个数字
-                    channels.append(int(part.strip()))
+                    ch = int(part.strip())
+                    if 0 <= ch <= 72:
+                        channels.append(ch)
             
             # 去重并排序
             channels = sorted(list(set(channels)))
@@ -918,6 +1060,42 @@ class BLEHostGUI:
         except (ValueError, AttributeError) as e:
             self.logger.warning(f"解析展示信道失败: {text}, 错误: {e}, 使用默认值")
             return list(range(10))
+    
+    def _on_channel_mode_changed(self):
+        """信道选择模式变化时的回调"""
+        mode = self.channel_mode_var.get()
+        self._show_channel_input_mode(mode)
+    
+    def _show_channel_input_mode(self, mode: str):
+        """根据模式显示对应的输入框"""
+        # 隐藏所有输入框和标签
+        self.interval_entry.grid_remove()
+        self.interval_label.grid_remove()
+        self.range_entry.grid_remove()
+        self.range_label.grid_remove()
+        self.display_channels_entry.grid_remove()
+        self.manual_label.grid_remove()
+        
+        # 显示对应模式的输入框和标签
+        if mode == "间隔X信道":
+            self.interval_entry.grid(row=0, column=0, padx=2, sticky="w")
+            self.interval_label.grid(row=0, column=1, padx=2, sticky="w")
+        elif mode == "信道范围":
+            self.range_entry.grid(row=0, column=0, padx=2, sticky="w")
+            self.range_label.grid(row=0, column=1, padx=2, sticky="w")
+        else:  # 手动输入
+            self.display_channels_entry.grid(row=0, column=0, padx=2, sticky="w")
+            self.manual_label.grid(row=0, column=1, padx=2, sticky="w")
+    
+    def _set_channel_config_enabled(self, enabled: bool):
+        """启用或禁用信道配置tab的所有控件"""
+        if hasattr(self, 'channel_config_widgets'):
+            state = 'normal' if enabled else 'disabled'
+            for widget in self.channel_config_widgets:
+                try:
+                    widget.config(state=state)
+                except:
+                    pass  # 某些控件可能不支持state参数
     
     def _apply_frame_settings(self):
         """应用帧模式设置"""
@@ -936,10 +1114,34 @@ class BLEHostGUI:
             self.display_max_frames = config.default_display_max_frames
             self.display_max_frames_var.set(str(config.default_display_max_frames))
         
-        # 解析展示信道
-        display_text = self.display_channels_var.get()
-        self.display_channel_list = self._parse_display_channels(display_text)
-        self.logger.info(f"展示信道设置为: {self.display_channel_list}")
+        # 根据选择的模式解析展示信道
+        mode = self.channel_mode_var.get()
+        old_display_channel_list = self.display_channel_list.copy() if hasattr(self, 'display_channel_list') and self.display_channel_list else []
+        
+        if mode == "间隔X信道":
+            interval_str = self.interval_input_var.get()
+            new_display_channel_list = self._parse_interval_channels(interval_str)
+        elif mode == "信道范围":
+            range_str = self.range_input_var.get()
+            new_display_channel_list = self._parse_range_channels(range_str)
+        else:  # 手动输入
+            display_text = self.display_channels_var.get()
+            new_display_channel_list = self._parse_display_channels(display_text)
+        
+        # 清除不再需要的信道图例（在更新之前清除，避免图例残留）
+        if self.frame_mode and old_display_channel_list:
+            # 找出需要移除的信道（在old中但不在new中）
+            channels_to_remove = set(old_display_channel_list) - set(new_display_channel_list)
+            if channels_to_remove:
+                for plotter_info in self.plotters.values():
+                    plotter = plotter_info['plotter']
+                    for ch in channels_to_remove:
+                        var_name = f"ch{ch}"
+                        if var_name in plotter.data_lines:
+                            plotter.remove_line(var_name)
+        
+        self.display_channel_list = new_display_channel_list
+        self.logger.info(f"展示信道设置为: {self.display_channel_list} (模式: {mode})")
         
         # 立即更新绘图（如果有数据）
         if self.frame_mode:
