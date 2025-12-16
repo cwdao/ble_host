@@ -47,7 +47,7 @@ class AppConfig:
     default_frame_mode: bool = True  # 保留用于向后兼容，但不再使用
     default_frame_type: str = "演示帧"  # 默认帧类型
     frame_type_options: List[str] = None  # 帧类型列表
-    default_display_channels: str = "0-9"
+    default_display_channels: str = "0,4,8,12,16,20,24,28,32,36,40,44,48,52,56,60,64,68,72"
     default_display_max_frames: int = 50
     max_display_max_frames: int = 100
     
