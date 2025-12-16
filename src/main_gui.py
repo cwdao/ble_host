@@ -111,7 +111,7 @@ class BLEHostGUI:
     def _setup_logging(self):
         """设置日志"""
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.INFO,  # 显示信息
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(__name__)
@@ -270,7 +270,7 @@ class BLEHostGUI:
     def _on_slider_released(self, event):
         """滑动条鼠标释放时的回调（拖动结束后才更新绘图）"""
         try:
-            # tk.Scale 的 get() 返回的是浮点数
+            # ttk.Scale 的 get() 返回的是浮点数
             value = self.time_window_slider.get()
             start = int(round(value))  # 四舍五入到最近的整数
             self.current_window_start = start
@@ -282,7 +282,7 @@ class BLEHostGUI:
     def _on_slider_dragging(self, event):
         """滑动条拖动时的回调（只更新输入框，不绘图，提高流畅度）"""
         try:
-            # tk.Scale 的 get() 返回的是浮点数
+            # ttk.Scale 的 get() 返回的是浮点数
             value = self.time_window_slider.get()
             start = int(round(value))  # 四舍五入到最近的整数
             self.window_start_var.set(start)
@@ -580,20 +580,63 @@ class BLEHostGUI:
                                           command=self._on_slider_left_click)
         self.slider_left_btn.pack(side=tk.LEFT, padx=(0, 2))
         
-        # 滑动条（使用 tk.Scale 而不是 ttk.Scale，因为可以直接设置滑块大小）
-        # tk.Scale 有 sliderlength 参数可以直接控制滑块宽度
-        self.time_window_slider = tk.Scale(scrollbar_container, from_=0, to=100, 
-                                          orient=tk.HORIZONTAL,
-                                          sliderlength=60,  # 滑块宽度（像素），可以调整这个值来改变滑块大小
-                                          width=30,        # 滑块宽度（像素），可以调整这个值来改变滑块大小
-                                          tickinterval=100,  # 设置刻度间隔
-                                          length=400,       # 整个滑块的轨道长度
-                                          showvalue=False,  # 不显示当前值（我们用输入框显示）
-                                          resolution=1,     # 步长为1
-                                          command=None)     # 不绑定command，使用事件绑定
+        # 滑动条（使用 ttk.Scale，通过样式配置调整滑块大小和控件宽度）
+        # 创建自定义样式来调整滑块大小
+        style = ttk.Style()
+        
+        # 获取当前主题（用于调试）
+        current_theme = style.theme_use()
+        self.logger.debug(f"当前主题: {current_theme}")
+        
+        # 尝试多种方法配置滑块大小
+        try:
+            # 方法1：直接配置样式参数（某些主题支持）
+            style.configure('Custom.Horizontal.TScale',
+                           sliderlength=40,      # 滑块长度（宽度）
+                           sliderthickness=20)    # 滑块厚度（高度）
+            self.logger.debug("方法1: 直接配置样式参数成功")
+        except Exception as e:
+            self.logger.debug(f"方法1失败: {e}")
+        
+        # 方法2：尝试通过 map 调整元素属性
+        try:
+            style.map('Custom.Horizontal.TScale',
+                     sliderlength=[('active', 40), ('!active', 40)],
+                     sliderthickness=[('active', 20), ('!active', 20)])
+            self.logger.debug("方法2: map配置成功")
+        except Exception as e:
+            self.logger.debug(f"方法2失败: {e}")
+        
+        # 方法3：尝试通过 layout 调整（如果需要更精确的控制）
+        try:
+            # 获取当前主题的布局
+            current_layout = style.layout('Horizontal.TScale')
+            if current_layout:
+                # 创建自定义布局（复制并修改）
+                style.layout('Custom.Horizontal.TScale', current_layout)
+                self.logger.debug("方法3: layout配置成功")
+        except Exception as e:
+            self.logger.debug(f"方法3失败: {e}")
+        
+        # 如果以上方法都不起作用，尝试设置一个支持这些参数的主题
+        # 注意：这可能会改变整个应用的样式
+        # try:
+        #     style.theme_use('clam')  # 'clam' 主题通常支持更多自定义选项
+        #     style.configure('Custom.Horizontal.TScale', sliderlength=40, sliderthickness=20)
+        # except:
+        #     pass
+        
+        # 创建 ttk.Scale 控件
+        # 注意：ttk.Scale 不支持 width 参数，只有 tk.Scale 才支持
+        # 要调整控件宽度，使用 length 参数（水平方向的长度）
+        # 要调整轨道高度，需要通过样式配置
+        self.time_window_slider = ttk.Scale(scrollbar_container, from_=0, to=100, 
+                                            orient=tk.HORIZONTAL,
+                                            style='Custom.Horizontal.TScale',                                        
+                                            length=400)  # 整个控件的长度（水平方向宽度，像素），可以调整这个值来改变控件宽度
         self.time_window_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
         # 绑定鼠标释放事件，而不是拖动事件
-        # tk.Scale 也没有 jump 参数，但我们可以通过事件绑定实现类似效果
+        # ttk.Scale 没有 jump 参数，但我们可以通过事件绑定实现类似效果
         self.time_window_slider.bind('<ButtonRelease-1>', self._on_slider_released)
         self.time_window_slider.bind('<B1-Motion>', self._on_slider_dragging)  # 拖动时只更新输入框，不绘图
         
@@ -680,7 +723,7 @@ class BLEHostGUI:
         
         # 添加日志处理器
         text_handler = TextHandler(self.log_text)
-        text_handler.setLevel(logging.INFO)
+        text_handler.setLevel(logging.INFO)  # 此级别无调试信息
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
         text_handler.setFormatter(formatter)
         logging.getLogger().addHandler(text_handler)
