@@ -15,8 +15,8 @@ from typing import List, Optional
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "2.2.0"
-    version_date: str = "2025-12-07"
+    version: str = "2.3.0"
+    version_date: str = "2025-12-16"
     version_author: str = "chwn@outlook.ie, HKUST(GZ)"
     
     # 窗口配置
