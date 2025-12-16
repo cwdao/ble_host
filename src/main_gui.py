@@ -4,12 +4,14 @@
 BLE Host上位机主程序
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext, filedialog
 import threading
 import time
 import logging
 import os
-from typing import List
+import numpy as np
+from typing import List, Optional, Dict
+from datetime import datetime
 
 try:
     from .serial_reader import SerialReader
@@ -19,6 +21,7 @@ try:
     from .config import config, user_settings
     from .gui.dpi_manager import DPIManager
     from .data_saver import DataSaver
+    from .breathing_estimator import BreathingEstimator
 except ImportError:
     # 直接运行时使用绝对导入
     from serial_reader import SerialReader
@@ -28,6 +31,7 @@ except ImportError:
     from config import config, user_settings
     from gui.dpi_manager import DPIManager
     from data_saver import DataSaver
+    from breathing_estimator import BreathingEstimator
 
 # 版本信息（从config导入）
 __version__ = config.version
@@ -82,6 +86,13 @@ class BLEHostGUI:
         self.frame_mode = (self.frame_type == "演示帧")  # 兼容性：是否启用帧模式（演示帧对应原来的帧模式）
         self.display_channel_list = list(range(10))  # 展示的信道列表，默认0-9
         self.display_max_frames = config.default_display_max_frames  # 显示和计算使用的最大帧数
+        
+        # 加载模式相关
+        self.is_loaded_mode = False  # 是否处于加载模式
+        self.loaded_frames = []  # 加载的帧数据
+        self.loaded_file_info = None  # 加载的文件信息
+        self.current_window_start = 0  # 当前时间窗起点（帧索引）
+        self.breathing_estimator = BreathingEstimator()  # 呼吸估计器
         
         # 创建界面
         self._create_widgets()
@@ -138,6 +149,161 @@ class BLEHostGUI:
             # 如果路径太长，截断显示
             display_path = current_path if len(current_path) <= 50 else "..." + current_path[-47:]
             self.path_label.config(text=f"当前路径: {display_path}")
+    
+    def _browse_load_file(self):
+        """浏览加载文件"""
+        filepath = filedialog.askopenfilename(
+            title="选择要加载的文件",
+            filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")]
+        )
+        if filepath:
+            self.load_file_path_var.set(filepath)
+    
+    def _load_file(self):
+        """加载文件"""
+        filepath = self.load_file_path_var.get()
+        if not filepath:
+            messagebox.showwarning("警告", "请选择要加载的文件")
+            return
+        
+        if not os.path.exists(filepath):
+            messagebox.showerror("错误", f"文件不存在: {filepath}")
+            return
+        
+        # 加载数据
+        data = self.data_saver.load_frames(filepath)
+        if data is None:
+            messagebox.showerror("错误", "加载文件失败，请查看日志")
+            return
+        
+        # 保存加载的数据
+        self.loaded_frames = data.get('frames', [])
+        self.loaded_file_info = data
+        
+        if len(self.loaded_frames) == 0:
+            messagebox.showwarning("警告", "文件中没有帧数据")
+            return
+        
+        # 进入加载模式
+        self.is_loaded_mode = True
+        
+        # 更新文件信息显示
+        self._update_load_file_info()
+        
+        # 显示滑动条并更新范围
+        self.slider_frame.pack(fill=tk.X, padx=5, pady=5, before=self.notebook)
+        max_start = max(0, len(self.loaded_frames) - self.display_max_frames)
+        self.time_window_slider.config(from_=0, to=max_start)
+        self.window_start_var.set(0)
+        self.current_window_start = 0
+        
+        # 禁用连接和数据保存tab
+        self._set_tabs_enabled(False)
+        
+        # 更新信道列表
+        all_channels = set()
+        for frame in self.loaded_frames[:10]:  # 只检查前10帧
+            channels = frame.get('channels', {})
+            for ch in channels.keys():
+                try:
+                    ch_int = int(ch) if isinstance(ch, str) and str(ch).isdigit() else ch
+                    all_channels.add(ch_int)
+                except:
+                    all_channels.add(ch)
+        channel_list = sorted(list(all_channels))
+        self.breathing_channel_combo['values'] = [str(ch) for ch in channel_list]
+        if channel_list:
+            self.breathing_channel_combo.current(0)
+            self.breathing_channel_var.set(str(channel_list[0]))
+        
+        # 隐藏DPI和数据处理，显示呼吸估计控制
+        self._update_right_panel_for_loaded_mode()
+        
+        # 更新绘图
+        self._update_loaded_mode_plots()
+        
+        messagebox.showinfo("成功", f"成功加载 {len(self.loaded_frames)} 帧数据")
+        self.logger.info(f"进入加载模式，共 {len(self.loaded_frames)} 帧")
+    
+    def _update_load_file_info(self):
+        """更新加载文件信息显示"""
+        if not self.loaded_file_info:
+            return
+        
+        self.load_file_info_text.config(state=tk.NORMAL)
+        self.load_file_info_text.delete(1.0, tk.END)
+        
+        info_lines = []
+        info_lines.append(f"版本: {self.loaded_file_info.get('version', 'N/A')}")
+        info_lines.append(f"保存时间: {self.loaded_file_info.get('saved_at', 'N/A')}")
+        info_lines.append(f"原始总帧数: {self.loaded_file_info.get('total_frames', 0)}")
+        info_lines.append(f"保存的帧数: {self.loaded_file_info.get('saved_frames', 0)}")
+        
+        max_frames_param = self.loaded_file_info.get('max_frames_param')
+        if max_frames_param is None:
+            info_lines.append(f"保存模式: 全部帧")
+        else:
+            info_lines.append(f"保存模式: 最近 {max_frames_param} 帧")
+        
+        if self.loaded_frames:
+            info_lines.append(f"\n第一帧: index={self.loaded_frames[0]['index']}, timestamp={self.loaded_frames[0]['timestamp_ms']} ms")
+            info_lines.append(f"最后一帧: index={self.loaded_frames[-1]['index']}, timestamp={self.loaded_frames[-1]['timestamp_ms']} ms")
+            
+            # 计算时间跨度
+            time_span = (self.loaded_frames[-1]['timestamp_ms'] - self.loaded_frames[0]['timestamp_ms']) / 1000.0
+            info_lines.append(f"时间跨度: {time_span:.2f} 秒")
+            
+            # 计算平均帧率
+            if len(self.loaded_frames) > 1:
+                intervals = []
+                for i in range(1, min(100, len(self.loaded_frames))):  # 只计算前100帧的间隔
+                    interval = (self.loaded_frames[i]['timestamp_ms'] - self.loaded_frames[i-1]['timestamp_ms']) / 1000.0
+                    intervals.append(interval)
+                if intervals:
+                    avg_interval = np.mean(intervals)
+                    info_lines.append(f"平均帧间隔: {avg_interval:.3f} 秒")
+                    info_lines.append(f"平均帧率: {1.0/avg_interval:.2f} 帧/秒")
+        
+        self.load_file_info_text.insert(tk.END, "\n".join(info_lines))
+        self.load_file_info_text.config(state=tk.DISABLED)
+    
+    def _on_slider_changed(self, value):
+        """滑动条变化时的回调"""
+        try:
+            start = int(float(value))
+            self.current_window_start = start
+            self.window_start_var.set(start)
+            self._update_loaded_mode_plots()
+        except:
+            pass
+    
+    def _on_window_start_changed(self):
+        """时间窗起点输入框变化时的回调"""
+        try:
+            start = int(self.window_start_var.get())
+            max_start = max(0, len(self.loaded_frames) - self.display_max_frames) if self.loaded_frames else 0
+            start = max(0, min(start, max_start))
+            self.current_window_start = start
+            self.window_start_var.set(start)
+            self.time_window_slider.set(start)
+            self._update_loaded_mode_plots()
+        except:
+            pass
+    
+    def _set_tabs_enabled(self, enabled: bool):
+        """启用或禁用连接和数据保存tab"""
+        # 禁用/启用连接tab的控件
+        if hasattr(self, 'port_combo'):
+            state = 'normal' if enabled else 'disabled'
+            self.port_combo.config(state=state)
+            self.connect_btn.config(state=state)
+            self.frame_type_combo.config(state=state)
+        
+        # 禁用/启用数据保存tab的控件
+        if hasattr(self, 'save_btn'):
+            state = 'normal' if enabled else 'disabled'
+            self.save_btn.config(state=state)
+            self.clear_data_btn.config(state=state)
     
     def _create_connection_tab(self, notebook):
         """创建连接配置选项卡"""
@@ -241,6 +407,37 @@ class BLEHostGUI:
             self.apply_settings_btn
         ]
     
+    def _create_load_tab(self, notebook):
+        """创建加载选项卡"""
+        load_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(load_frame, text="加载")
+        
+        # 文件路径选择
+        path_frame = ttk.Frame(load_frame)
+        path_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(path_frame, text="文件路径:").pack(side=tk.LEFT, padx=5)
+        self.load_file_path_var = tk.StringVar()
+        self.load_file_entry = ttk.Entry(path_frame, textvariable=self.load_file_path_var, width=50)
+        self.load_file_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        
+        ttk.Button(path_frame, text="浏览...", command=self._browse_load_file).pack(side=tk.LEFT, padx=5)
+        ttk.Button(path_frame, text="加载文件", command=self._load_file).pack(side=tk.LEFT, padx=5)
+        
+        # 文件信息显示
+        info_frame = ttk.LabelFrame(load_frame, text="文件信息", padding="5")
+        info_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.load_file_info_text = scrolledtext.ScrolledText(info_frame, height=8, width=50, font=("Courier", 9))
+        self.load_file_info_text.pack(fill=tk.BOTH, expand=True)
+        self.load_file_info_text.config(state=tk.DISABLED)  # 只读
+        
+        # 保存控件引用以便在加载模式下禁用/启用
+        self.load_tab_widgets = {
+            'load_file_entry': self.load_file_entry,
+            'load_file_path_var': self.load_file_path_var
+        }
+    
     def _create_data_and_save_tab(self, notebook):
         """创建数据与保存选项卡（合并了文件和数据操作功能）"""
         data_frame = ttk.Frame(notebook, padding="10")
@@ -310,14 +507,44 @@ class BLEHostGUI:
         self._create_connection_tab(config_notebook)
         self._create_channel_config_tab(config_notebook)
         self._create_data_and_save_tab(config_notebook)
+        self._create_load_tab(config_notebook)
         
         # 左右分栏
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # 左侧：多选项卡绘图区域
-        self.notebook = ttk.Notebook(paned)
-        paned.add(self.notebook, weight=2)
+        # 左侧：多选项卡绘图区域（包含滑动条）
+        left_container = ttk.Frame(paned)
+        paned.add(left_container, weight=2)
+        
+        # 滑动条容器（在绘图区域上方，初始隐藏）
+        self.slider_frame = ttk.Frame(left_container)
+        # 初始不显示，加载模式下才显示
+        
+        # 滑动条和输入框
+        slider_inner = ttk.Frame(self.slider_frame)
+        slider_inner.pack(fill=tk.X)
+        
+        ttk.Label(slider_inner, text="时间窗起点:").pack(side=tk.LEFT, padx=5)
+        self.window_start_var = tk.IntVar(value=0)
+        self.window_start_entry = ttk.Entry(slider_inner, textvariable=self.window_start_var, width=10)
+        self.window_start_entry.pack(side=tk.LEFT, padx=5)
+        self.window_start_entry.bind('<Return>', lambda e: self._on_window_start_changed())
+        
+        ttk.Label(slider_inner, text="(帧)").pack(side=tk.LEFT, padx=2)
+        
+        # 滑动条
+        self.time_window_slider = ttk.Scale(slider_inner, from_=0, to=100, orient=tk.HORIZONTAL, 
+                                             length=400, command=self._on_slider_changed)
+        self.time_window_slider.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+        
+        # 时间窗长度显示
+        self.window_length_label = ttk.Label(slider_inner, text="时间窗长度: -- 秒")
+        self.window_length_label.pack(side=tk.LEFT, padx=5)
+        
+        # 绘图区域
+        self.notebook = ttk.Notebook(left_container)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
         
         # 创建多个选项卡
         self._create_plot_tabs()
@@ -330,11 +557,11 @@ class BLEHostGUI:
         paned.add(self.right_frame, weight=1)
         
         # DPI信息显示区域（调试用）
-        dpi_info_frame = ttk.LabelFrame(self.right_frame, text="DPI缩放信息", padding="5")
-        dpi_info_frame.pack(fill=tk.X, padx=5, pady=5)
+        self.dpi_info_frame = ttk.LabelFrame(self.right_frame, text="DPI缩放信息", padding="5")
+        self.dpi_info_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # 创建DPI信息显示文本区域
-        self.dpi_info_text = scrolledtext.ScrolledText(dpi_info_frame, height=6, width=30, font=("Courier", 8))
+        self.dpi_info_text = scrolledtext.ScrolledText(self.dpi_info_frame, height=6, width=30, font=("Courier", 8))
         self.dpi_info_text.pack(fill=tk.BOTH, expand=True)
         self.dpi_info_text.config(state=tk.DISABLED)  # 只读
         
@@ -346,11 +573,18 @@ class BLEHostGUI:
         self.root.after(100, self._update_dpi_info)
         
         # 数据处理区域
-        process_frame = ttk.LabelFrame(self.right_frame, text="数据处理", padding="10")
-        process_frame.pack(fill=tk.X, padx=5, pady=5)
+        self.process_frame = ttk.LabelFrame(self.right_frame, text="数据处理", padding="10")
+        self.process_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 呼吸估计控制区域（加载模式下显示）
+        self.breathing_control_frame = ttk.LabelFrame(self.right_frame, text="Breathing Estimation Control", padding="10")
+        # 初始不显示，加载模式下才显示
+        
+        # 创建呼吸估计控制控件
+        self._create_breathing_control_widgets()
         
         # 频率计算（帧模式：通道频率，非帧模式：变量频率）
-        freq_frame = ttk.Frame(process_frame)
+        freq_frame = ttk.Frame(self.process_frame)
         freq_frame.pack(fill=tk.X, pady=5)
         
         ttk.Label(freq_frame, text="选择:").pack(side=tk.LEFT, padx=5)
@@ -361,10 +595,10 @@ class BLEHostGUI:
         ttk.Button(freq_frame, text="计算频率", command=self._calculate_frequency).pack(side=tk.LEFT, padx=5)
         
         self.freq_result_var = tk.StringVar(value="")
-        ttk.Label(process_frame, textvariable=self.freq_result_var, foreground="blue").pack(pady=5)
+        ttk.Label(self.process_frame, textvariable=self.freq_result_var, foreground="blue").pack(pady=5)
         
         # 统计信息（自动更新）
-        stats_label_frame = ttk.LabelFrame(process_frame, text="统计信息（自动更新）", padding="5")
+        stats_label_frame = ttk.LabelFrame(self.process_frame, text="统计信息（自动更新）", padding="5")
         stats_label_frame.pack(fill=tk.X, pady=5)
         
         self.stats_text = scrolledtext.ScrolledText(stats_label_frame, height=8, width=30)
@@ -374,10 +608,10 @@ class BLEHostGUI:
         self.freq_var_var.trace_add('write', self._on_freq_var_changed)
         
         # 日志显示区域
-        log_frame = ttk.LabelFrame(self.right_frame, text="日志", padding="10")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.log_frame = ttk.LabelFrame(self.right_frame, text="日志", padding="10")
+        self.log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=15, width=30)
+        self.log_text = scrolledtext.ScrolledText(self.log_frame, height=15, width=30)
         self.log_text.pack(fill=tk.BOTH, expand=True)
         
         # 添加日志处理器
@@ -590,6 +824,67 @@ class BLEHostGUI:
                 'data_type': data_type,
                 'frame': tab_frame
             }
+        
+        # 创建呼吸估计tab（2x2布局）
+        self._create_breathing_estimation_tab()
+    
+    def _create_breathing_estimation_tab(self):
+        """创建呼吸估计选项卡（2x2子图布局）"""
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        
+        tab_frame = ttk.Frame(self.notebook)
+        self.notebook.add(tab_frame, text="呼吸估计")
+        
+        # 创建2x2子图的figure
+        plot_width_inch, plot_height_inch = self.dpi_manager.get_plot_size()
+        figure = Figure(figsize=(plot_width_inch, plot_height_inch), dpi=100)
+        
+        # 创建4个子图
+        ax1 = figure.add_subplot(2, 2, 1)  # 左上：原始数据
+        ax2 = figure.add_subplot(2, 2, 2)  # 右上：高通滤波
+        ax3 = figure.add_subplot(2, 2, 3)  # 左下：FFT频谱
+        ax4 = figure.add_subplot(2, 2, 4)  # 右下：呼吸检测结果（文本）
+        
+        # 设置子图标题
+        ax1.set_title('Raw Data', fontsize=10)
+        ax1.set_xlabel('Frame Index')
+        ax1.set_ylabel('Amplitude')
+        ax1.grid(True, alpha=0.3)
+        
+        ax2.set_title('Median + Highpass Filter', fontsize=10)
+        ax2.set_xlabel('Frame Index')
+        ax2.set_ylabel('Amplitude')
+        ax2.grid(True, alpha=0.3)
+        
+        ax3.set_title('FFT Spectrum: Before vs After Bandpass', fontsize=10)
+        ax3.set_xlabel('Frequency (Hz)')
+        ax3.set_ylabel('Power')
+        ax3.grid(True, alpha=0.3)
+        
+        # 右下角不画图，只显示文本
+        ax4.axis('off')
+        ax4.set_title('Breathing Detection Result', fontsize=10, pad=20)
+        
+        # 附加到界面
+        canvas = FigureCanvasTkAgg(figure, tab_frame)
+        canvas.draw()
+        widget = canvas.get_tk_widget()
+        widget.pack(fill=tk.BOTH, expand=True)
+        
+        # 保存引用
+        self.plotters['breathing_estimation'] = {
+            'plotter': None,  # 不使用Plotter类
+            'figure': figure,
+            'canvas': canvas,
+            'axes': {
+                'top_left': ax1,
+                'top_right': ax2,
+                'bottom_left': ax3,
+                'bottom_right': ax4
+            },
+            'frame': tab_frame
+        }
     
     def _adjust_current_plot_size(self):
         """只调整当前可见tab的plot尺寸（优化性能）"""
@@ -630,10 +925,33 @@ class BLEHostGUI:
             if current_tab_index < len(tab_configs):
                 tab_key = tab_configs[current_tab_index][0]
                 if tab_key in self.plotters:
-                    plotter = self.plotters[tab_key]['plotter']
-                    # 只调整当前可见的plot尺寸
-                    plotter.resize_figure(plot_width_px, plot_height_px, dpi=plot_dpi)
-                    self.logger.debug(f"调整了当前tab ({tab_key}) 的plot尺寸: {plot_width_px}x{plot_height_px}px @ {plot_dpi}DPI")
+                    plotter_info = self.plotters[tab_key]
+                    plotter = plotter_info.get('plotter')
+                    if plotter is not None:
+                        # 只调整当前可见的plot尺寸
+                        plotter.resize_figure(plot_width_px, plot_height_px, dpi=plot_dpi)
+                        self.logger.debug(f"调整了当前tab ({tab_key}) 的plot尺寸: {plot_width_px}x{plot_height_px}px @ {plot_dpi}DPI")
+                    elif 'figure' in plotter_info:
+                        # 呼吸估计tab使用figure
+                        figure = plotter_info['figure']
+                        width_inch = plot_width_px / plot_dpi
+                        height_inch = plot_height_px / plot_dpi
+                        figure.set_size_inches(width_inch, height_inch)
+                        figure.set_dpi(plot_dpi)
+                        if 'canvas' in plotter_info:
+                            plotter_info['canvas'].draw_idle()
+            elif current_tab_index == len(tab_configs):
+                # 可能是呼吸估计tab
+                if 'breathing_estimation' in self.plotters:
+                    plotter_info = self.plotters['breathing_estimation']
+                    if 'figure' in plotter_info:
+                        figure = plotter_info['figure']
+                        width_inch = plot_width_px / plot_dpi
+                        height_inch = plot_height_px / plot_dpi
+                        figure.set_size_inches(width_inch, height_inch)
+                        figure.set_dpi(plot_dpi)
+                        if 'canvas' in plotter_info:
+                            plotter_info['canvas'].draw_idle()
         except Exception as e:
             self.logger.warning(f"调整当前plot尺寸时出错: {e}")
     
@@ -664,7 +982,20 @@ class BLEHostGUI:
             # 调整所有plot的尺寸（窗口大小变化时需要调整所有）
             adjusted_count = 0
             for tab_key, plotter_info in self.plotters.items():
-                plotter = plotter_info['plotter']
+                plotter = plotter_info.get('plotter')
+                # 跳过呼吸估计tab（plotter为None，使用figure）
+                if plotter is None:
+                    # 呼吸估计tab使用figure，需要单独处理
+                    if 'figure' in plotter_info:
+                        figure = plotter_info['figure']
+                        width_inch = plot_width_px / plot_dpi
+                        height_inch = plot_height_px / plot_dpi
+                        figure.set_size_inches(width_inch, height_inch)
+                        figure.set_dpi(plot_dpi)
+                        if 'canvas' in plotter_info:
+                            plotter_info['canvas'].draw_idle()
+                    adjusted_count += 1
+                    continue
                 # 使用调整后的DPI，使字体和元素更大更清晰
                 plotter.resize_figure(plot_width_px, plot_height_px, dpi=plot_dpi)
                 adjusted_count += 1
@@ -761,7 +1092,10 @@ class BLEHostGUI:
         self.data_processor.clear_buffer(clear_frames=True)
         # 清空所有绘图器（包括图例）
         for plotter_info in self.plotters.values():
-            plotter = plotter_info['plotter']
+            plotter = plotter_info.get('plotter')
+            # 跳过呼吸估计tab（plotter为None）
+            if plotter is None:
+                continue
             # 清除所有数据线
             plotter.clear_plot()
             # 清除图例
@@ -1134,7 +1468,10 @@ class BLEHostGUI:
             channels_to_remove = set(old_display_channel_list) - set(new_display_channel_list)
             if channels_to_remove:
                 for plotter_info in self.plotters.values():
-                    plotter = plotter_info['plotter']
+                    plotter = plotter_info.get('plotter')
+                    # 跳过呼吸估计tab（plotter为None）
+                    if plotter is None:
+                        continue
                     for ch in channels_to_remove:
                         var_name = f"ch{ch}"
                         if var_name in plotter.data_lines:
@@ -1143,11 +1480,25 @@ class BLEHostGUI:
         self.display_channel_list = new_display_channel_list
         self.logger.info(f"展示信道设置为: {self.display_channel_list} (模式: {mode})")
         
+        # 如果处于加载模式，更新滑动条范围
+        if self.is_loaded_mode and self.loaded_frames:
+            max_start = max(0, len(self.loaded_frames) - self.display_max_frames)
+            self.time_window_slider.config(from_=0, to=max_start)
+            # 确保当前起点不超过最大值
+            if self.current_window_start > max_start:
+                self.current_window_start = max_start
+                self.window_start_var.set(max_start)
+                self.time_window_slider.set(max_start)
+        
         # 立即更新绘图（如果有数据）
         if self.frame_mode:
             self._update_frame_plots()
             # 同时更新统计信息（因为使用了新的帧数范围）
             self._update_statistics()
+        
+        # 如果在加载模式，更新加载模式的绘图
+        if self.is_loaded_mode:
+            self._update_loaded_mode_plots()
     
     def _on_frame_type_changed(self):
         """帧类型选择变化时的回调"""
@@ -1164,7 +1515,9 @@ class BLEHostGUI:
                 self.data_processor.clear_buffer(clear_frames=False)  # 不清空帧数据
                 # 清空所有绘图，只显示帧数据
                 for plotter_info in self.plotters.values():
-                    plotter_info['plotter'].clear_plot()
+                    plotter = plotter_info.get('plotter')
+                    if plotter is not None:
+                        plotter.clear_plot()
                 # 清空解析器状态
                 self.data_parser.clear_buffer()
                 # 应用当前设置
@@ -1174,7 +1527,9 @@ class BLEHostGUI:
                 # 切换到非帧模式时，清空帧数据
                 self.data_processor.clear_buffer(clear_frames=True)
                 for plotter_info in self.plotters.values():
-                    plotter_info['plotter'].clear_plot()
+                    plotter = plotter_info.get('plotter')
+                    if plotter is not None:
+                        plotter.clear_plot()
         else:
             # 帧模式状态没有变化，只是类型变化（比如从演示帧切换到快速帧）
             self.logger.info(f"帧类型从 {old_frame_type} 切换到 {self.frame_type}")
@@ -1483,7 +1838,10 @@ class BLEHostGUI:
         # 更新指定的选项卡的绘图
         for tab_key_to_update in tabs_to_update:
             plotter_info = self.plotters[tab_key_to_update]
-            plotter = plotter_info['plotter']
+            plotter = plotter_info.get('plotter')
+            # 跳过呼吸估计tab（plotter为None）
+            if plotter is None:
+                continue
             data_type = plotter_info['data_type']
             
             # 准备该数据类型的所有通道数据
@@ -1504,7 +1862,12 @@ class BLEHostGUI:
     def _refresh_all_plotters(self):
         """刷新所有绘图器（立即刷新，用于tab切换等场景）"""
         for plotter_info in self.plotters.values():
-            plotter_info['plotter'].refresh()
+            plotter = plotter_info.get('plotter')
+            if plotter is not None:
+                plotter.refresh()
+            elif 'canvas' in plotter_info:
+                # 呼吸估计tab使用canvas
+                plotter_info['canvas'].draw_idle()
     
     def _refresh_plotters_throttled(self):
         """节流刷新绘图器（限制刷新频率，避免GUI卡顿）"""
@@ -1590,6 +1953,259 @@ class BLEHostGUI:
         
         self.logger.info("程序已关闭")
         self.root.destroy()
+    
+    def _create_breathing_control_widgets(self):
+        """创建呼吸估计控制控件"""
+        # 数据类型选择
+        data_type_frame = ttk.Frame(self.breathing_control_frame)
+        data_type_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(data_type_frame, text="Data Type:").pack(side=tk.LEFT, padx=5)
+        self.breathing_data_type_var = tk.StringVar(value="amplitude")
+        data_type_combo = ttk.Combobox(
+            data_type_frame, 
+            textvariable=self.breathing_data_type_var,
+            values=["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"],
+            width=15,
+            state="readonly"
+        )
+        data_type_combo.pack(side=tk.LEFT, padx=5)
+        data_type_combo.bind("<<ComboboxSelected>>", lambda e: self._update_loaded_mode_plots())
+        
+        # 信道选择
+        channel_frame = ttk.Frame(self.breathing_control_frame)
+        channel_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(channel_frame, text="Channel:").pack(side=tk.LEFT, padx=5)
+        self.breathing_channel_var = tk.StringVar(value="0")
+        self.breathing_channel_combo = ttk.Combobox(channel_frame, textvariable=self.breathing_channel_var, width=15)
+        self.breathing_channel_combo.pack(side=tk.LEFT, padx=5)
+        self.breathing_channel_combo.bind("<<ComboboxSelected>>", lambda e: self._update_loaded_mode_plots())
+        
+        # 阈值输入
+        threshold_frame = ttk.Frame(self.breathing_control_frame)
+        threshold_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(threshold_frame, text="Threshold:").pack(side=tk.LEFT, padx=5)
+        self.breathing_threshold_var = tk.StringVar(value="0.6")
+        threshold_entry = ttk.Entry(threshold_frame, textvariable=self.breathing_threshold_var, width=10)
+        threshold_entry.pack(side=tk.LEFT, padx=5)
+        threshold_entry.bind('<Return>', lambda e: self._update_loaded_mode_plots())
+        
+        ttk.Button(threshold_frame, text="Update", command=self._update_loaded_mode_plots).pack(side=tk.LEFT, padx=5)
+    
+    def _update_right_panel_for_loaded_mode(self):
+        """更新右侧面板：加载模式下隐藏DPI和数据处理，显示呼吸估计控制"""
+        if self.is_loaded_mode:
+            # 隐藏DPI和数据处理
+            self.dpi_info_frame.pack_forget()
+            self.process_frame.pack_forget()
+            # 显示呼吸估计控制
+            self.breathing_control_frame.pack(fill=tk.X, padx=5, pady=5, before=self.log_frame)
+        else:
+            # 显示DPI和数据处理
+            self.dpi_info_frame.pack(fill=tk.X, padx=5, pady=5)
+            self.process_frame.pack(fill=tk.X, padx=5, pady=5)
+            # 隐藏呼吸估计控制
+            self.breathing_control_frame.pack_forget()
+    
+    def _update_loaded_mode_plots(self):
+        """更新加载模式下的绘图"""
+        if not self.is_loaded_mode or not self.loaded_frames:
+            return
+        
+        # 获取当前时间窗的数据
+        window_start = self.current_window_start
+        window_size = self.display_max_frames
+        window_end = min(window_start + window_size, len(self.loaded_frames))
+        
+        if window_start >= window_end:
+            return
+        
+        # 提取时间窗内的帧
+        window_frames = self.loaded_frames[window_start:window_end]
+        
+        # 更新所有绘图tab
+        self._update_loaded_plots_for_tabs(window_frames)
+        
+        # 更新呼吸估计tab
+        self._update_breathing_estimation_plot(window_frames)
+        
+        # 更新时间窗长度显示
+        if len(window_frames) > 1:
+            # 计算时间跨度
+            time_span = (window_frames[-1]['timestamp_ms'] - window_frames[0]['timestamp_ms']) / 1000.0
+            self.window_length_label.config(text=f"时间窗长度: {time_span:.2f} 秒")
+        else:
+            self.window_length_label.config(text="时间窗长度: -- 秒")
+    
+    def _update_loaded_plots_for_tabs(self, window_frames: List[Dict]):
+        """更新加载模式下各个tab的绘图"""
+        # 提取所有通道的数据
+        all_channels = set()
+        for frame in window_frames:
+            all_channels.update(frame.get('channels', {}).keys())
+        
+        # 根据设置的展示信道列表筛选
+        display_channels = []
+        for ch in self.display_channel_list:
+            ch_key = ch if ch in all_channels else (str(ch) if str(ch) in all_channels else None)
+            if ch_key is not None:
+                display_channels.append(ch_key)
+        
+        if not display_channels:
+            return
+        
+        # 为每个tab更新数据
+        for tab_key, plotter_info in self.plotters.items():
+            if tab_key == 'breathing_estimation':
+                continue  # 呼吸估计tab单独处理
+            
+            plotter = plotter_info['plotter']
+            data_type = plotter_info['data_type']
+            
+            # 准备该数据类型的所有通道数据
+            channel_data = {}
+            for ch in display_channels:
+                indices = []
+                values = []
+                for i, frame in enumerate(window_frames):
+                    channels = frame.get('channels', {})
+                    ch_data = channels.get(ch) or channels.get(str(ch)) or channels.get(int(ch)) if ch else None
+                    if ch_data:
+                        indices.append(frame.get('index', self.current_window_start + i))
+                        values.append(ch_data.get(data_type, 0.0))
+                
+                if len(indices) > 0 and len(values) > 0:
+                    # 确保ch是整数类型
+                    ch_int = int(ch) if isinstance(ch, (int, str)) and str(ch).isdigit() else ch
+                    channel_data[ch_int] = (np.array(indices), np.array(values))
+            
+            # 更新绘图
+            if channel_data:
+                plotter.update_frame_data(channel_data, max_channels=len(display_channels))
+                plotter.refresh()
+    
+    def _update_breathing_estimation_plot(self, window_frames: List[Dict]):
+        """更新呼吸估计tab的绘图"""
+        if 'breathing_estimation' not in self.plotters:
+            return
+        
+        plot_info = self.plotters['breathing_estimation']
+        axes = plot_info['axes']
+        figure = plot_info['figure']
+        
+        # 获取选择的信道和数据类型
+        try:
+            channel = int(self.breathing_channel_var.get())
+        except:
+            channel = 0
+        
+        data_type = self.breathing_data_type_var.get()
+        
+        # 提取该信道的数据
+        signal_data = []
+        indices = []
+        for i, frame in enumerate(window_frames):
+            channels = frame.get('channels', {})
+            # 尝试多种方式匹配信道
+            ch_data = None
+            if channel in channels:
+                ch_data = channels[channel]
+            elif str(channel) in channels:
+                ch_data = channels[str(channel)]
+            elif int(channel) in channels:
+                ch_data = channels[int(channel)]
+            
+            if ch_data:
+                signal_data.append(ch_data.get(data_type, 0.0))
+                indices.append(frame.get('index', self.current_window_start + i))
+        
+        if len(signal_data) == 0:
+            self.logger.warning(f"呼吸估计: 信道 {channel} 在时间窗内没有数据")
+            return
+        
+        signal = np.array(signal_data)
+        indices = np.array(indices)
+        
+        # 左上角：原始数据
+        ax1 = axes['top_left']
+        ax1.clear()
+        ax1.plot(indices, signal, 'b-', linewidth=1.0, alpha=0.8)
+        ax1.set_title('Raw Data', fontsize=10)
+        ax1.set_xlabel('Frame Index')
+        ax1.set_ylabel('Amplitude' if 'amplitude' in data_type else 'Phase')
+        ax1.grid(True, alpha=0.3)
+        
+        # 右上角：中值滤波+高通滤波
+        ax2 = axes['top_right']
+        ax2.clear()
+        processed = self.breathing_estimator.process_signal(signal, data_type)
+        if 'highpass_filtered' in processed:
+            ax2.plot(indices, processed['highpass_filtered'], 'r-', linewidth=1.0, alpha=0.8)
+        ax2.set_title('Median + Highpass Filter', fontsize=10)
+        ax2.set_xlabel('Frame Index')
+        ax2.set_ylabel('Amplitude' if 'amplitude' in data_type else 'Phase')
+        ax2.grid(True, alpha=0.3)
+        
+        # 左下角：FFT频谱（带通前后对比）
+        ax3 = axes['bottom_left']
+        ax3.clear()
+        if 'highpass_filtered' in processed:
+            # 分析时间窗
+            analysis = self.breathing_estimator.analyze_window(processed['highpass_filtered'], apply_hanning=True)
+            if 'fft_freq_before' in analysis and 'fft_power_before' in analysis:
+                # 只显示0-1Hz范围
+                freq_mask = analysis['fft_freq_before'] <= 1.0
+                ax3.plot(analysis['fft_freq_before'][freq_mask], analysis['fft_power_before'][freq_mask], 
+                        'b-', linewidth=1.5, alpha=0.7, label='Before Bandpass')
+            if 'fft_freq_after' in analysis and 'fft_power_after' in analysis:
+                freq_mask = analysis['fft_freq_after'] <= 1.0
+                ax3.plot(analysis['fft_freq_after'][freq_mask], analysis['fft_power_after'][freq_mask], 
+                        'r-', linewidth=1.5, alpha=0.7, label='After Bandpass')
+            # 标记通带范围
+            ax3.axvspan(self.breathing_estimator.bandpass_lowcut, 
+                       self.breathing_estimator.bandpass_highcut, 
+                       alpha=0.2, color='yellow', label='Passband Range')
+        ax3.set_title('FFT Spectrum: Before vs After Bandpass', fontsize=10)
+        ax3.set_xlabel('Frequency (Hz)')
+        ax3.set_ylabel('Power')
+        ax3.set_xlim(0, 1.0)
+        ax3.grid(True, alpha=0.3)
+        ax3.legend(fontsize=8)
+        
+        # 右下角：呼吸检测结果
+        ax4 = axes['bottom_right']
+        ax4.clear()
+        ax4.axis('off')
+        ax4.set_title('Breathing Detection Result', fontsize=10, pad=20)
+        
+        if 'highpass_filtered' in processed:
+            try:
+                threshold = float(self.breathing_threshold_var.get())
+            except:
+                threshold = 0.6
+            
+            detection = self.breathing_estimator.detect_breathing(processed['highpass_filtered'], threshold=threshold)
+            
+            result_text = f"Energy Ratio: {detection['energy_ratio']:.4f}\n"
+            result_text += f"Threshold: {threshold:.2f}\n"
+            result_text += f"Detection: {'Breathing Detected' if detection['has_breathing'] else 'No Breathing'}\n"
+            
+            if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
+                breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
+                result_text += f"Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
+                result_text += f"Breathing Rate: {breathing_rate:.1f} /min"
+            else:
+                result_text += "Breathing Freq: --\n"
+                result_text += "Breathing Rate: --"
+            
+            ax4.text(0.5, 0.5, result_text, ha='center', va='center', 
+                    fontsize=11, family='monospace',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        # 刷新画布
+        plot_info['canvas'].draw_idle()
 
 
 class TextHandler(logging.Handler):
