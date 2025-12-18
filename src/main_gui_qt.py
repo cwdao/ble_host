@@ -539,6 +539,7 @@ class BLEHostGUI(QMainWindow):
     def _create_connection_tab(self):
         """创建连接配置选项卡"""
         tab = QWidget()
+        tab.setMinimumHeight(80)  # 设置最小高度，保持等高
         layout = QHBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
         
@@ -583,6 +584,7 @@ class BLEHostGUI(QMainWindow):
     def _create_channel_config_tab(self):
         """创建通道配置选项卡"""
         tab = QWidget()
+        tab.setMinimumHeight(80)  # 设置最小高度，保持等高
         layout = QHBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
         
@@ -641,6 +643,7 @@ class BLEHostGUI(QMainWindow):
     def _create_data_and_save_tab(self):
         """创建数据和保存选项卡"""
         tab = QWidget()
+        tab.setMinimumHeight(80)  # 设置最小高度，保持等高
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
         
@@ -703,6 +706,7 @@ class BLEHostGUI(QMainWindow):
     def _create_load_tab(self):
         """创建加载选项卡"""
         tab = QWidget()
+        tab.setMinimumHeight(80)  # 设置最小高度，保持等高
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
         
@@ -720,9 +724,9 @@ class BLEHostGUI(QMainWindow):
         path_layout.addLayout(path_input_layout)
         
         button_layout = QHBoxLayout()
-        browse_btn = QPushButton("浏览...")
-        browse_btn.clicked.connect(self._browse_load_file)
-        button_layout.addWidget(browse_btn)
+        self.browse_btn = QPushButton("浏览...")
+        self.browse_btn.clicked.connect(self._browse_load_file)
+        button_layout.addWidget(self.browse_btn)
         
         # 合并加载/取消加载按钮为一个按钮
         self.load_unload_btn = QPushButton("加载文件")
@@ -756,6 +760,7 @@ class BLEHostGUI(QMainWindow):
     def _create_settings_tab(self):
         """创建设置选项卡"""
         tab = QWidget()
+        tab.setMinimumHeight(80)  # 设置最小高度，保持等高
         layout = QHBoxLayout(tab)  # 改为横向布局
         layout.setContentsMargins(10, 10, 10, 10)
         
@@ -926,6 +931,9 @@ class BLEHostGUI(QMainWindow):
                 # 清空呼吸估计结果显示
                 if hasattr(self, 'breathing_result_text'):
                     self.breathing_result_text.setPlainText("等待数据积累...")
+                
+                # 禁用文件加载tab
+                self._set_load_tab_enabled(False)
             else:
                 QMessageBox.critical(self, "错误", "串口连接失败")
         else:
@@ -942,6 +950,9 @@ class BLEHostGUI(QMainWindow):
             # 清空呼吸估计结果显示
             if hasattr(self, 'breathing_result_text'):
                 self.breathing_result_text.setPlainText("未连接")
+            
+            # 启用文件加载tab
+            self._set_load_tab_enabled(True)
     
     def _on_frame_type_changed(self, text):
         """帧类型改变"""
@@ -1352,13 +1363,43 @@ class BLEHostGUI(QMainWindow):
     def _clear_data(self):
         """清空数据"""
         self.data_processor.clear_buffer(clear_frames=True)
-        # 清空所有绘图器
+        # 清空所有绘图器（包括实时绘图和呼吸估计）
         for plotter_info in self.plotters.values():
             plotter = plotter_info.get('plotter')
             if plotter is None:
+                # 呼吸估计tab使用matplotlib，需要单独处理
+                if 'breathing_estimation' in self.plotters and 'axes' in plotter_info:
+                    axes = plotter_info['axes']
+                    axes['top_left'].clear()
+                    axes['top_right'].clear()
+                    axes['bottom_left'].clear()
+                    axes['bottom_right'].clear()
+                    # 重置标题和标签
+                    axes['top_left'].set_title('Raw Data', fontsize=10)
+                    axes['top_left'].set_xlabel('Frame Index')
+                    axes['top_left'].set_ylabel('Amplitude')
+                    axes['top_left'].grid(True, alpha=0.3)
+                    axes['top_right'].set_title('Median + Highpass Filter', fontsize=10)
+                    axes['top_right'].set_xlabel('Frame Index')
+                    axes['top_right'].set_ylabel('Amplitude')
+                    axes['top_right'].grid(True, alpha=0.3)
+                    axes['bottom_left'].set_title('FFT Spectrum: Before vs After Bandpass', fontsize=10)
+                    axes['bottom_left'].set_xlabel('Frequency (Hz)')
+                    axes['bottom_left'].set_ylabel('Power')
+                    axes['bottom_left'].grid(True, alpha=0.3)
+                    axes['bottom_right'].axis('off')
+                    axes['bottom_right'].set_title('Breathing Detection Result', fontsize=10, pad=20)
+                    # 刷新画布
+                    if 'canvas' in plotter_info:
+                        plotter_info['canvas'].draw_idle()
                 continue
             plotter.clear_plot()
         self.data_parser.clear_buffer()
+        
+        # 清空呼吸估计结果显示
+        if hasattr(self, 'breathing_result_text'):
+            self.breathing_result_text.setPlainText("数据已清空")
+        
         self.logger.info("数据已清空")
     
     def _browse_load_file(self):
@@ -1407,6 +1448,9 @@ class BLEHostGUI(QMainWindow):
             
             # 禁用连接tab的功能
             self._set_connection_tab_enabled(False)
+            
+            # 禁用文件加载tab（加载模式下）
+            self._set_load_tab_enabled(False)
             
             # 更新信道列表（用于呼吸估计）
             all_channels = set()
@@ -1476,6 +1520,9 @@ class BLEHostGUI(QMainWindow):
         # 启用连接tab的功能
         self._set_connection_tab_enabled(True)
         
+        # 启用文件加载tab
+        self._set_load_tab_enabled(True)
+        
         # 呼吸估计控制面板已经常驻显示，不需要切换
         
         # 切换按钮为加载文件
@@ -1499,12 +1546,20 @@ class BLEHostGUI(QMainWindow):
     
     def _set_connection_tab_enabled(self, enabled: bool):
         """启用或禁用连接tab的功能"""
-        state = Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked
         self.port_combo.setEnabled(enabled)
         self.connect_btn.setEnabled(enabled)
         self.frame_type_combo.setEnabled(enabled)
         if hasattr(self, 'baudrate_combo'):
             self.baudrate_combo.setEnabled(enabled)
+    
+    def _set_load_tab_enabled(self, enabled: bool):
+        """启用或禁用文件加载tab的功能"""
+        if hasattr(self, 'load_file_entry'):
+            self.load_file_entry.setEnabled(enabled)
+        if hasattr(self, 'load_unload_btn'):
+            self.load_unload_btn.setEnabled(enabled)
+        if hasattr(self, 'browse_btn'):
+            self.browse_btn.setEnabled(enabled)
     
     def _calculate_frequency(self):
         """计算频率"""
