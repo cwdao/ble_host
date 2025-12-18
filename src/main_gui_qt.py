@@ -283,7 +283,6 @@ class BLEHostGUI(QMainWindow):
         data_type_layout.addWidget(QLabel("Data Type:"))
         self.breathing_data_type_combo = QComboBox()
         self.breathing_data_type_combo.addItems(["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"])
-        self.breathing_data_type_combo.currentTextChanged.connect(self._on_breathing_control_changed)
         data_type_layout.addWidget(self.breathing_data_type_combo)
         breathing_control_layout.addLayout(data_type_layout)
         
@@ -291,7 +290,6 @@ class BLEHostGUI(QMainWindow):
         channel_layout = QHBoxLayout()
         channel_layout.addWidget(QLabel("Channel:"))
         self.breathing_channel_combo = QComboBox()
-        self.breathing_channel_combo.currentTextChanged.connect(self._on_breathing_control_changed)
         channel_layout.addWidget(self.breathing_channel_combo)
         breathing_control_layout.addLayout(channel_layout)
         
@@ -300,11 +298,7 @@ class BLEHostGUI(QMainWindow):
         threshold_layout.addWidget(QLabel("Threshold:"))
         self.breathing_threshold_entry = QLineEdit("0.6")
         self.breathing_threshold_entry.setMaximumWidth(80)
-        self.breathing_threshold_entry.returnPressed.connect(self._on_breathing_control_changed)
         threshold_layout.addWidget(self.breathing_threshold_entry)
-        update_btn = QPushButton("Update")
-        update_btn.clicked.connect(self._on_breathing_control_changed)
-        threshold_layout.addWidget(update_btn)
         breathing_control_layout.addLayout(threshold_layout)
         
         # 实时更新间隔（N秒）
@@ -312,9 +306,17 @@ class BLEHostGUI(QMainWindow):
         interval_layout.addWidget(QLabel("更新间隔(秒):"))
         self.breathing_update_interval_entry = QLineEdit("5.0")
         self.breathing_update_interval_entry.setMaximumWidth(80)
-        self.breathing_update_interval_entry.returnPressed.connect(self._on_breathing_interval_changed)
         interval_layout.addWidget(self.breathing_update_interval_entry)
         breathing_control_layout.addLayout(interval_layout)
+        
+        # Update按钮（控制所有参数，放在更新间隔下面）
+        update_layout = QHBoxLayout()
+        self.update_all_btn = QPushButton("Update")
+        self.update_all_btn.setStyleSheet("background-color: #2196F3; color: white;")
+        self.update_all_btn.clicked.connect(self._on_update_all_breathing_params)
+        update_layout.addWidget(self.update_all_btn)
+        update_layout.addStretch()
+        breathing_control_layout.addLayout(update_layout)
         
         # 呼吸估计结果显示
         result_label = QLabel("结果:")
@@ -1446,11 +1448,10 @@ class BLEHostGUI(QMainWindow):
             self.time_window_slider.setValue(0)
             self.window_start_entry.setText("0")
             
-            # 禁用连接tab的功能
+            # 禁用连接tab的功能（加载模式和连接态互斥）
             self._set_connection_tab_enabled(False)
             
-            # 禁用文件加载tab（加载模式下）
-            self._set_load_tab_enabled(False)
+            # 注意：不禁用文件加载tab，因为用户可以取消加载
             
             # 更新信道列表（用于呼吸估计）
             all_channels = set()
@@ -1857,15 +1858,13 @@ class BLEHostGUI(QMainWindow):
             self.window_start_entry.setText(str(self.current_window_start))
     
     def _on_breathing_control_changed(self):
-        """呼吸估计控制参数变化时的回调"""
-        if self.is_loaded_mode:
-            self._update_loaded_mode_plots()
-        else:
-            # 实时模式下立即更新
-            self._update_realtime_breathing_estimation()
+        """呼吸估计控制参数变化时的回调（单个参数变化时）"""
+        # 移除自动更新，改为手动Update按钮控制
+        pass
     
-    def _on_breathing_interval_changed(self):
-        """呼吸估计更新间隔变化时的回调"""
+    def _on_update_all_breathing_params(self):
+        """Update按钮：提交所有参数"""
+        # 更新更新间隔
         try:
             interval = float(self.breathing_update_interval_entry.text())
             if interval > 0:
@@ -1878,9 +1877,18 @@ class BLEHostGUI(QMainWindow):
             else:
                 QMessageBox.warning(self, "警告", "更新间隔必须大于0")
                 self.breathing_update_interval_entry.setText(str(self.breathing_update_interval))
+                return
         except ValueError:
             QMessageBox.warning(self, "警告", "更新间隔必须是数字")
             self.breathing_update_interval_entry.setText(str(self.breathing_update_interval))
+            return
+        
+        # 更新呼吸估计（根据当前模式）
+        if self.is_loaded_mode:
+            self._update_loaded_mode_plots()
+        else:
+            # 实时模式下立即更新
+            self._update_realtime_breathing_estimation()
     
     def _start_realtime_breathing_estimation(self):
         """启动实时呼吸估计定时器"""
@@ -2181,21 +2189,54 @@ class BLEHostGUI(QMainWindow):
                 threshold = 0.6
             detection = self.breathing_estimator.detect_breathing(processed['highpass_filtered'], threshold=threshold)
             
-            result_text = f"Energy Ratio: {detection['energy_ratio']:.4f}\n"
-            result_text += f"Threshold: {threshold:.2f}\n"
-            result_text += f"Detection: {'Breathing Detected' if detection['has_breathing'] else 'No Breathing'}\n"
+            # 判断是否检测到呼吸，决定背景颜色
+            has_breathing = detection['has_breathing']
+            bg_color = '#90EE90' if has_breathing else 'wheat'  # 浅绿色或棕色
             
-            if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
+            # 基础信息文本
+            base_text = f"Energy Ratio: {detection['energy_ratio']:.4f}\n"
+            base_text += f"Threshold: {threshold:.2f}\n"
+            base_text += f"Detection: {'Breathing Detected' if has_breathing else 'No Breathing'}\n"
+            
+            if has_breathing and not np.isnan(detection['breathing_freq']):
                 breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
-                result_text += f"Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
-                result_text += f"Breathing Rate: {breathing_rate:.1f} /min"
+                
+                # 使用多个text调用来实现不同格式
+                # 绘制背景框
+                from matplotlib.patches import FancyBboxPatch
+                bbox = FancyBboxPatch((0.05, 0.05), 0.9, 0.9, 
+                                     boxstyle='round,pad=0.02',
+                                     facecolor=bg_color, alpha=0.5,
+                                     transform=ax4.transAxes)
+                ax4.add_patch(bbox)
+                
+                # 绘制文本（分多行）
+                y_positions = [0.75, 0.6, 0.45, 0.3, 0.15]
+                ax4.text(0.5, y_positions[0], f"Energy Ratio: {detection['energy_ratio']:.4f}", 
+                        ha='center', va='center', fontsize=10, family='monospace',
+                        transform=ax4.transAxes)
+                ax4.text(0.5, y_positions[1], f"Threshold: {threshold:.2f}", 
+                        ha='center', va='center', fontsize=10, family='monospace',
+                        transform=ax4.transAxes)
+                ax4.text(0.5, y_positions[2], f"Detection: {'Breathing Detected' if has_breathing else 'No Breathing'}", 
+                        ha='center', va='center', fontsize=10, family='monospace',
+                        transform=ax4.transAxes)
+                ax4.text(0.5, y_positions[3], f"Breathing Freq: {detection['breathing_freq']:.4f} Hz", 
+                        ha='center', va='center', fontsize=10, family='monospace',
+                        transform=ax4.transAxes)
+                # 呼吸次数用大字体和深绿色显示
+                ax4.text(0.5, y_positions[4], f"Breathing Rate: {breathing_rate:.1f} /min", 
+                        ha='center', va='center', fontsize=20, family='monospace',
+                        color='#006400', weight='bold',  # 深绿色，加粗，大字体
+                        transform=ax4.transAxes)
             else:
-                result_text += "Breathing Freq: --\n"
-                result_text += "Breathing Rate: --"
-            
-            ax4.text(0.5, 0.5, result_text, ha='center', va='center', 
-                    fontsize=11, family='monospace',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                base_text += "Breathing Freq: --\n"
+                base_text += "Breathing Rate: --"
+                
+                ax4.text(0.5, 0.5, base_text, ha='center', va='center', 
+                        fontsize=11, family='monospace',
+                        bbox=dict(boxstyle='round', facecolor=bg_color, alpha=0.5),
+                        transform=ax4.transAxes)
         
         # 刷新画布
         plot_info['canvas'].draw_idle()
