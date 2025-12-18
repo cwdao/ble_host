@@ -16,10 +16,10 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QCheckBox,
     QRadioButton, QSlider, QTabWidget, QSplitter, QGroupBox, QMessageBox,
-    QFileDialog, QButtonGroup, QFrame
+    QFileDialog, QButtonGroup, QFrame, QMenuBar, QMenu, QDialog, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup
 
 # 业务逻辑模块（无需修改）
 try:
@@ -86,7 +86,8 @@ class BLEHostGUI(QMainWindow):
         # 帧数据处理
         self.frame_type = config.default_frame_type
         self.frame_mode = (self.frame_type == "演示帧")
-        self.display_channel_list = list(range(10))
+        # 使用默认配置解析显示信道列表（临时使用，稍后在_apply_frame_settings中会正确设置）
+        self.display_channel_list = []
         self.display_max_frames = config.default_display_max_frames
         
         # 加载模式相关
@@ -98,6 +99,12 @@ class BLEHostGUI(QMainWindow):
         
         # 创建界面
         self._create_widgets()
+        
+        # 应用默认设置（初始化显示信道）
+        if self.frame_mode:
+            # 先设置默认值
+            self.display_channels_entry.setText(config.default_display_channels)
+            self._apply_frame_settings()
         
         # 定时刷新（使用 QTimer 替代 threading）
         self._start_update_loop()
@@ -112,6 +119,9 @@ class BLEHostGUI(QMainWindow):
     
     def _create_widgets(self):
         """创建GUI组件"""
+        # 创建菜单栏
+        self._create_menu_bar()
+        
         # 创建中央部件
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -148,6 +158,46 @@ class BLEHostGUI(QMainWindow):
         
         main_layout.addWidget(self.config_tabs)
         
+        # 3. 滑动条容器（加载模式下显示）
+        self.slider_frame = QFrame()
+        self.slider_frame.setVisible(False)  # 初始隐藏
+        slider_layout = QHBoxLayout(self.slider_frame)
+        slider_layout.setContentsMargins(5, 5, 5, 5)
+        
+        slider_layout.addWidget(QLabel("时间窗起点:"))
+        self.window_start_entry = QLineEdit("0")
+        self.window_start_entry.setMaximumWidth(80)
+        self.window_start_entry.returnPressed.connect(self._on_window_start_changed)
+        slider_layout.addWidget(self.window_start_entry)
+        slider_layout.addWidget(QLabel("(帧)"))
+        
+        # 左箭头按钮
+        self.slider_left_btn = QPushButton("◄")
+        self.slider_left_btn.setMaximumWidth(40)
+        self.slider_left_btn.clicked.connect(self._on_slider_left_click)
+        slider_layout.addWidget(self.slider_left_btn)
+        
+        # 滑动条
+        self.time_window_slider = QSlider(Qt.Orientation.Horizontal)
+        self.time_window_slider.setMinimum(0)
+        self.time_window_slider.setMaximum(100)
+        self.time_window_slider.valueChanged.connect(self._on_slider_value_changed)
+        self.time_window_slider.sliderReleased.connect(self._on_slider_released)
+        slider_layout.addWidget(self.time_window_slider)
+        
+        # 右箭头按钮
+        self.slider_right_btn = QPushButton("►")
+        self.slider_right_btn.setMaximumWidth(40)
+        self.slider_right_btn.clicked.connect(self._on_slider_right_click)
+        slider_layout.addWidget(self.slider_right_btn)
+        
+        # 时间窗长度显示
+        self.window_length_label = QLabel("时间窗长度: -- 秒")
+        slider_layout.addWidget(self.window_length_label)
+        slider_layout.addStretch()
+        
+        main_layout.addWidget(self.slider_frame)
+        
         # 3. 左右分栏（绘图区域 + 右侧面板）
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
@@ -169,8 +219,47 @@ class BLEHostGUI(QMainWindow):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(5, 5, 5, 5)
         
+        # 呼吸估计控制区域（加载模式下显示）
+        self.breathing_control_group = QGroupBox("Breathing Estimation Control")
+        self.breathing_control_group.setVisible(False)  # 初始隐藏
+        breathing_control_layout = QVBoxLayout(self.breathing_control_group)
+        
+        # 数据类型选择
+        data_type_layout = QHBoxLayout()
+        data_type_layout.addWidget(QLabel("Data Type:"))
+        self.breathing_data_type_combo = QComboBox()
+        self.breathing_data_type_combo.addItems(["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"])
+        self.breathing_data_type_combo.currentTextChanged.connect(self._on_breathing_control_changed)
+        data_type_layout.addWidget(self.breathing_data_type_combo)
+        breathing_control_layout.addLayout(data_type_layout)
+        
+        # 信道选择
+        channel_layout = QHBoxLayout()
+        channel_layout.addWidget(QLabel("Channel:"))
+        self.breathing_channel_combo = QComboBox()
+        self.breathing_channel_combo.currentTextChanged.connect(self._on_breathing_control_changed)
+        channel_layout.addWidget(self.breathing_channel_combo)
+        breathing_control_layout.addLayout(channel_layout)
+        
+        # 阈值输入
+        threshold_layout = QHBoxLayout()
+        threshold_layout.addWidget(QLabel("Threshold:"))
+        self.breathing_threshold_entry = QLineEdit("0.6")
+        self.breathing_threshold_entry.setMaximumWidth(80)
+        self.breathing_threshold_entry.returnPressed.connect(self._on_breathing_control_changed)
+        threshold_layout.addWidget(self.breathing_threshold_entry)
+        update_btn = QPushButton("Update")
+        update_btn.clicked.connect(self._on_breathing_control_changed)
+        threshold_layout.addWidget(update_btn)
+        breathing_control_layout.addLayout(threshold_layout)
+        
+        right_layout.addWidget(self.breathing_control_group)
+        
         # 数据处理区域
-        self._create_process_panel(right_layout)
+        self.process_group = QGroupBox("数据处理")
+        process_layout = QVBoxLayout(self.process_group)
+        self._create_process_panel(process_layout)
+        right_layout.addWidget(self.process_group)
         
         # 日志区域
         self._create_log_panel(right_layout)
@@ -182,6 +271,120 @@ class BLEHostGUI(QMainWindow):
         splitter.setStretchFactor(1, 1)  # 右侧占 1/3
         
         main_layout.addWidget(splitter, stretch=1)
+    
+    def _create_menu_bar(self):
+        """创建菜单栏"""
+        menubar = self.menuBar()
+        
+        # 设置菜单
+        settings_menu = menubar.addMenu("设置")
+        
+        # 主题模式
+        theme_menu = settings_menu.addMenu("主题模式")
+        self.theme_light_action = QAction("浅色模式", self)
+        self.theme_light_action.setCheckable(True)
+        self.theme_light_action.triggered.connect(lambda: self._set_theme("light"))
+        theme_menu.addAction(self.theme_light_action)
+        
+        self.theme_dark_action = QAction("深色模式", self)
+        self.theme_dark_action.setCheckable(True)
+        self.theme_dark_action.triggered.connect(lambda: self._set_theme("dark"))
+        theme_menu.addAction(self.theme_dark_action)
+        
+        self.theme_auto_action = QAction("跟随系统", self)
+        self.theme_auto_action.setCheckable(True)
+        self.theme_auto_action.setChecked(True)  # 默认跟随系统
+        self.theme_auto_action.triggered.connect(lambda: self._set_theme("auto"))
+        theme_menu.addAction(self.theme_auto_action)
+        
+        # 创建动作组，确保只能选择一个
+        theme_group = QActionGroup(self)
+        theme_group.addAction(self.theme_light_action)
+        theme_group.addAction(self.theme_dark_action)
+        theme_group.addAction(self.theme_auto_action)
+        theme_group.setExclusive(True)
+        
+        settings_menu.addSeparator()
+        
+        # About
+        about_action = QAction("关于", self)
+        about_action.triggered.connect(self._show_about)
+        settings_menu.addAction(about_action)
+    
+    def _set_theme(self, theme: str):
+        """设置主题"""
+        if theme == "light":
+            self.setStyleSheet("")
+            # 可以添加浅色主题的样式
+        elif theme == "dark":
+            # 深色主题样式
+            self.setStyleSheet("""
+                QMainWindow {
+                    background-color: #2b2b2b;
+                    color: #ffffff;
+                }
+                QWidget {
+                    background-color: #2b2b2b;
+                    color: #ffffff;
+                }
+                QGroupBox {
+                    border: 1px solid #555555;
+                    border-radius: 3px;
+                    margin-top: 10px;
+                    padding-top: 10px;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 5px;
+                }
+                QPushButton {
+                    background-color: #3c3c3c;
+                    border: 1px solid #555555;
+                    border-radius: 3px;
+                    padding: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #4c4c4c;
+                }
+                QPushButton:pressed {
+                    background-color: #2c2c2c;
+                }
+                QLineEdit, QTextEdit, QComboBox {
+                    background-color: #3c3c3c;
+                    border: 1px solid #555555;
+                    border-radius: 3px;
+                    padding: 3px;
+                    color: #ffffff;
+                }
+                QTabWidget::pane {
+                    border: 1px solid #555555;
+                    background-color: #2b2b2b;
+                }
+                QTabBar::tab {
+                    background-color: #3c3c3c;
+                    color: #ffffff;
+                    padding: 5px 10px;
+                    border: 1px solid #555555;
+                }
+                QTabBar::tab:selected {
+                    background-color: #4c4c4c;
+                }
+            """)
+        else:  # auto
+            self.setStyleSheet("")  # 使用系统默认主题
+    
+    def _show_about(self):
+        """显示关于对话框"""
+        about_text = f"""
+        <h2>BLE CS Host</h2>
+        <p><b>版本:</b> {__version__}</p>
+        <p><b>编译日期:</b> {__version_date__}</p>
+        <p><b>作者:</b> {__version_author__}</p>
+        <p>BLE Channel Sounding 上位机应用程序</p>
+        <p>基于 PySide6 开发</p>
+        """
+        QMessageBox.about(self, "关于", about_text)
     
     def _create_connection_tab(self):
         """创建连接配置选项卡"""
@@ -357,6 +560,7 @@ class BLEHostGUI(QMainWindow):
         path_layout = QHBoxLayout()
         path_layout.addWidget(QLabel("文件路径:"))
         self.load_file_entry = QLineEdit()
+        self.load_file_entry.setMaximumWidth(300)  # 缩减一半宽度
         path_layout.addWidget(self.load_file_entry)
         
         browse_btn = QPushButton("浏览...")
@@ -366,6 +570,14 @@ class BLEHostGUI(QMainWindow):
         load_btn = QPushButton("加载文件")
         load_btn.clicked.connect(self._load_file)
         path_layout.addWidget(load_btn)
+        
+        self.unload_btn = QPushButton("取消加载")
+        self.unload_btn.setStyleSheet("background-color: #f44336; color: white;")
+        self.unload_btn.clicked.connect(self._unload_file)
+        self.unload_btn.setVisible(False)  # 初始隐藏
+        path_layout.addWidget(self.unload_btn)
+        
+        path_layout.addStretch()
         layout.addLayout(path_layout)
         
         # 文件信息显示
@@ -374,8 +586,12 @@ class BLEHostGUI(QMainWindow):
         self.load_file_info_text = QTextEdit()
         self.load_file_info_text.setReadOnly(True)
         self.load_file_info_text.setFont(QFont("Consolas", 9))
+        self.load_file_info_text.setMaximumHeight(100)  # 缩减高度
+        self.load_file_info_text.setMaximumWidth(400)  # 缩减宽度
         info_layout.addWidget(self.load_file_info_text)
         layout.addWidget(info_group)
+        
+        layout.addStretch()
         
         self.config_tabs.addTab(tab, "文件加载")
     
@@ -413,9 +629,6 @@ class BLEHostGUI(QMainWindow):
     
     def _create_process_panel(self, parent_layout):
         """创建数据处理面板"""
-        group = QGroupBox("数据处理")
-        layout = QVBoxLayout(group)
-        
         # 频率计算
         freq_layout = QHBoxLayout()
         freq_layout.addWidget(QLabel("选择:"))
@@ -426,11 +639,11 @@ class BLEHostGUI(QMainWindow):
         calc_freq_btn = QPushButton("计算频率")
         calc_freq_btn.clicked.connect(self._calculate_frequency)
         freq_layout.addWidget(calc_freq_btn)
-        layout.addLayout(freq_layout)
+        parent_layout.addLayout(freq_layout)
         
         self.freq_result_label = QLabel("")
         self.freq_result_label.setStyleSheet("color: blue;")
-        layout.addWidget(self.freq_result_label)
+        parent_layout.addWidget(self.freq_result_label)
         
         # 统计信息（自动更新）
         stats_group = QGroupBox("统计信息（自动更新）")
@@ -439,9 +652,7 @@ class BLEHostGUI(QMainWindow):
         self.stats_text.setReadOnly(True)
         self.stats_text.setFont(QFont("Consolas", 9))
         stats_layout.addWidget(self.stats_text)
-        layout.addWidget(stats_group)
-        
-        parent_layout.addWidget(group)
+        parent_layout.addWidget(stats_group)
     
     def _create_log_panel(self, parent_layout):
         """创建日志面板"""
@@ -939,32 +1150,118 @@ class BLEHostGUI(QMainWindow):
             self.is_loaded_mode = True
             self.current_window_start = 0
             
-            # 显示文件信息
-            info_text = f"版本: {data.get('version', 'N/A')}\n"
-            info_text += f"保存时间: {data.get('saved_at', 'N/A')}\n"
-            info_text += f"总帧数: {data.get('total_frames', len(self.loaded_frames))}\n"
-            info_text += f"已保存帧数: {data.get('saved_frames', len(self.loaded_frames))}\n"
-            self.load_file_info_text.setPlainText(info_text)
+            # 更新文件信息显示（完整信息）
+            self._update_load_file_info()
             
-            # 更新滑动条（如果存在）
-            if hasattr(self, 'time_window_slider'):
-                max_start = max(0, len(self.loaded_frames) - self.display_max_frames)
-                self.time_window_slider.setMaximum(max_start)
-                self.time_window_slider.setValue(0)
+            # 显示滑动条并更新范围
+            self.slider_frame.setVisible(True)
+            max_start = max(0, len(self.loaded_frames) - self.display_max_frames)
+            self.time_window_slider.setMaximum(max_start)
+            self.time_window_slider.setValue(0)
+            self.window_start_entry.setText("0")
+            
+            # 禁用连接tab的功能
+            self._set_connection_tab_enabled(False)
+            
+            # 更新信道列表（用于呼吸估计）
+            all_channels = set()
+            for frame in self.loaded_frames[:10]:  # 只检查前10帧
+                channels = frame.get('channels', {})
+                for ch in channels.keys():
+                    try:
+                        ch_int = int(ch) if isinstance(ch, str) and str(ch).isdigit() else ch
+                        all_channels.add(ch_int)
+                    except:
+                        all_channels.add(ch)
+            channel_list = sorted(list(all_channels))
+            self.breathing_channel_combo.clear()
+            self.breathing_channel_combo.addItems([str(ch) for ch in channel_list])
+            if channel_list:
+                self.breathing_channel_combo.setCurrentIndex(0)
+            
+            # 显示呼吸估计控制面板，隐藏数据处理面板
+            self.breathing_control_group.setVisible(True)
+            self.process_group.setVisible(False)
+            
+            # 显示取消加载按钮
+            self.unload_btn.setVisible(True)
             
             # 加载数据到处理器
             self.data_processor.clear_buffer(clear_frames=True)
             for frame in self.loaded_frames:
                 self.data_processor.add_frame_data(frame)
             
-            # 更新绘图
-            self._update_frame_plots()
+            # 更新加载模式的绘图
+            self._update_loaded_mode_plots()
             
             self.logger.info(f"文件加载成功: {filepath}, 共 {len(self.loaded_frames)} 帧")
             QMessageBox.information(self, "成功", f"文件加载成功，共 {len(self.loaded_frames)} 帧")
         except Exception as e:
             self.logger.error(f"加载文件时出错: {e}")
             QMessageBox.critical(self, "错误", f"加载文件失败: {str(e)}")
+    
+    def _update_load_file_info(self):
+        """更新加载文件信息显示"""
+        if not self.loaded_file_info:
+            return
+        
+        info_lines = []
+        info_lines.append(f"版本: {self.loaded_file_info.get('version', 'N/A')}")
+        info_lines.append(f"保存时间: {self.loaded_file_info.get('saved_at', 'N/A')}")
+        info_lines.append(f"原始总帧数: {self.loaded_file_info.get('total_frames', 0)}")
+        info_lines.append(f"保存的帧数: {self.loaded_file_info.get('saved_frames', 0)}")
+        
+        max_frames_param = self.loaded_file_info.get('max_frames_param')
+        if max_frames_param is None:
+            info_lines.append(f"保存模式: 全部帧")
+        else:
+            info_lines.append(f"保存模式: 最近 {max_frames_param} 帧")
+        
+        self.load_file_info_text.setPlainText("\n".join(info_lines))
+    
+    def _unload_file(self):
+        """取消加载文件"""
+        self.is_loaded_mode = False
+        self.loaded_frames = []
+        self.loaded_file_info = None
+        self.current_window_start = 0
+        
+        # 隐藏滑动条
+        self.slider_frame.setVisible(False)
+        
+        # 启用连接tab的功能
+        self._set_connection_tab_enabled(True)
+        
+        # 隐藏呼吸估计控制面板，显示数据处理面板
+        self.breathing_control_group.setVisible(False)
+        self.process_group.setVisible(True)
+        
+        # 隐藏取消加载按钮
+        self.unload_btn.setVisible(False)
+        
+        # 清空文件信息
+        self.load_file_info_text.clear()
+        self.load_file_entry.clear()
+        
+        # 清空数据
+        self.data_processor.clear_buffer(clear_frames=True)
+        for plotter_info in self.plotters.values():
+            plotter = plotter_info.get('plotter')
+            if plotter is None:
+                continue
+            plotter.clear_plot()
+        
+        self.logger.info("已取消文件加载")
+        QMessageBox.information(self, "提示", "已取消文件加载")
+    
+    def _set_connection_tab_enabled(self, enabled: bool):
+        """启用或禁用连接tab的功能"""
+        state = Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked
+        self.port_combo.setEnabled(enabled)
+        self.connect_btn.setEnabled(enabled)
+        self.frame_type_combo.setEnabled(enabled)
+        if hasattr(self, 'baudrate_combo'):
+            self.baudrate_combo.setEnabled(enabled)
     
     def _calculate_frequency(self):
         """计算频率"""
@@ -1204,6 +1501,156 @@ class BLEHostGUI(QMainWindow):
         # 呼吸估计控制（在加载模式下显示）
         # TODO: 如果需要，可以添加呼吸估计控制面板
     
+    def _on_slider_value_changed(self, value):
+        """滑动条值变化时的回调（拖动时只更新输入框，不绘图）"""
+        self.window_start_entry.setText(str(value))
+    
+    def _on_slider_released(self):
+        """滑动条鼠标释放时的回调（拖动结束后才更新绘图）"""
+        value = self.time_window_slider.value()
+        self.current_window_start = value
+        self.window_start_entry.setText(str(value))
+        if self.is_loaded_mode:
+            self._update_loaded_mode_plots()
+    
+    def _on_slider_left_click(self):
+        """左箭头按钮点击（单步减少）"""
+        current = self.current_window_start
+        new_value = max(0, current - 1)
+        self.current_window_start = new_value
+        self.window_start_entry.setText(str(new_value))
+        self.time_window_slider.setValue(new_value)
+        if self.is_loaded_mode:
+            self._update_loaded_mode_plots()
+    
+    def _on_slider_right_click(self):
+        """右箭头按钮点击（单步增加）"""
+        current = self.current_window_start
+        max_start = max(0, len(self.loaded_frames) - self.display_max_frames) if self.loaded_frames else 0
+        new_value = min(max_start, current + 1)
+        self.current_window_start = new_value
+        self.window_start_entry.setText(str(new_value))
+        self.time_window_slider.setValue(new_value)
+        if self.is_loaded_mode:
+            self._update_loaded_mode_plots()
+    
+    def _on_window_start_changed(self):
+        """时间窗起点输入框变化时的回调"""
+        try:
+            start = int(self.window_start_entry.text())
+            max_start = max(0, len(self.loaded_frames) - self.display_max_frames) if self.loaded_frames else 0
+            start = max(0, min(start, max_start))
+            self.current_window_start = start
+            self.window_start_entry.setText(str(start))
+            self.time_window_slider.setValue(start)
+            if self.is_loaded_mode:
+                self._update_loaded_mode_plots()
+        except ValueError:
+            # 如果输入无效，恢复为当前值
+            self.window_start_entry.setText(str(self.current_window_start))
+    
+    def _on_breathing_control_changed(self):
+        """呼吸估计控制参数变化时的回调"""
+        if self.is_loaded_mode:
+            self._update_loaded_mode_plots()
+    
+    def _update_loaded_mode_plots(self):
+        """更新加载模式下的绘图"""
+        if not self.is_loaded_mode or not self.loaded_frames:
+            return
+        
+        # 获取当前时间窗的数据
+        window_start = self.current_window_start
+        window_size = self.display_max_frames
+        window_end = min(window_start + window_size, len(self.loaded_frames))
+        
+        if window_start >= window_end:
+            return
+        
+        # 提取时间窗内的帧
+        window_frames = self.loaded_frames[window_start:window_end]
+        
+        # 更新所有绘图tab
+        self._update_loaded_plots_for_tabs(window_frames)
+        
+        # 更新呼吸估计tab
+        self._update_breathing_estimation_plot(window_frames)
+        
+        # 更新时间窗长度显示
+        if len(window_frames) > 1:
+            time_span = (window_frames[-1]['timestamp_ms'] - window_frames[0]['timestamp_ms']) / 1000.0
+            self.window_length_label.setText(f"时间窗长度: {time_span:.2f} 秒")
+        else:
+            self.window_length_label.setText("时间窗长度: -- 秒")
+    
+    def _update_loaded_plots_for_tabs(self, window_frames: List[Dict]):
+        """更新加载模式下各个tab的绘图"""
+        # 提取所有通道的数据
+        all_channels = set()
+        for frame in window_frames:
+            channels = frame.get('channels', {})
+            for ch in channels.keys():
+                try:
+                    ch_int = int(ch) if isinstance(ch, (int, str)) and str(ch).isdigit() else ch
+                    all_channels.add(ch_int)
+                except:
+                    all_channels.add(ch)
+        
+        if not all_channels:
+            return
+        
+        # 根据设置的展示信道列表筛选
+        display_channels = []
+        for ch in self.display_channel_list:
+            if ch in all_channels:
+                display_channels.append(ch)
+        
+        if not display_channels:
+            return
+        
+        # 更新每个绘图tab
+        tab_configs = [
+            ('amplitude', 'amplitude'),
+            ('phase', 'phase'),
+            ('local_amplitude', 'local_amplitude'),
+            ('local_phase', 'local_phase'),
+            ('remote_amplitude', 'remote_amplitude'),
+            ('remote_phase', 'remote_phase'),
+        ]
+        
+        for tab_key, data_type in tab_configs:
+            if tab_key not in self.plotters:
+                continue
+            
+            plotter_info = self.plotters[tab_key]
+            plotter = plotter_info.get('plotter')
+            if plotter is None:
+                continue
+            
+            # 准备该数据类型的所有通道数据
+            channel_data = {}
+            for ch in display_channels:
+                indices = []
+                values = []
+                for i, frame in enumerate(window_frames):
+                    channels = frame.get('channels', {})
+                    ch_data = None
+                    if ch in channels:
+                        ch_data = channels[ch]
+                    elif str(ch) in channels:
+                        ch_data = channels[str(ch)]
+                    
+                    if ch_data:
+                        indices.append(frame.get('index', self.current_window_start + i))
+                        values.append(ch_data.get(data_type, 0.0))
+                
+                if len(indices) > 0 and len(values) > 0:
+                    channel_data[ch] = (np.array(indices), np.array(values))
+            
+            # 更新绘图
+            if channel_data:
+                plotter.update_frame_data(channel_data, max_channels=len(display_channels))
+    
     def _update_breathing_estimation_plot(self, window_frames: List[Dict]):
         """更新呼吸估计tab的绘图"""
         if 'breathing_estimation' not in self.plotters:
@@ -1212,9 +1659,13 @@ class BLEHostGUI(QMainWindow):
         plot_info = self.plotters['breathing_estimation']
         axes = plot_info['axes']
         
-        # 默认使用通道0和amplitude类型
-        channel = 0
-        data_type = 'amplitude'
+        # 获取选择的信道和数据类型
+        try:
+            channel = int(self.breathing_channel_combo.currentText())
+        except:
+            channel = 0
+        
+        data_type = self.breathing_data_type_combo.currentText()
         
         # 提取该信道的数据
         signal_data = []
@@ -1288,7 +1739,10 @@ class BLEHostGUI(QMainWindow):
         ax4.set_title('Breathing Detection Result', fontsize=10, pad=20)
         
         if 'highpass_filtered' in processed:
-            threshold = 0.6  # 默认阈值
+            try:
+                threshold = float(self.breathing_threshold_entry.text())
+            except:
+                threshold = 0.6
             detection = self.breathing_estimator.detect_breathing(processed['highpass_filtered'], threshold=threshold)
             
             result_text = f"Energy Ratio: {detection['energy_ratio']:.4f}\n"
