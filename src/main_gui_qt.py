@@ -1505,19 +1505,38 @@ class BLEHostGUI(QMainWindow):
         """更新加载文件信息显示"""
         if not self.loaded_file_info:
             return
-        
+
         info_lines = []
         info_lines.append(f"版本: {self.loaded_file_info.get('version', 'N/A')}")
         info_lines.append(f"保存时间: {self.loaded_file_info.get('saved_at', 'N/A')}")
         info_lines.append(f"原始总帧数: {self.loaded_file_info.get('total_frames', 0)}")
         info_lines.append(f"保存的帧数: {self.loaded_file_info.get('saved_frames', 0)}")
-        
+
         max_frames_param = self.loaded_file_info.get('max_frames_param')
         if max_frames_param is None:
             info_lines.append(f"保存模式: 全部帧")
         else:
             info_lines.append(f"保存模式: 最近 {max_frames_param} 帧")
-        
+
+        if self.loaded_frames:
+            info_lines.append(f"\n第一帧: index={self.loaded_frames[0]['index']}, timestamp={self.loaded_frames[0]['timestamp_ms']} ms")
+            info_lines.append(f"最后一帧: index={self.loaded_frames[-1]['index']}, timestamp={self.loaded_frames[-1]['timestamp_ms']} ms")
+
+            # 计算时间跨度
+            time_span = (self.loaded_frames[-1]['timestamp_ms'] - self.loaded_frames[0]['timestamp_ms']) / 1000.0
+            info_lines.append(f"时间跨度: {time_span:.2f} 秒")
+
+            # 计算平均帧率
+            if len(self.loaded_frames) > 1:
+                intervals = []
+                for i in range(1, min(100, len(self.loaded_frames))):  # 只计算前100帧的间隔
+                    interval = (self.loaded_frames[i]['timestamp_ms'] - self.loaded_frames[i-1]['timestamp_ms']) / 1000.0
+                    intervals.append(interval)
+                if intervals:
+                    avg_interval = np.mean(intervals)
+                    info_lines.append(f"平均帧间隔: {avg_interval:.3f} 秒")
+                    info_lines.append(f"平均帧率: {1.0/avg_interval:.2f} 帧/秒")
+
         self.load_file_info_text.setPlainText("\n".join(info_lines))
     
     def _unload_file(self):
