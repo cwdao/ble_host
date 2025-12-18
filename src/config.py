@@ -17,7 +17,7 @@ class AppConfig:
     # 版本信息
     version: str = "2.3.0"
     version_date: str = "2025-12-16"
-    version_author: str = "chwn@outlook.ie, HKUST(GZ)"
+    version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     
     # 窗口配置
     base_window_width: int = 1200

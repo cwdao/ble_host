@@ -97,6 +97,9 @@ class BLEHostGUI(QMainWindow):
         self.current_window_start = 0
         self.breathing_estimator = BreathingEstimator()
         
+        # 主题模式
+        self.current_theme_mode = "auto"  # auto, light, dark
+        
         # 创建界面
         self._create_widgets()
         
@@ -106,8 +109,21 @@ class BLEHostGUI(QMainWindow):
             self.display_channels_entry.setText(config.default_display_channels)
             self._apply_frame_settings()
         
+        # 应用初始主题（跟随系统）
+        self._apply_theme("auto")
+        
         # 定时刷新（使用 QTimer 替代 threading）
         self._start_update_loop()
+        
+        # 监听系统主题变化（如果支持）
+        try:
+            from PySide6.QtGui import QGuiApplication
+            app = QGuiApplication.instance()
+            if app:
+                # 监听系统主题变化
+                app.paletteChanged.connect(self._on_system_theme_changed)
+        except:
+            pass
     
     def _setup_logging(self):
         """设置日志"""
@@ -155,6 +171,7 @@ class BLEHostGUI(QMainWindow):
         self._create_channel_config_tab()
         self._create_data_and_save_tab()
         self._create_load_tab()
+        self._create_settings_tab()
         
         main_layout.addWidget(self.config_tabs)
         
@@ -177,12 +194,42 @@ class BLEHostGUI(QMainWindow):
         self.slider_left_btn.clicked.connect(self._on_slider_left_click)
         slider_layout.addWidget(self.slider_left_btn)
         
-        # 滑动条
-        self.time_window_slider = QSlider(Qt.Orientation.Horizontal)
+        # 滑动条（支持鼠标和键盘方向键控制）
+        # 创建自定义滑动条类，支持键盘方向键控制
+        class KeyboardSlider(QSlider):
+            def __init__(self, orientation, parent=None, update_callback=None):
+                super().__init__(orientation, parent)
+                self.update_callback = update_callback
+            
+            def keyPressEvent(self, event):
+                # 处理方向键
+                if event.key() == Qt.Key.Key_Left or event.key() == Qt.Key.Key_Down:
+                    # 左/下键：减少值
+                    new_value = max(self.minimum(), self.value() - 1)
+                    self.setValue(new_value)
+                    if self.update_callback:
+                        self.update_callback()
+                    event.accept()
+                elif event.key() == Qt.Key.Key_Right or event.key() == Qt.Key.Key_Up:
+                    # 右/上键：增加值
+                    new_value = min(self.maximum(), self.value() + 1)
+                    self.setValue(new_value)
+                    if self.update_callback:
+                        self.update_callback()
+                    event.accept()
+                else:
+                    # 其他键使用默认处理
+                    super().keyPressEvent(event)
+        
+        self.time_window_slider = KeyboardSlider(Qt.Orientation.Horizontal, update_callback=self._on_slider_keyboard_changed)
         self.time_window_slider.setMinimum(0)
         self.time_window_slider.setMaximum(100)
-        self.time_window_slider.valueChanged.connect(self._on_slider_value_changed)
+        # 允许键盘焦点，以便响应方向键
+        self.time_window_slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # 连接sliderReleased，鼠标释放时更新
         self.time_window_slider.sliderReleased.connect(self._on_slider_released)
+        # 鼠标点击时也更新
+        self.time_window_slider.sliderPressed.connect(self._on_slider_pressed)
         slider_layout.addWidget(self.time_window_slider)
         
         # 右箭头按钮
@@ -273,106 +320,116 @@ class BLEHostGUI(QMainWindow):
         main_layout.addWidget(splitter, stretch=1)
     
     def _create_menu_bar(self):
-        """创建菜单栏"""
-        menubar = self.menuBar()
+        """创建菜单栏（已移除，设置改为tab）"""
+        # 菜单栏已移除，所有设置都在设置tab中
+        pass
+    
+    def _on_theme_mode_changed(self, theme: str):
+        """主题模式改变时的回调"""
+        self.current_theme_mode = theme
+        self._apply_theme(theme)
+    
+    def _apply_theme(self, theme: str):
+        """应用主题"""
+        if theme == "auto":
+            # 跟随系统主题
+            self._apply_system_theme()
+        elif theme == "light":
+            # 强制浅色模式
+            self._apply_light_theme()
+        elif theme == "dark":
+            # 强制深色模式
+            self._apply_dark_theme()
+    
+    def _get_system_theme(self):
+        """获取系统主题"""
+        try:
+            from PySide6.QtGui import QGuiApplication
+            app = QGuiApplication.instance()
+            if app:
+                # 使用QStyleHints来检测系统主题（Qt 6.5+）
+                style_hints = app.styleHints()
+                if hasattr(style_hints, 'colorScheme'):
+                    try:
+                        color_scheme = style_hints.colorScheme()
+                        if color_scheme == Qt.ColorScheme.Dark:
+                            return "dark"
+                        elif color_scheme == Qt.ColorScheme.Light:
+                            return "light"
+                    except:
+                        pass
+                # 备用方法：检查palette
+                palette = app.palette()
+                bg_color = palette.color(palette.ColorRole.Window)
+                # 如果背景色较暗，则是深色模式
+                lightness = bg_color.lightness()
+                return "dark" if lightness < 128 else "light"
+        except Exception as e:
+            self.logger.warning(f"获取系统主题失败: {e}")
+        return "light"  # 默认浅色
+    
+    def _apply_system_theme(self):
+        """应用系统主题"""
+        system_theme = self._get_system_theme()
+        if system_theme == "dark":
+            self._apply_dark_theme()
+        else:
+            self._apply_light_theme()
+    
+    def _apply_light_theme(self):
+        """应用浅色主题（只改波形图背景）"""
+        # 不设置样式表，保持系统默认主题
         
-        # 设置菜单
-        settings_menu = menubar.addMenu("设置")
+        # 只设置PyQtGraph背景为白色（浅色模式）
+        try:
+            import pyqtgraph as pg
+        except ImportError:
+            pg = None
         
-        # 主题模式
-        theme_menu = settings_menu.addMenu("主题模式")
-        self.theme_light_action = QAction("浅色模式", self)
-        self.theme_light_action.setCheckable(True)
-        self.theme_light_action.triggered.connect(lambda: self._set_theme("light"))
-        theme_menu.addAction(self.theme_light_action)
+        if pg:
+            for plotter_info in self.plotters.values():
+                plotter = plotter_info.get('plotter')
+                if plotter is not None:
+                    # PyQtGraph背景设置为白色
+                    plotter.plot_widget.setBackground('w')
+                    # 设置网格和坐标轴颜色为深色（在浅色背景下）
+                    plotter.plot_widget.getAxis('left').setPen(pg.mkPen(color='k'))
+                    plotter.plot_widget.getAxis('bottom').setPen(pg.mkPen(color='k'))
+                    # 设置文本颜色为深色
+                    plotter.plot_widget.getAxis('left').setTextPen(pg.mkPen(color='k'))
+                    plotter.plot_widget.getAxis('bottom').setTextPen(pg.mkPen(color='k'))
+    
+    def _apply_dark_theme(self):
+        """应用深色主题（只改波形图背景）"""
+        # 不设置样式表，保持系统默认主题
         
-        self.theme_dark_action = QAction("深色模式", self)
-        self.theme_dark_action.setCheckable(True)
-        self.theme_dark_action.triggered.connect(lambda: self._set_theme("dark"))
-        theme_menu.addAction(self.theme_dark_action)
+        # 只设置PyQtGraph背景为深色
+        try:
+            import pyqtgraph as pg
+        except ImportError:
+            pg = None
         
-        self.theme_auto_action = QAction("跟随系统", self)
-        self.theme_auto_action.setCheckable(True)
-        self.theme_auto_action.setChecked(True)  # 默认跟随系统
-        self.theme_auto_action.triggered.connect(lambda: self._set_theme("auto"))
-        theme_menu.addAction(self.theme_auto_action)
-        
-        # 创建动作组，确保只能选择一个
-        theme_group = QActionGroup(self)
-        theme_group.addAction(self.theme_light_action)
-        theme_group.addAction(self.theme_dark_action)
-        theme_group.addAction(self.theme_auto_action)
-        theme_group.setExclusive(True)
-        
-        settings_menu.addSeparator()
-        
-        # About
-        about_action = QAction("关于", self)
-        about_action.triggered.connect(self._show_about)
-        settings_menu.addAction(about_action)
+        if pg:
+            for plotter_info in self.plotters.values():
+                plotter = plotter_info.get('plotter')
+                if plotter is not None:
+                    # PyQtGraph背景设置为深色
+                    plotter.plot_widget.setBackground('#1e1e1e')
+                    # 设置网格和坐标轴颜色为浅色（在深色背景下）
+                    plotter.plot_widget.getAxis('left').setPen(pg.mkPen(color='w'))
+                    plotter.plot_widget.getAxis('bottom').setPen(pg.mkPen(color='w'))
+                    # 设置文本颜色为浅色
+                    plotter.plot_widget.getAxis('left').setTextPen(pg.mkPen(color='w'))
+                    plotter.plot_widget.getAxis('bottom').setTextPen(pg.mkPen(color='w'))
     
     def _set_theme(self, theme: str):
-        """设置主题"""
-        if theme == "light":
-            self.setStyleSheet("")
-            # 可以添加浅色主题的样式
-        elif theme == "dark":
-            # 深色主题样式
-            self.setStyleSheet("""
-                QMainWindow {
-                    background-color: #2b2b2b;
-                    color: #ffffff;
-                }
-                QWidget {
-                    background-color: #2b2b2b;
-                    color: #ffffff;
-                }
-                QGroupBox {
-                    border: 1px solid #555555;
-                    border-radius: 3px;
-                    margin-top: 10px;
-                    padding-top: 10px;
-                }
-                QGroupBox::title {
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 5px;
-                }
-                QPushButton {
-                    background-color: #3c3c3c;
-                    border: 1px solid #555555;
-                    border-radius: 3px;
-                    padding: 5px;
-                }
-                QPushButton:hover {
-                    background-color: #4c4c4c;
-                }
-                QPushButton:pressed {
-                    background-color: #2c2c2c;
-                }
-                QLineEdit, QTextEdit, QComboBox {
-                    background-color: #3c3c3c;
-                    border: 1px solid #555555;
-                    border-radius: 3px;
-                    padding: 3px;
-                    color: #ffffff;
-                }
-                QTabWidget::pane {
-                    border: 1px solid #555555;
-                    background-color: #2b2b2b;
-                }
-                QTabBar::tab {
-                    background-color: #3c3c3c;
-                    color: #ffffff;
-                    padding: 5px 10px;
-                    border: 1px solid #555555;
-                }
-                QTabBar::tab:selected {
-                    background-color: #4c4c4c;
-                }
-            """)
-        else:  # auto
-            self.setStyleSheet("")  # 使用系统默认主题
+        """设置主题（菜单栏用，已废弃，使用_on_theme_mode_changed）"""
+        self._on_theme_mode_changed(theme)
+    
+    def _on_system_theme_changed(self):
+        """系统主题变化时的回调"""
+        if self.current_theme_mode == "auto":
+            self._apply_system_theme()
     
     def _show_about(self):
         """显示关于对话框"""
@@ -556,44 +613,110 @@ class BLEHostGUI(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
         
-        # 文件路径选择
-        path_layout = QHBoxLayout()
-        path_layout.addWidget(QLabel("文件路径:"))
-        self.load_file_entry = QLineEdit()
-        self.load_file_entry.setMaximumWidth(300)  # 缩减一半宽度
-        path_layout.addWidget(self.load_file_entry)
+        # 双列布局
+        main_row = QHBoxLayout()
         
+        # 左列：文件路径选择
+        left_col = QVBoxLayout()
+        path_group = QGroupBox("文件路径")
+        path_layout = QVBoxLayout(path_group)
+        
+        path_input_layout = QHBoxLayout()
+        self.load_file_entry = QLineEdit()
+        path_input_layout.addWidget(self.load_file_entry)
+        path_layout.addLayout(path_input_layout)
+        
+        button_layout = QHBoxLayout()
         browse_btn = QPushButton("浏览...")
         browse_btn.clicked.connect(self._browse_load_file)
-        path_layout.addWidget(browse_btn)
+        button_layout.addWidget(browse_btn)
         
-        load_btn = QPushButton("加载文件")
-        load_btn.clicked.connect(self._load_file)
-        path_layout.addWidget(load_btn)
+        # 合并加载/取消加载按钮为一个按钮
+        self.load_unload_btn = QPushButton("加载文件")
+        self.load_unload_btn.setStyleSheet("background-color: #2196F3; color: white;")  # 浅蓝色
+        self.load_unload_btn.clicked.connect(self._toggle_load_file)
+        button_layout.addWidget(self.load_unload_btn)
+        path_layout.addLayout(button_layout)
         
-        self.unload_btn = QPushButton("取消加载")
-        self.unload_btn.setStyleSheet("background-color: #f44336; color: white;")
-        self.unload_btn.clicked.connect(self._unload_file)
-        self.unload_btn.setVisible(False)  # 初始隐藏
-        path_layout.addWidget(self.unload_btn)
+        left_col.addWidget(path_group)
+        left_col.addStretch()
+        main_row.addLayout(left_col)
         
-        path_layout.addStretch()
-        layout.addLayout(path_layout)
-        
-        # 文件信息显示
+        # 右列：文件信息显示
+        right_col = QVBoxLayout()
         info_group = QGroupBox("文件信息")
         info_layout = QVBoxLayout(info_group)
         self.load_file_info_text = QTextEdit()
         self.load_file_info_text.setReadOnly(True)
         self.load_file_info_text.setFont(QFont("Consolas", 9))
-        self.load_file_info_text.setMaximumHeight(100)  # 缩减高度
-        self.load_file_info_text.setMaximumWidth(400)  # 缩减宽度
+        self.load_file_info_text.setMaximumHeight(50)  # 高度再小一半（从100改为50）
         info_layout.addWidget(self.load_file_info_text)
-        layout.addWidget(info_group)
+        right_col.addWidget(info_group)
+        right_col.addStretch()
+        main_row.addLayout(right_col)
         
+        layout.addLayout(main_row)
         layout.addStretch()
         
         self.config_tabs.addTab(tab, "文件加载")
+    
+    def _create_settings_tab(self):
+        """创建设置选项卡"""
+        tab = QWidget()
+        layout = QHBoxLayout(tab)  # 改为横向布局
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 左列：主题设置
+        left_col = QVBoxLayout()
+        theme_group = QGroupBox("主题设置")
+        theme_layout = QVBoxLayout(theme_group)
+        
+        # 主题模式选择
+        self.theme_mode_group = QButtonGroup(self)
+        self.theme_auto_radio = QRadioButton("跟随系统")
+        self.theme_auto_radio.setChecked(True)  # 默认跟随系统
+        self.theme_auto_radio.toggled.connect(lambda: self._on_theme_mode_changed("auto"))
+        self.theme_mode_group.addButton(self.theme_auto_radio, 0)
+        theme_layout.addWidget(self.theme_auto_radio)
+        
+        self.theme_light_radio = QRadioButton("浅色模式")
+        self.theme_light_radio.toggled.connect(lambda: self._on_theme_mode_changed("light"))
+        self.theme_mode_group.addButton(self.theme_light_radio, 1)
+        theme_layout.addWidget(self.theme_light_radio)
+        
+        self.theme_dark_radio = QRadioButton("深色模式")
+        self.theme_dark_radio.toggled.connect(lambda: self._on_theme_mode_changed("dark"))
+        self.theme_mode_group.addButton(self.theme_dark_radio, 2)
+        theme_layout.addWidget(self.theme_dark_radio)
+        
+        left_col.addWidget(theme_group)
+        left_col.addStretch()
+        layout.addLayout(left_col)
+        
+        # 右列：About信息
+        right_col = QVBoxLayout()
+        about_group = QGroupBox("关于")
+        about_layout = QVBoxLayout(about_group)
+        about_text = QLabel()
+        about_text.setTextFormat(Qt.TextFormat.RichText)
+        about_text.setText(f"""
+        <h3>BLE CS Host</h3>
+        <p><b>版本:</b> {__version__}</p>
+        <p><b>编译日期:</b> {__version_date__}</p>
+        <p><b>作者:</b> {__version_author__}</p>
+        <p>BLE Channel Sounding 上位机应用程序</p>
+        <p>基于 PySide6 开发</p>
+        """)
+        about_text.setWordWrap(True)
+        about_layout.addWidget(about_text)
+        right_col.addWidget(about_group)
+        right_col.addStretch()
+        layout.addLayout(right_col)
+        
+        self.config_tabs.addTab(tab, "设置")
+        
+        # 初始化主题（跟随系统）
+        self._on_theme_mode_changed("auto")
     
     def _create_plot_tabs(self):
         """创建绘图选项卡"""
@@ -1132,6 +1255,13 @@ class BLEHostGUI(QMainWindow):
         if filepath:
             self.load_file_entry.setText(filepath)
     
+    def _toggle_load_file(self):
+        """切换加载/取消加载文件"""
+        if self.is_loaded_mode:
+            self._unload_file()
+        else:
+            self._load_file()
+    
     def _load_file(self):
         """加载文件"""
         filepath = self.load_file_entry.text().strip()
@@ -1183,8 +1313,9 @@ class BLEHostGUI(QMainWindow):
             self.breathing_control_group.setVisible(True)
             self.process_group.setVisible(False)
             
-            # 显示取消加载按钮
-            self.unload_btn.setVisible(True)
+            # 切换按钮为取消加载
+            self.load_unload_btn.setText("取消加载")
+            self.load_unload_btn.setStyleSheet("background-color: #f44336; color: white;")  # 红色
             
             # 加载数据到处理器
             self.data_processor.clear_buffer(clear_frames=True)
@@ -1236,8 +1367,9 @@ class BLEHostGUI(QMainWindow):
         self.breathing_control_group.setVisible(False)
         self.process_group.setVisible(True)
         
-        # 隐藏取消加载按钮
-        self.unload_btn.setVisible(False)
+        # 切换按钮为加载文件
+        self.load_unload_btn.setText("加载文件")
+        self.load_unload_btn.setStyleSheet("background-color: #2196F3; color: white;")  # 浅蓝色
         
         # 清空文件信息
         self.load_file_info_text.clear()
@@ -1501,10 +1633,19 @@ class BLEHostGUI(QMainWindow):
         # 呼吸估计控制（在加载模式下显示）
         # TODO: 如果需要，可以添加呼吸估计控制面板
     
-    def _on_slider_value_changed(self, value):
-        """滑动条值变化时的回调（拖动时只更新输入框，不绘图）"""
-        self.window_start_entry.setText(str(value))
+    def _on_slider_pressed(self):
+        """滑动条鼠标按下时的回调（记录当前值）"""
+        # 不做任何操作，只是记录按下事件
+        pass
     
+    def _on_slider_keyboard_changed(self):
+        """滑动条键盘方向键改变时的回调"""
+        value = self.time_window_slider.value()
+        self.current_window_start = value
+        self.window_start_entry.setText(str(value))
+        if self.is_loaded_mode:
+            self._update_loaded_mode_plots()
+
     def _on_slider_released(self):
         """滑动条鼠标释放时的回调（拖动结束后才更新绘图）"""
         value = self.time_window_slider.value()

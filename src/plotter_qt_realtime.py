@@ -33,6 +33,8 @@ class RealtimePlotter:
         self.plot_widget.setLabel('bottom', x_label)
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.addLegend()
+        # 默认背景色（浅色模式）
+        self.plot_widget.setBackground('w')
         
         # 存储数据线：{var_name: PlotDataItem}
         self.data_lines = {}  # {var_name: PlotDataItem}
