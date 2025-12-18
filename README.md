@@ -2,14 +2,18 @@
 
 一个用于BLE嵌入式系统的Python上位机程序，支持串口数据采集、波形显示和数据处理。
 
+**主版本：PySide6 (Qt) 版本** - 现代化的界面，更好的性能和用户体验。
+
 ## 功能特性
 
 - ✅ **串口通信**: 支持自动检测串口，可配置波特率（9600~230400）
-- ✅ **实时波形显示**: 多变量波形实时绘制，支持自动缩放
+- ✅ **实时波形显示**: 多变量波形实时绘制，支持自动缩放（基于PyQtGraph，高性能）
 - ✅ **数据处理**: 
   - 频率计算（基于FFT，15秒数据窗口）
   - 统计分析（均值、最大值、最小值、标准差）
-- ✅ **友好界面**: 基于Tkinter的GUI界面，操作简单
+  - 实时呼吸估计（可配置更新间隔）
+- ✅ **文件加载**: 支持加载保存的数据文件，离线分析
+- ✅ **友好界面**: 基于PySide6的现代化GUI界面，支持主题切换
 - ✅ **日志记录**: 实时日志显示，方便调试
 - ✅ **可执行文件**: 支持打包成独立的Windows可执行文件
 
@@ -25,32 +29,33 @@
 pip install -r requirements.txt
 ```
 
-或者手动安装：
+主要依赖包括：
 
-```bash
-pip install pyserial matplotlib numpy
-```
+- PySide6 - Qt GUI框架
+- pyqtgraph - 高性能实时绘图
+- matplotlib - 数据分析绘图
+- pyserial - 串口通信
+- numpy - 数值计算
 
 ## 使用方法
 
-### 方式1: 使用运行脚本（推荐）
+### 主版本（PySide6/Qt，推荐）
+
+```bash
+python run_qt.py
+```
+
+### 旧版本（Tkinter，已弃用）
+
+Tkinter版本仍可使用，但不再维护新功能：
 
 ```bash
 python run.py
 ```
 
-### 方式2: 直接运行Python脚本
+> **注意**: 新功能仅在Qt版本中开发，建议使用Qt版本。
 
-```bash
-cd src
-python main_gui.py
-```
-
-### 方式3: 作为模块运行
-
-```bash
-python -m src.main_gui
-```
+---
 
 ## 数据协议格式
 
@@ -70,68 +75,97 @@ VAR1:1.23,VAR2:4.56,VAR3:7.89
 
 ## 打包为可执行文件
 
-### 使用批处理脚本（Windows）
+### Qt版本打包（推荐）
+
+#### Windows
 
 ```bash
-build.bat
+build_qt.bat
 ```
 
-### 手动打包
+#### Linux/Mac
 
-1. 安装PyInstaller：
 ```bash
-pip install pyinstaller
+chmod +x build_qt.sh
+./build_qt.sh
 ```
 
-2. 执行打包：
+生成的可执行文件位于 `dist/BLEHost-Qt-v{版本号}.exe`（Windows）或 `dist/BLEHost-Qt-v{版本号}`（Linux/Mac）
+
+### Tkinter版本打包（旧版）
+
 ```bash
-pyinstaller --clean build.spec
+build.bat  # Windows
 ```
-
-3. 生成的可执行文件位于 `dist/BLEHost.exe`
 
 ### 打包选项说明
 
 - `--clean`: 清理临时文件
 - `console=False`: 不显示控制台窗口（GUI模式）
-- 可以修改 `build.spec` 文件自定义打包选项
+- 可以修改 `build_qt.spec` 文件自定义打包选项
+- 版本号会自动从 `config.py` 读取并更新到可执行文件名
 
 ## 项目结构
 
 ```
 ble_host/
-├── src/                  # 源代码目录
+├── src/                      # 源代码目录
 │   ├── __init__.py
-│   ├── main_gui.py      # 主GUI程序
-│   ├── serial_reader.py # 串口读取模块
-│   ├── data_parser.py   # 数据解析模块
-│   ├── data_processor.py # 数据处理模块
-│   └── plotter.py       # 波形绘制模块
-├── data_exp/            # 数据实验目录
-├── requirements.txt     # Python依赖
-├── setup.py            # 安装脚本
-├── build.spec          # PyInstaller配置文件
-├── build.bat           # Windows打包脚本
-└── README.md           # 本文档
+│   ├── main_gui_qt.py        # 主GUI程序（Qt版本，主版本）
+│   ├── main_gui.py           # 主GUI程序（Tkinter版本，旧版）
+│   ├── serial_reader.py      # 串口读取模块
+│   ├── data_parser.py        # 数据解析模块
+│   ├── data_processor.py     # 数据处理模块
+│   ├── data_saver.py         # 数据保存模块
+│   ├── breathing_estimator.py # 呼吸估计模块
+│   ├── plotter_qt_realtime.py # Qt实时绘图（PyQtGraph）
+│   ├── plotter_qt_matplotlib.py # Qt分析绘图（Matplotlib）
+│   └── plotter.py            # Tkinter绘图模块（旧版）
+├── run_qt.py                 # Qt版本入口（推荐）
+├── run.py                     # Tkinter版本入口（旧版）
+├── requirements.txt           # Python依赖
+├── build_qt.spec             # Qt版本PyInstaller配置
+├── build_qt.bat              # Qt版本Windows打包脚本
+├── build_qt.sh               # Qt版本Linux/Mac打包脚本
+├── build.spec                # Tkinter版本PyInstaller配置（旧版）
+├── build.bat                 # Tkinter版本打包脚本（旧版）
+├── README.md                 # 本文档
+└── README_QT.md              # Qt版本详细说明
 ```
 
 ## 使用说明
 
+### Qt版本（主版本）
+
 1. **连接串口**:
-   - 点击"刷新串口"按钮更新可用串口列表
-   - 选择正确的串口和波特率
+   - 在"连接配置"选项卡中选择串口和波特率
    - 点击"连接"按钮
 
-2. **查看波形**:
-   - 连接成功后，数据会自动显示在左侧波形图
-   - 支持多变量同时显示
-   - 自动显示最近15秒的数据
+2. **配置通道**:
+   - 在"通道配置"选项卡中设置要显示的通道
+   - 支持间隔选择、范围选择或手动输入
 
-3. **数据处理**:
-   - **频率计算**: 选择变量后点击"计算频率"按钮（需要至少15秒数据）
-   - **统计分析**: 点击"计算统计信息"查看各变量的统计信息
+3. **查看波形**:
+   - 连接成功后，数据会自动显示在波形选项卡中
+   - 支持多个波形选项卡（幅值、相位等）
+   - 自动显示最近N帧的数据（可配置）
 
-4. **清空数据**: 点击"清空数据"按钮清除所有已采集的数据
+4. **文件加载**:
+   - 在"文件加载"选项卡中选择保存的数据文件
+   - 加载后可以使用滑动条选择时间窗口进行分析
+
+5. **呼吸估计**:
+   - 在"呼吸估计"选项卡中查看信号处理结果
+   - 在右侧控制面板配置参数并点击"Update"
+   - 实时模式下会自动定期更新估计结果
+
+6. **数据保存**:
+   - 在"数据保存"选项卡中设置保存路径
+   - 可以手动保存或启用自动保存
+
+### Tkinter版本（旧版）
+
+参考上述说明，功能类似但界面较旧。
 
 ## 帧数据模式
 
@@ -175,17 +209,36 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
 - 检查Python版本（需要3.7+）
 - 查看PyInstaller的错误信息
 
+## 版本说明
+
+### Qt版本（主版本，推荐）
+
+- **框架**: PySide6
+- **绘图**: PyQtGraph（实时）+ Matplotlib（分析）
+- **特点**: 现代化界面、高性能、主题支持、完整功能
+- **入口**: `run_qt.py`
+- **详细说明**: 参见 `README_QT.md`
+
+### Tkinter版本（旧版，已弃用）
+
+- **框架**: Tkinter
+- **绘图**: Matplotlib
+- **状态**: 不再添加新功能，仅维护基本功能
+- **入口**: `run.py`
+
 ## 开发说明
 
 ### 添加新功能
 
 - **新数据处理算法**: 在 `data_processor.py` 中添加方法
-- **新绘图类型**: 在 `plotter.py` 中扩展
-- **GUI改进**: 修改 `main_gui.py`
+- **新绘图类型**: 
+  - 实时绘图：在 `plotter_qt_realtime.py` 中扩展
+  - 分析绘图：在 `plotter_qt_matplotlib.py` 中扩展
+- **GUI改进**: 修改 `main_gui_qt.py`（Qt版本）
 
 ### 日志级别
 
-可以在 `main_gui.py` 中修改日志级别：
+可以在 `main_gui_qt.py` 中修改日志级别：
 ```python
 logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 ```
