@@ -4,3 +4,16 @@ numpy>=1.24.0
 pyinstaller>=5.13.0
 Pillow>=9.0.0
 
+# PyQt GUI 框架（选择其一）
+# 选项 1: PySide6（推荐，Qt 官方，LGPL 许可证，商业友好）
+PySide6>=6.6.0
+
+# 选项 2: PyQt6（第三方，GPL/商业许可证）
+# PyQt6>=6.6.0
+
+# 选项 3: PyQt5（旧版本，不推荐新项目使用）
+# PyQt5>=5.15.0
+
+# 实时绘图库（用于高频数据更新）
+pyqtgraph>=0.13.0
+
