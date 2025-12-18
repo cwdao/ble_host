@@ -32,6 +32,9 @@ if [ $? -ne 0 ]; then
     echo "警告: ICO 文件生成失败，将使用 PNG 文件"
 fi
 
+echo "正在更新 build_qt.spec 文件..."
+python update_spec_version.py "$VERSION" build_qt.spec
+
 echo "正在打包 Qt 版本..."
 python -m PyInstaller --clean build_qt.spec
 
