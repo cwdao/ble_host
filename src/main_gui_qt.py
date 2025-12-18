@@ -370,15 +370,38 @@ class BLEHostGUI(QMainWindow):
     
     def _apply_system_theme(self):
         """应用系统主题"""
+        # 使用Qt的热切换主题API，设置为Unknown表示跟随系统
+        try:
+            app = QApplication.instance()
+            if app:
+                style_hints = app.styleHints()
+                if hasattr(style_hints, 'setColorScheme'):
+                    style_hints.setColorScheme(Qt.ColorScheme.Unknown)  # Unknown表示跟随系统
+                    self.update()  # 更新窗口
+        except Exception as e:
+            self.logger.warning(f"设置系统主题失败: {e}")
+        
+        # 根据系统主题设置PyQtGraph背景
         system_theme = self._get_system_theme()
         if system_theme == "dark":
-            self._apply_dark_theme()
+            # 只设置PyQtGraph背景，不改变系统主题
+            self._apply_dark_theme_plot_only()
         else:
-            self._apply_light_theme()
+            # 只设置PyQtGraph背景，不改变系统主题
+            self._apply_light_theme_plot_only()
     
     def _apply_light_theme(self):
         """应用浅色主题（只改波形图背景）"""
-        # 不设置样式表，保持系统默认主题
+        # 使用Qt的热切换主题API（Windows 11有效）
+        try:
+            app = QApplication.instance()
+            if app:
+                style_hints = app.styleHints()
+                if hasattr(style_hints, 'setColorScheme'):
+                    style_hints.setColorScheme(Qt.ColorScheme.Light)
+                    self.update()  # 更新窗口
+        except Exception as e:
+            self.logger.warning(f"设置浅色主题失败: {e}")
         
         # 只设置PyQtGraph背景为白色（浅色模式）
         try:
@@ -399,9 +422,35 @@ class BLEHostGUI(QMainWindow):
                     plotter.plot_widget.getAxis('left').setTextPen(pg.mkPen(color='k'))
                     plotter.plot_widget.getAxis('bottom').setTextPen(pg.mkPen(color='k'))
     
+    def _apply_light_theme_plot_only(self):
+        """只设置PyQtGraph背景为浅色（不改变系统主题）"""
+        try:
+            import pyqtgraph as pg
+        except ImportError:
+            pg = None
+        
+        if pg:
+            for plotter_info in self.plotters.values():
+                plotter = plotter_info.get('plotter')
+                if plotter is not None:
+                    plotter.plot_widget.setBackground('w')
+                    plotter.plot_widget.getAxis('left').setPen(pg.mkPen(color='k'))
+                    plotter.plot_widget.getAxis('bottom').setPen(pg.mkPen(color='k'))
+                    plotter.plot_widget.getAxis('left').setTextPen(pg.mkPen(color='k'))
+                    plotter.plot_widget.getAxis('bottom').setTextPen(pg.mkPen(color='k'))
+    
     def _apply_dark_theme(self):
         """应用深色主题（只改波形图背景）"""
-        # 不设置样式表，保持系统默认主题
+        # 使用Qt的热切换主题API（Windows 11有效）
+        try:
+            app = QApplication.instance()
+            if app:
+                style_hints = app.styleHints()
+                if hasattr(style_hints, 'setColorScheme'):
+                    style_hints.setColorScheme(Qt.ColorScheme.Dark)
+                    self.update()  # 更新窗口
+        except Exception as e:
+            self.logger.warning(f"设置深色主题失败: {e}")
         
         # 只设置PyQtGraph背景为深色
         try:
@@ -419,6 +468,23 @@ class BLEHostGUI(QMainWindow):
                     plotter.plot_widget.getAxis('left').setPen(pg.mkPen(color='w'))
                     plotter.plot_widget.getAxis('bottom').setPen(pg.mkPen(color='w'))
                     # 设置文本颜色为浅色
+                    plotter.plot_widget.getAxis('left').setTextPen(pg.mkPen(color='w'))
+                    plotter.plot_widget.getAxis('bottom').setTextPen(pg.mkPen(color='w'))
+    
+    def _apply_dark_theme_plot_only(self):
+        """只设置PyQtGraph背景为深色（不改变系统主题）"""
+        try:
+            import pyqtgraph as pg
+        except ImportError:
+            pg = None
+        
+        if pg:
+            for plotter_info in self.plotters.values():
+                plotter = plotter_info.get('plotter')
+                if plotter is not None:
+                    plotter.plot_widget.setBackground('#1e1e1e')
+                    plotter.plot_widget.getAxis('left').setPen(pg.mkPen(color='w'))
+                    plotter.plot_widget.getAxis('bottom').setPen(pg.mkPen(color='w'))
                     plotter.plot_widget.getAxis('left').setTextPen(pg.mkPen(color='w'))
                     plotter.plot_widget.getAxis('bottom').setTextPen(pg.mkPen(color='w'))
     
@@ -649,7 +715,7 @@ class BLEHostGUI(QMainWindow):
         self.load_file_info_text = QTextEdit()
         self.load_file_info_text.setReadOnly(True)
         self.load_file_info_text.setFont(QFont("Consolas", 9))
-        self.load_file_info_text.setMaximumHeight(50)  # 高度再小一半（从100改为50）
+        self.load_file_info_text.setMaximumHeight(80)  # 高度再小一半（从100改为50）
         info_layout.addWidget(self.load_file_info_text)
         right_col.addWidget(info_group)
         right_col.addStretch()
@@ -697,9 +763,10 @@ class BLEHostGUI(QMainWindow):
         right_col = QVBoxLayout()
         about_group = QGroupBox("关于")
         about_layout = QVBoxLayout(about_group)
-        about_text = QLabel()
-        about_text.setTextFormat(Qt.TextFormat.RichText)
-        about_text.setText(f"""
+        about_text = QTextEdit()
+        about_text.setReadOnly(True)
+        # QTextEdit使用setHtml()来设置富文本，不需要setTextFormat()
+        about_text.setHtml(f"""
         <h3>BLE CS Host</h3>
         <p><b>版本:</b> {__version__}</p>
         <p><b>编译日期:</b> {__version_date__}</p>
@@ -707,7 +774,7 @@ class BLEHostGUI(QMainWindow):
         <p>BLE Channel Sounding 上位机应用程序</p>
         <p>基于 PySide6 开发</p>
         """)
-        about_text.setWordWrap(True)
+        about_text.setMaximumHeight(80)  # 限制高度，内容可滚动
         about_layout.addWidget(about_text)
         right_col.addWidget(about_group)
         right_col.addStretch()
