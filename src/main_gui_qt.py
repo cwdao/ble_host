@@ -98,10 +98,10 @@ class BLEHostGUI(QMainWindow):
         self.breathing_estimator = BreathingEstimator()
         
         # 主题模式
-        self.current_theme_mode = "auto"  # auto, light, dark
+        self.current_theme_mode = "light"  # auto, light, dark
         
         # 实时呼吸估计相关
-        self.breathing_update_interval = 5.0  # 默认5秒
+        self.breathing_update_interval = 2.0  # 默认2秒
         self.breathing_update_timer = None
         self.last_breathing_update_time = 0
         
@@ -115,7 +115,7 @@ class BLEHostGUI(QMainWindow):
             self._apply_frame_settings()
         
         # 应用初始主题（跟随系统）
-        self._apply_theme("auto")
+        self._apply_theme("light")
         
         # 定时刷新（使用 QTimer 替代 threading）
         self._start_update_loop()
@@ -304,7 +304,7 @@ class BLEHostGUI(QMainWindow):
         # 实时更新间隔（N秒）
         interval_layout = QHBoxLayout()
         interval_layout.addWidget(QLabel("更新间隔(秒):"))
-        self.breathing_update_interval_entry = QLineEdit("1.0")
+        self.breathing_update_interval_entry = QLineEdit("2.0")
         self.breathing_update_interval_entry.setMaximumWidth(80)
         interval_layout.addWidget(self.breathing_update_interval_entry)
         breathing_control_layout.addLayout(interval_layout)
@@ -774,13 +774,13 @@ class BLEHostGUI(QMainWindow):
         # 主题模式选择
         self.theme_mode_group = QButtonGroup(self)
         self.theme_auto_radio = QRadioButton("跟随系统")
+        self.theme_auto_radio.setChecked(True)  # 默认跟随系统
         self.theme_auto_radio.toggled.connect(lambda: self._on_theme_mode_changed("auto"))
         self.theme_mode_group.addButton(self.theme_auto_radio, 0)
         theme_layout.addWidget(self.theme_auto_radio)
         
         self.theme_light_radio = QRadioButton("浅色模式")
         self.theme_light_radio.toggled.connect(lambda: self._on_theme_mode_changed("light"))
-        self.theme_light_radio.setChecked(True)  # 默认浅色主题
         self.theme_mode_group.addButton(self.theme_light_radio, 1)
         theme_layout.addWidget(self.theme_light_radio)
         
