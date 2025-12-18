@@ -100,6 +100,11 @@ class BLEHostGUI(QMainWindow):
         # 主题模式
         self.current_theme_mode = "auto"  # auto, light, dark
         
+        # 实时呼吸估计相关
+        self.breathing_update_interval = 5.0  # 默认5秒
+        self.breathing_update_timer = None
+        self.last_breathing_update_time = 0
+        
         # 创建界面
         self._create_widgets()
         
@@ -114,6 +119,9 @@ class BLEHostGUI(QMainWindow):
         
         # 定时刷新（使用 QTimer 替代 threading）
         self._start_update_loop()
+        
+        # 启动实时呼吸估计定时器
+        self._start_realtime_breathing_estimation()
         
         # 监听系统主题变化（如果支持）
         try:
@@ -266,9 +274,8 @@ class BLEHostGUI(QMainWindow):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(5, 5, 5, 5)
         
-        # 呼吸估计控制区域（加载模式下显示）
+        # 呼吸估计控制区域（常驻显示）
         self.breathing_control_group = QGroupBox("Breathing Estimation Control")
-        self.breathing_control_group.setVisible(False)  # 初始隐藏
         breathing_control_layout = QVBoxLayout(self.breathing_control_group)
         
         # 数据类型选择
@@ -300,12 +307,32 @@ class BLEHostGUI(QMainWindow):
         threshold_layout.addWidget(update_btn)
         breathing_control_layout.addLayout(threshold_layout)
         
+        # 实时更新间隔（N秒）
+        interval_layout = QHBoxLayout()
+        interval_layout.addWidget(QLabel("更新间隔(秒):"))
+        self.breathing_update_interval_entry = QLineEdit("5.0")
+        self.breathing_update_interval_entry.setMaximumWidth(80)
+        self.breathing_update_interval_entry.returnPressed.connect(self._on_breathing_interval_changed)
+        interval_layout.addWidget(self.breathing_update_interval_entry)
+        breathing_control_layout.addLayout(interval_layout)
+        
+        # 呼吸估计结果显示
+        result_label = QLabel("结果:")
+        breathing_control_layout.addWidget(result_label)
+        self.breathing_result_text = QTextEdit()
+        self.breathing_result_text.setReadOnly(True)
+        self.breathing_result_text.setFont(QFont("Consolas", 9))
+        self.breathing_result_text.setMaximumHeight(120)
+        self.breathing_result_text.setPlainText("等待数据积累...")
+        breathing_control_layout.addWidget(self.breathing_result_text)
+        
         right_layout.addWidget(self.breathing_control_group)
         
-        # 数据处理区域
+        # 数据处理区域（暂时隐藏）
         self.process_group = QGroupBox("数据处理")
         process_layout = QVBoxLayout(self.process_group)
         self._create_process_panel(process_layout)
+        self.process_group.setVisible(False)  # 暂时隐藏
         right_layout.addWidget(self.process_group)
         
         # 日志区域
@@ -895,6 +922,10 @@ class BLEHostGUI(QMainWindow):
                 self.status_label.setText("已连接")
                 self.status_label.setStyleSheet("color: green;")
                 self.logger.info(f"串口连接成功: {port} @ {baudrate}")
+                
+                # 清空呼吸估计结果显示
+                if hasattr(self, 'breathing_result_text'):
+                    self.breathing_result_text.setPlainText("等待数据积累...")
             else:
                 QMessageBox.critical(self, "错误", "串口连接失败")
         else:
@@ -907,6 +938,10 @@ class BLEHostGUI(QMainWindow):
             self.status_label.setText("未连接")
             self.status_label.setStyleSheet("color: red;")
             self.logger.info("串口已断开")
+            
+            # 清空呼吸估计结果显示
+            if hasattr(self, 'breathing_result_text'):
+                self.breathing_result_text.setPlainText("未连接")
     
     def _on_frame_type_changed(self, text):
         """帧类型改变"""
@@ -950,6 +985,19 @@ class BLEHostGUI(QMainWindow):
                         self._update_frame_plots()
                         # 使用节流刷新，避免频繁刷新导致GUI卡顿
                         self._refresh_plotters_throttled()
+                        
+                        # 更新呼吸估计的信道列表（如果还没有设置）
+                        if hasattr(self, 'breathing_channel_combo'):
+                            all_channels = self.data_processor.get_all_frame_channels()
+                            if all_channels:
+                                current_items = [self.breathing_channel_combo.itemText(i) 
+                                               for i in range(self.breathing_channel_combo.count())]
+                                channel_list = [str(ch) for ch in sorted(all_channels)]
+                                if set(channel_list) != set(current_items):
+                                    self.breathing_channel_combo.clear()
+                                    self.breathing_channel_combo.addItems(channel_list)
+                                    if channel_list and self.breathing_channel_combo.currentIndex() < 0:
+                                        self.breathing_channel_combo.setCurrentIndex(0)
                 
                 # 帧模式下不处理其他数据
                 return
@@ -1376,9 +1424,7 @@ class BLEHostGUI(QMainWindow):
             if channel_list:
                 self.breathing_channel_combo.setCurrentIndex(0)
             
-            # 显示呼吸估计控制面板，隐藏数据处理面板
-            self.breathing_control_group.setVisible(True)
-            self.process_group.setVisible(False)
+            # 呼吸估计控制面板已经常驻显示，不需要切换
             
             # 切换按钮为取消加载
             self.load_unload_btn.setText("取消加载")
@@ -1430,9 +1476,7 @@ class BLEHostGUI(QMainWindow):
         # 启用连接tab的功能
         self._set_connection_tab_enabled(True)
         
-        # 隐藏呼吸估计控制面板，显示数据处理面板
-        self.breathing_control_group.setVisible(False)
-        self.process_group.setVisible(True)
+        # 呼吸估计控制面板已经常驻显示，不需要切换
         
         # 切换按钮为加载文件
         self.load_unload_btn.setText("加载文件")
@@ -1761,6 +1805,135 @@ class BLEHostGUI(QMainWindow):
         """呼吸估计控制参数变化时的回调"""
         if self.is_loaded_mode:
             self._update_loaded_mode_plots()
+        else:
+            # 实时模式下立即更新
+            self._update_realtime_breathing_estimation()
+    
+    def _on_breathing_interval_changed(self):
+        """呼吸估计更新间隔变化时的回调"""
+        try:
+            interval = float(self.breathing_update_interval_entry.text())
+            if interval > 0:
+                self.breathing_update_interval = interval
+                # 重启定时器
+                if self.breathing_update_timer:
+                    self.breathing_update_timer.stop()
+                    self.breathing_update_timer.start(int(interval * 1000))
+                self.logger.info(f"呼吸估计更新间隔设置为: {interval}秒")
+            else:
+                QMessageBox.warning(self, "警告", "更新间隔必须大于0")
+                self.breathing_update_interval_entry.setText(str(self.breathing_update_interval))
+        except ValueError:
+            QMessageBox.warning(self, "警告", "更新间隔必须是数字")
+            self.breathing_update_interval_entry.setText(str(self.breathing_update_interval))
+    
+    def _start_realtime_breathing_estimation(self):
+        """启动实时呼吸估计定时器"""
+        self.breathing_update_timer = QTimer()
+        self.breathing_update_timer.timeout.connect(self._update_realtime_breathing_estimation)
+        self.breathing_update_timer.start(int(self.breathing_update_interval * 1000))
+    
+    def _update_realtime_breathing_estimation(self):
+        """更新实时呼吸估计（使用最近X帧数据）"""
+        if not self.frame_mode or not self.is_running:
+            return
+        
+        # 检查是否有足够的数据
+        all_channels = self.data_processor.get_all_frame_channels()
+        if not all_channels:
+            self.breathing_result_text.setPlainText("等待数据积累...")
+            return
+        
+        # 获取选择的信道和数据类型
+        try:
+            channel = int(self.breathing_channel_combo.currentText())
+        except:
+            # 如果没有选择，使用第一个可用信道
+            if all_channels:
+                channel = all_channels[0]
+                self.breathing_channel_combo.clear()
+                self.breathing_channel_combo.addItems([str(ch) for ch in sorted(all_channels)])
+                self.breathing_channel_combo.setCurrentText(str(channel))
+            else:
+                self.breathing_result_text.setPlainText("等待数据积累...")
+                return
+        
+        data_type = self.breathing_data_type_combo.currentText()
+        
+        # 获取最近X帧的数据
+        indices, values = self.data_processor.get_frame_data_range(
+            channel, max_frames=self.display_max_frames, data_type=data_type
+        )
+        
+        if len(values) < self.display_max_frames:
+            # 数据还未积累到X帧
+            self.breathing_result_text.setPlainText(
+                f"数据积累中: {len(values)}/{self.display_max_frames} 帧\n"
+                f"需要积累到 {self.display_max_frames} 帧后开始分析"
+            )
+            return
+        
+        if len(values) == 0:
+            self.breathing_result_text.setPlainText("无数据")
+            return
+        
+        # 进行呼吸估计
+        signal = np.array(values)
+        
+        try:
+            # 处理信号
+            processed = self.breathing_estimator.process_signal(signal, data_type)
+            
+            if 'highpass_filtered' not in processed:
+                self.breathing_result_text.setPlainText("信号处理失败")
+                return
+            
+            # 获取阈值
+            try:
+                threshold = float(self.breathing_threshold_entry.text())
+            except:
+                threshold = 0.6
+            
+            # 检测呼吸
+            detection = self.breathing_estimator.detect_breathing(
+                processed['highpass_filtered'], threshold=threshold
+            )
+            
+            # 更新结果显示
+            result_text = f"Energy Ratio: {detection['energy_ratio']:.4f}\n"
+            result_text += f"Threshold: {threshold:.2f}\n"
+            result_text += f"Detection: {'Breathing Detected' if detection['has_breathing'] else 'No Breathing'}\n"
+            
+            if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
+                breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
+                result_text += f"Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
+                result_text += f"Breathing Rate: {breathing_rate:.1f} /min"
+            else:
+                result_text += "Breathing Freq: --\n"
+                result_text += "Breathing Rate: --"
+            
+            self.breathing_result_text.setPlainText(result_text)
+            
+            # 同时更新呼吸估计tab的绘图（如果tab存在）
+            # 构造window_frames格式的数据
+            window_frames = []
+            for i, (idx, val) in enumerate(zip(indices, values)):
+                frame = {
+                    'index': int(idx),
+                    'channels': {
+                        channel: {
+                            data_type: float(val)
+                        }
+                    }
+                }
+                window_frames.append(frame)
+            
+            if window_frames:
+                self._update_breathing_estimation_plot(window_frames)
+                
+        except Exception as e:
+            self.logger.error(f"实时呼吸估计出错: {e}")
+            self.breathing_result_text.setPlainText(f"分析出错: {str(e)}")
     
     def _update_loaded_mode_plots(self):
         """更新加载模式下的绘图"""
@@ -1974,6 +2147,14 @@ class BLEHostGUI(QMainWindow):
     
     def closeEvent(self, event):
         """窗口关闭事件"""
+        # 停止所有定时器
+        if hasattr(self, 'update_timer'):
+            self.update_timer.stop()
+        if hasattr(self, 'breathing_update_timer') and self.breathing_update_timer:
+            self.breathing_update_timer.stop()
+        if hasattr(self, 'freq_update_timer') and self.freq_update_timer:
+            self.freq_update_timer.stop()
+        
         if self.is_running:
             if self.serial_reader:
                 self.serial_reader.disconnect()
