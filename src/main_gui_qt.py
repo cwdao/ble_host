@@ -304,7 +304,7 @@ class BLEHostGUI(QMainWindow):
         # 实时更新间隔（N秒）
         interval_layout = QHBoxLayout()
         interval_layout.addWidget(QLabel("更新间隔(秒):"))
-        self.breathing_update_interval_entry = QLineEdit("5.0")
+        self.breathing_update_interval_entry = QLineEdit("1.0")
         self.breathing_update_interval_entry.setMaximumWidth(80)
         interval_layout.addWidget(self.breathing_update_interval_entry)
         breathing_control_layout.addLayout(interval_layout)
@@ -774,13 +774,13 @@ class BLEHostGUI(QMainWindow):
         # 主题模式选择
         self.theme_mode_group = QButtonGroup(self)
         self.theme_auto_radio = QRadioButton("跟随系统")
-        self.theme_auto_radio.setChecked(True)  # 默认跟随系统
         self.theme_auto_radio.toggled.connect(lambda: self._on_theme_mode_changed("auto"))
         self.theme_mode_group.addButton(self.theme_auto_radio, 0)
         theme_layout.addWidget(self.theme_auto_radio)
         
         self.theme_light_radio = QRadioButton("浅色模式")
         self.theme_light_radio.toggled.connect(lambda: self._on_theme_mode_changed("light"))
+        self.theme_light_radio.setChecked(True)  # 默认浅色主题
         self.theme_mode_group.addButton(self.theme_light_radio, 1)
         theme_layout.addWidget(self.theme_light_radio)
         
@@ -913,6 +913,11 @@ class BLEHostGUI(QMainWindow):
         """切换连接状态"""
         if not self.is_running:
             # 连接
+            # 检查是否在加载模式（连接和加载互斥）
+            if self.is_loaded_mode:
+                QMessageBox.warning(self, "警告", "加载文件状态下不能连接，请先取消加载")
+                return
+            
             port_data = self.port_combo.currentData()
             if not port_data:
                 QMessageBox.warning(self, "警告", "请选择串口")
@@ -953,8 +958,10 @@ class BLEHostGUI(QMainWindow):
             if hasattr(self, 'breathing_result_text'):
                 self.breathing_result_text.setPlainText("未连接")
             
-            # 启用文件加载tab
-            self._set_load_tab_enabled(True)
+            # 启用文件加载tab（断开连接后，如果不在加载模式，加载tab可用）
+            # 如果在加载模式，加载tab应该已经可用（因为加载时没有禁用）
+            if not self.is_loaded_mode:
+                self._set_load_tab_enabled(True)
     
     def _on_frame_type_changed(self, text):
         """帧类型改变"""
@@ -1422,6 +1429,11 @@ class BLEHostGUI(QMainWindow):
     
     def _load_file(self):
         """加载文件"""
+        # 检查是否已连接（连接和加载互斥）
+        if self.is_running:
+            QMessageBox.warning(self, "警告", "连接状态下不能加载文件，请先断开连接")
+            return
+        
         filepath = self.load_file_entry.text().strip()
         if not filepath:
             QMessageBox.warning(self, "警告", "请选择要加载的文件")
