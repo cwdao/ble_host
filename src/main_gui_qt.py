@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QButtonGroup, QFrame, QMenuBar, QMenu, QDialog, QDialogButtonBox,
     QSizePolicy
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QMetaObject
 from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup
 from qfluentwidgets import SwitchButton, ProgressRing, ToolTipFilter, ToolTipPosition
 
@@ -81,8 +81,18 @@ __version_author__ = config.version_author
 class BLEHostGUI(QMainWindow):
     """主GUI应用程序 - PySide6 版本"""
     
+    # 定义信号，用于从后台线程通知主线程更新UI
+    save_status_update_signal = Signal(str, str)  # text, color_style
+    save_success_signal = Signal(int, str)  # frame_count, filename
+    save_error_signal = Signal(str)  # error_msg
+    
     def __init__(self):
         super().__init__()
+        
+        # 连接信号到槽函数
+        self.save_status_update_signal.connect(self._on_save_status_update)
+        self.save_success_signal.connect(self._on_save_success)
+        self.save_error_signal.connect(self._on_save_error)
         
         # 设置窗口标题
         self.setWindowTitle(f"BLE CS Host v{__version__}")
@@ -204,14 +214,32 @@ class BLEHostGUI(QMainWindow):
         self.status_label.setStyleSheet("color: red;")
         self.status_label.setFont(QFont("Arial", 9))
         
+        # 保存状态显示（在连接状态后面）
+        self.save_status_label = QLabel("")
+        self.save_status_label.setFont(QFont("Arial", 9))
+        # 设置自动换行：当文本宽度超过可用空间时自动换行
+        # setWordWrap(True) 会根据QLabel的可用宽度自动换行
+        # 在QHBoxLayout中，可用宽度 = 布局总宽度 - 前面固定元素宽度 - 间距
+        self.save_status_label.setWordWrap(True)  # 允许自动换行
+        # 设置最大宽度，防止文本过长时占用过多空间
+        self.save_status_label.setMaximumWidth(600)  # 最大宽度600px，超过会自动换行
+        # 设置大小策略，允许在需要时缩小
+        from PySide6.QtWidgets import QSizePolicy
+        self.save_status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        
         status_layout.addWidget(status_label)
         status_layout.addWidget(self.status_label)
+        status_layout.addWidget(QLabel(" | "))  # 分隔符
+        status_layout.addWidget(self.save_status_label)
         status_layout.addStretch()
         
         main_layout.addWidget(status_frame)
         
         # 2. 配置选项卡区域
         self.config_tabs = QTabWidget()
+        # 设置tab字体更大
+        tab_font = QFont("Microsoft YaHei", 11)
+        self.config_tabs.setFont(tab_font)
         self._create_connection_tab()
         self._create_channel_config_tab()
         self._create_data_and_save_tab()
@@ -219,76 +247,6 @@ class BLEHostGUI(QMainWindow):
         self._create_settings_tab()
         
         main_layout.addWidget(self.config_tabs)
-        
-        # 3. 滑动条容器（加载模式下显示）
-        self.slider_frame = QFrame()
-        self.slider_frame.setVisible(False)  # 初始隐藏
-        slider_layout = QHBoxLayout(self.slider_frame)
-        slider_layout.setContentsMargins(5, 5, 5, 5)
-        
-        slider_layout.addWidget(QLabel("时间窗起点:"))
-        self.window_start_entry = QLineEdit("0")
-        self.window_start_entry.setMaximumWidth(80)
-        self.window_start_entry.returnPressed.connect(self._on_window_start_changed)
-        slider_layout.addWidget(self.window_start_entry)
-        slider_layout.addWidget(QLabel("(帧)"))
-        
-        # 左箭头按钮
-        self.slider_left_btn = QPushButton("◄")
-        self.slider_left_btn.setMaximumWidth(40)
-        self.slider_left_btn.clicked.connect(self._on_slider_left_click)
-        slider_layout.addWidget(self.slider_left_btn)
-        
-        # 滑动条（支持鼠标和键盘方向键控制）
-        # 创建自定义滑动条类，支持键盘方向键控制
-        class KeyboardSlider(QSlider):
-            def __init__(self, orientation, parent=None, update_callback=None):
-                super().__init__(orientation, parent)
-                self.update_callback = update_callback
-            
-            def keyPressEvent(self, event):
-                # 处理方向键
-                if event.key() == Qt.Key.Key_Left or event.key() == Qt.Key.Key_Down:
-                    # 左/下键：减少值
-                    new_value = max(self.minimum(), self.value() - 1)
-                    self.setValue(new_value)
-                    if self.update_callback:
-                        self.update_callback()
-                    event.accept()
-                elif event.key() == Qt.Key.Key_Right or event.key() == Qt.Key.Key_Up:
-                    # 右/上键：增加值
-                    new_value = min(self.maximum(), self.value() + 1)
-                    self.setValue(new_value)
-                    if self.update_callback:
-                        self.update_callback()
-                    event.accept()
-                else:
-                    # 其他键使用默认处理
-                    super().keyPressEvent(event)
-        
-        self.time_window_slider = KeyboardSlider(Qt.Orientation.Horizontal, update_callback=self._on_slider_keyboard_changed)
-        self.time_window_slider.setMinimum(0)
-        self.time_window_slider.setMaximum(100)
-        # 允许键盘焦点，以便响应方向键
-        self.time_window_slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        # 连接sliderReleased，鼠标释放时更新
-        self.time_window_slider.sliderReleased.connect(self._on_slider_released)
-        # 鼠标点击时也更新
-        self.time_window_slider.sliderPressed.connect(self._on_slider_pressed)
-        slider_layout.addWidget(self.time_window_slider)
-        
-        # 右箭头按钮
-        self.slider_right_btn = QPushButton("►")
-        self.slider_right_btn.setMaximumWidth(40)
-        self.slider_right_btn.clicked.connect(self._on_slider_right_click)
-        slider_layout.addWidget(self.slider_right_btn)
-        
-        # 时间窗长度显示
-        self.window_length_label = QLabel("时间窗长度: -- 秒")
-        slider_layout.addWidget(self.window_length_label)
-        slider_layout.addStretch()
-        
-        main_layout.addWidget(self.slider_frame)
         
         # 3. 左右分栏（绘图区域 + 右侧面板）
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -300,6 +258,9 @@ class BLEHostGUI(QMainWindow):
         
         # 绘图选项卡
         self.plot_tabs = QTabWidget()
+        # 设置tab字体更大
+        tab_font = QFont("Microsoft YaHei", 11)
+        self.plot_tabs.setFont(tab_font)
         self._create_plot_tabs()
         left_layout.addWidget(self.plot_tabs)
         
@@ -715,35 +676,50 @@ class BLEHostGUI(QMainWindow):
         tab.setMinimumHeight(80)  # 设置最小高度，保持等高
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
         
-        # 第一行：设置保存路径、自动保存路径开关、当前路径显示
-        row1 = QHBoxLayout()
+        # 第一行：三个组排三列，靠左
+        top_row = QHBoxLayout()
+        
+        # 第一组：设置保存路径+自动保存开关+显示当前路径
+        path_group = QGroupBox("路径设置")
+        path_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        path_group.setMaximumWidth(300)
+        path_layout = QVBoxLayout(path_group)
+        
         set_path_btn = QPushButton("设置保存路径...")
         set_path_btn.clicked.connect(self._set_save_path)
-        row1.addWidget(set_path_btn)
+        path_layout.addWidget(set_path_btn)
         
         # 使用 SwitchButton 替代 CheckBox
-        row1.addWidget(QLabel("使用自动保存路径:"))
+        auto_save_layout = QHBoxLayout()
+        auto_save_layout.addWidget(QLabel("使用自动保存路径:"))
         self.auto_save_switch = SwitchButton(self)
         self.auto_save_switch.setChecked(self.use_auto_save)
         self.auto_save_switch.checkedChanged.connect(self._toggle_auto_save)
-        row1.addWidget(self.auto_save_switch)
+        auto_save_layout.addWidget(self.auto_save_switch)
+        auto_save_layout.addStretch()
+        path_layout.addLayout(auto_save_layout)
         
         # 显示当前保存路径
         current_path = user_settings.get_save_directory()
         display_path = current_path if len(current_path) <= 50 else "..." + current_path[-47:]
         self.path_label = QLabel(f"当前路径: {display_path}")
         self.path_label.setStyleSheet("color: gray;")
-        row1.addWidget(self.path_label)
-        row1.addStretch()
-        layout.addLayout(row1)
+        path_layout.addWidget(self.path_label)
         
-        # 第二行：保存数据按钮、保存选项、清空数据按钮
-        row2 = QHBoxLayout()
+        path_layout.addStretch()
+        top_row.addWidget(path_group)
+        
+        # 第二组：保存数据+全部保存/最近N帧
+        save_group = QGroupBox("保存数据")
+        save_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        save_layout = QVBoxLayout(save_group)
+        
         self.save_btn = QPushButton("保存数据")
         self.save_btn.setStyleSheet("background-color: #4CAF50; color: white;")
         self.save_btn.clicked.connect(self._save_data)
-        row2.addWidget(self.save_btn)
+        save_layout.addWidget(self.save_btn)
         
         # 保存选项（全部保存或最近N帧）
         self.save_option_group = QButtonGroup()
@@ -752,8 +728,17 @@ class BLEHostGUI(QMainWindow):
         self.save_recent_radio = QRadioButton("最近N帧")
         self.save_option_group.addButton(self.save_all_radio, 0)
         self.save_option_group.addButton(self.save_recent_radio, 1)
-        row2.addWidget(self.save_all_radio)
-        row2.addWidget(self.save_recent_radio)
+        save_layout.addWidget(self.save_all_radio)
+        save_layout.addWidget(self.save_recent_radio)
+        
+        save_layout.addStretch()
+        top_row.addWidget(save_group)
+        
+        # 第三组：清空当前数据单独一个组
+        clear_group = QGroupBox("清空数据")
+        clear_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        clear_group.setMaximumWidth(200)
+        clear_layout = QVBoxLayout(clear_group)
         
         # 清除数据按钮和进度环容器
         clear_data_container = QHBoxLayout()
@@ -792,25 +777,23 @@ class BLEHostGUI(QMainWindow):
         self.clear_data_btn.installEventFilter(ToolTipFilter(self.clear_data_btn, 0, ToolTipPosition.TOP))
         clear_data_container.addWidget(self.clear_data_btn)
         
-        # 进度环（初始隐藏）
+        # 进度环（始终占用空间，初始透明/不可见，避免布局变化）
         self.clear_data_progress_ring = ProgressRing(self)
         self.clear_data_progress_ring.setFixedSize(32, 32)  # 小尺寸，显示在按钮旁边
         self.clear_data_progress_ring.setTextVisible(False)  # 不显示文字
         self.clear_data_progress_ring.setValue(0)
-        self.clear_data_progress_ring.setVisible(False)  # 初始隐藏
+        # 使用setStyleSheet让进度环初始透明，但保持占用空间
+        self.clear_data_progress_ring.setStyleSheet("opacity: 0;")
         clear_data_container.addWidget(self.clear_data_progress_ring)
         
-        row2.addLayout(clear_data_container)
-        row2.addStretch()
-        layout.addLayout(row2)
+        clear_layout.addLayout(clear_data_container)
+        clear_layout.addStretch()
+        top_row.addWidget(clear_group)
         
-        # 第三行：保存状态显示
-        row3 = QHBoxLayout()
-        row3.addWidget(QLabel("保存状态:"))
-        self.save_status_label = QLabel("")
-        row3.addWidget(self.save_status_label)
-        row3.addStretch()
-        layout.addLayout(row3)
+        # 保存状态已移到顶部状态栏，这里不再显示
+        
+        top_row.addStretch()  # 让四个组靠左
+        layout.addLayout(top_row)
         
         layout.addStretch()
         
@@ -819,17 +802,20 @@ class BLEHostGUI(QMainWindow):
     def _create_load_tab(self):
         """创建加载选项卡"""
         tab = QWidget()
-        tab.setMinimumHeight(80)  # 设置最小高度，保持等高
-        layout = QVBoxLayout(tab)
+        layout = QHBoxLayout(tab)  # 改为三列横向布局
         layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
         
-        # 双列布局
-        main_row = QHBoxLayout()
+        # 设置按钮字体
+        btn_font = QFont("Microsoft YaHei", 10)
         
-        # 左列：文件路径选择
-        left_col = QVBoxLayout()
-        path_group = QGroupBox("文件路径")
+        # 第一列：文件读取（文件路径部分）
+        path_group = QGroupBox("文件读取")
+        # 设置组标题字体较小，但不影响内部控件
+        path_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
         path_layout = QVBoxLayout(path_group)
+        path_group.setMaximumWidth(200)  # 保持左右宽度限制
+        path_group.setMaximumHeight(100)
         
         path_input_layout = QHBoxLayout()
         self.load_file_entry = QLineEdit()
@@ -838,35 +824,130 @@ class BLEHostGUI(QMainWindow):
         
         button_layout = QHBoxLayout()
         self.browse_btn = QPushButton("浏览...")
+        self.browse_btn.setFont(btn_font)
         self.browse_btn.clicked.connect(self._browse_load_file)
         button_layout.addWidget(self.browse_btn)
         
         # 合并加载/取消加载按钮为一个按钮
         self.load_unload_btn = QPushButton("加载文件")
+        self.load_unload_btn.setFont(btn_font)
         self.load_unload_btn.setStyleSheet("background-color: #2196F3; color: white;")  # 浅蓝色
         self.load_unload_btn.clicked.connect(self._toggle_load_file)
         button_layout.addWidget(self.load_unload_btn)
         path_layout.addLayout(button_layout)
         
-        left_col.addWidget(path_group)
-        left_col.addStretch()
-        main_row.addLayout(left_col)
+        path_layout.addStretch()
+        layout.addWidget(path_group)
         
-        # 右列：文件信息显示
-        right_col = QVBoxLayout()
+        # 第二列：时间窗控制
+        control_group = QGroupBox("时间窗控制")
+        # 设置组标题字体较小，但不影响内部控件
+        control_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        control_layout = QVBoxLayout(control_group)
+        control_group.setMaximumHeight(100)
+        
+        # 创建滑动条容器
+        slider_layout = QHBoxLayout()
+        slider_layout.setContentsMargins(5, 5, 5, 5)
+        
+        slider_layout.addWidget(QLabel("时间窗起点:"))
+        self.window_start_entry = QLineEdit("0")
+        self.window_start_entry.setMaximumWidth(80)
+        self.window_start_entry.setFont(btn_font)
+        self.window_start_entry.returnPressed.connect(self._on_window_start_changed)
+        self.window_start_entry.setEnabled(False)  # 初始禁用
+        slider_layout.addWidget(self.window_start_entry)
+        slider_layout.addWidget(QLabel("(帧)"))
+        
+        # 左箭头按钮
+        self.slider_left_btn = QPushButton("◄")
+        self.slider_left_btn.setMaximumWidth(40)
+        self.slider_left_btn.setFont(btn_font)
+        self.slider_left_btn.clicked.connect(self._on_slider_left_click)
+        self.slider_left_btn.setEnabled(False)  # 初始禁用
+        slider_layout.addWidget(self.slider_left_btn)
+        
+        # 滑动条（支持鼠标和键盘方向键控制）
+        # 创建自定义滑动条类，支持键盘方向键控制
+        class KeyboardSlider(QSlider):
+            def __init__(self, orientation, parent=None, update_callback=None):
+                super().__init__(orientation, parent)
+                self.update_callback = update_callback
+            
+            def keyPressEvent(self, event):
+                # 处理方向键
+                if event.key() == Qt.Key.Key_Left or event.key() == Qt.Key.Key_Down:
+                    # 左/下键：减少值
+                    new_value = max(self.minimum(), self.value() - 1)
+                    self.setValue(new_value)
+                    if self.update_callback:
+                        self.update_callback()
+                    event.accept()
+                elif event.key() == Qt.Key.Key_Right or event.key() == Qt.Key.Key_Up:
+                    # 右/上键：增加值
+                    new_value = min(self.maximum(), self.value() + 1)
+                    self.setValue(new_value)
+                    if self.update_callback:
+                        self.update_callback()
+                    event.accept()
+                else:
+                    # 其他键使用默认处理
+                    super().keyPressEvent(event)
+        
+        self.time_window_slider = KeyboardSlider(Qt.Orientation.Horizontal, update_callback=self._on_slider_keyboard_changed)
+        self.time_window_slider.setMinimum(0)
+        self.time_window_slider.setMaximum(100)
+        # 允许键盘焦点，以便响应方向键
+        self.time_window_slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # 连接sliderReleased，鼠标释放时更新
+        self.time_window_slider.sliderReleased.connect(self._on_slider_released)
+        # 鼠标点击时也更新
+        self.time_window_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.time_window_slider.setEnabled(False)  # 初始禁用
+        slider_layout.addWidget(self.time_window_slider)
+        
+        # 右箭头按钮
+        self.slider_right_btn = QPushButton("►")
+        self.slider_right_btn.setMaximumWidth(40)
+        self.slider_right_btn.setFont(btn_font)
+        self.slider_right_btn.clicked.connect(self._on_slider_right_click)
+        self.slider_right_btn.setEnabled(False)  # 初始禁用
+        slider_layout.addWidget(self.slider_right_btn)
+        
+        # 时间窗长度显示
+        self.window_length_label = QLabel("时间窗长度: -- 秒")
+        self.window_length_label.setFont(btn_font)
+        slider_layout.addWidget(self.window_length_label)
+        
+        # 回到当前帧按钮
+        self.reset_view_btn = QPushButton("回到当前帧")
+        self.reset_view_btn.setMaximumWidth(100)
+        self.reset_view_btn.setFont(btn_font)
+        self.reset_view_btn.setToolTip("重置视图到当前时间窗范围（在手动拖动/缩放后使用）")
+        self.reset_view_btn.installEventFilter(ToolTipFilter(self.reset_view_btn, 0, ToolTipPosition.TOP))
+        self.reset_view_btn.clicked.connect(self._on_reset_view_clicked)
+        self.reset_view_btn.setEnabled(False)  # 初始禁用
+        # 保存按钮的默认样式（用于恢复）
+        self.reset_view_btn_default_style = self.reset_view_btn.styleSheet()
+        slider_layout.addWidget(self.reset_view_btn)
+        
+        control_layout.addLayout(slider_layout)
+        control_layout.addStretch()
+        layout.addWidget(control_group)
+        
+        # 第三列：文件信息
         info_group = QGroupBox("文件信息")
+        # 设置组标题字体较小，但不影响内部控件
+        info_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
         info_layout = QVBoxLayout(info_group)
+        info_group.setMaximumWidth(150)  # 保持左右宽度限制不变
+        info_group.setMaximumHeight(100)
         self.load_file_info_text = QTextEdit()
         self.load_file_info_text.setReadOnly(True)
-        self.load_file_info_text.setFont(QFont("Consolas", 9))
-        self.load_file_info_text.setMaximumHeight(80)  # 高度再小一半（从100改为50）
+        self.load_file_info_text.setFont(QFont("Consolas", 8))
         info_layout.addWidget(self.load_file_info_text)
-        right_col.addWidget(info_group)
-        right_col.addStretch()
-        main_row.addLayout(right_col)
         
-        layout.addLayout(main_row)
-        layout.addStretch()
+        layout.addWidget(info_group)
         
         self.config_tabs.addTab(tab, "文件加载")
     
@@ -874,14 +955,15 @@ class BLEHostGUI(QMainWindow):
         """创建设置选项卡"""
         tab = QWidget()
         tab.setMinimumHeight(80)  # 设置最小高度，保持等高
-        layout = QHBoxLayout(tab)  # 改为横向布局
+        layout = QHBoxLayout(tab)  # 两列横向布局，靠左排列
         layout.setContentsMargins(10, 10, 10, 10)
         
         # 左列：主题设置
-        left_col = QVBoxLayout()
         theme_group = QGroupBox("主题设置")
+        theme_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
         theme_layout = QVBoxLayout(theme_group)
-        
+        theme_group.setMaximumHeight(100)
+        theme_group.setMaximumWidth(200)
         # 主题模式选择
         self.theme_mode_group = QButtonGroup(self)
         self.theme_auto_radio = QRadioButton("跟随系统")
@@ -901,13 +983,11 @@ class BLEHostGUI(QMainWindow):
         self.theme_mode_group.addButton(self.theme_dark_radio, 2)
         theme_layout.addWidget(self.theme_dark_radio)
         
-        left_col.addWidget(theme_group)
-        left_col.addStretch()
-        layout.addLayout(left_col)
+        layout.addWidget(theme_group)
         
-        # 右列：About信息
-        right_col = QVBoxLayout()
+        # 右列：关于信息
         about_group = QGroupBox("关于")
+        about_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
         about_layout = QVBoxLayout(about_group)
         about_text = QTextEdit()
         about_text.setReadOnly(True)
@@ -920,11 +1000,12 @@ class BLEHostGUI(QMainWindow):
         <p>BLE Channel Sounding 上位机应用程序</p>
         <p>基于 PySide6 开发</p>
         """)
-        about_text.setMaximumHeight(80)  # 限制高度，内容可滚动
+        about_group.setMaximumHeight(100)  # 限制高度，内容可滚动
+        about_group.setMaximumWidth(500)
         about_layout.addWidget(about_text)
-        right_col.addWidget(about_group)
-        right_col.addStretch()
-        layout.addLayout(right_col)
+        layout.addWidget(about_group)
+        
+        layout.addStretch()  # 添加stretch让内容靠左
         
         self.config_tabs.addTab(tab, "设置")
         
@@ -953,6 +1034,11 @@ class BLEHostGUI(QMainWindow):
                 x_label='Frame Index',
                 y_label=y_label
             )
+            
+            # 连接到视图变化信号，当检测到用户手动操作时立即更新按钮颜色
+            # 注意：plotter 内部的 _on_view_changed 会先执行并设置 user_has_panned
+            # 然后这个回调会延迟检查并更新按钮颜色
+            plotter.plot_widget.sigRangeChanged.connect(self._on_plot_view_changed)
             
             # 添加到选项卡
             self.plot_tabs.addTab(plotter.get_widget(), tab_name)
@@ -1021,8 +1107,16 @@ class BLEHostGUI(QMainWindow):
         """刷新串口列表"""
         self.port_combo.clear()
         ports = SerialReader.list_ports()
+        port_count = len(ports)
         for port_info in ports:
             self.port_combo.addItem(f"{port_info['port']} - {port_info['description']}", port_info['port'])
+        
+        # 显示InfoBar提示
+        InfoBarHelper.information(
+            self,
+            title="串口列表已刷新",
+            content=f"找到 {port_count} 个可用串口"
+        )
     
     def _toggle_connection(self):
         """切换连接状态"""
@@ -1372,7 +1466,12 @@ class BLEHostGUI(QMainWindow):
         
         # 立即更新绘图
         if self.frame_mode:
-            self._update_frame_plots()
+            if self.is_loaded_mode:
+                # 加载模式下，更新所有plot tab
+                self._update_loaded_mode_plots()
+            else:
+                # 连接模式下，更新实时绘图
+                self._update_frame_plots()
     
     def _set_save_path(self):
         """设置保存路径"""
@@ -1447,45 +1546,56 @@ class BLEHostGUI(QMainWindow):
         def save_in_thread():
             try:
                 self.is_saving = True
-                self.save_status_label.setText(f"正在保存 {len(frames)} 帧数据...")
-                self.save_status_label.setStyleSheet("color: black;")
+                # 通过信号在主线程中更新状态
+                self.save_status_update_signal.emit(f"正在保存 {len(frames)} 帧数据...", "color: black;")
                 
                 success = self.data_saver.save_frames(frames, filepath, max_frames=None)
                 
                 if success:
-                    self.save_status_label.setText(f"✓ 已保存 {len(frames)} 帧数据到: {filepath}")
-                    self.save_status_label.setStyleSheet("color: green;")
-                    # 在主线程中显示成功提示
-                    QTimer.singleShot(0, lambda: InfoBarHelper.success(
-                        self,
-                        title="保存成功",
-                        content=f"已保存 {len(frames)} 帧数据到: {os.path.basename(filepath)}"
-                    ))
+                    # 显示简洁的保存信息（只显示文件名）
+                    filename = os.path.basename(filepath)
+                    frame_count = len(frames)
+                    # 通过信号在主线程中更新UI和显示InfoBar
+                    self.save_success_signal.emit(frame_count, filename)
                 else:
-                    self.save_status_label.setText("✗ 保存失败，请查看日志")
-                    self.save_status_label.setStyleSheet("color: red;")
-                    # 在主线程中显示错误提示
-                    QTimer.singleShot(0, lambda: InfoBarHelper.error(
-                        self,
-                        title="保存失败",
-                        content="保存失败，请查看日志"
-                    ))
+                    # 通过信号在主线程中显示错误提示
+                    self.save_error_signal.emit("保存失败，请查看日志")
             except Exception as e:
                 self.logger.error(f"保存数据时出错: {e}")
-                self.save_status_label.setText(f"✗ 保存失败: {str(e)}")
-                self.save_status_label.setStyleSheet("color: red;")
-                # 在主线程中显示错误提示
-                QTimer.singleShot(0, lambda: InfoBarHelper.error(
-                    self,
-                    title="保存失败",
-                    content=f"保存失败: {str(e)}"
-                ))
+                error_msg = str(e)
+                # 通过信号在主线程中显示错误提示
+                self.save_error_signal.emit(f"保存失败: {error_msg}")
             finally:
                 self.is_saving = False
         
         import threading
         save_thread = threading.Thread(target=save_in_thread, daemon=True)
         save_thread.start()
+    
+    def _on_save_status_update(self, text: str, color_style: str):
+        """在主线程中更新保存状态（由信号触发）"""
+        self.save_status_label.setText(text)
+        self.save_status_label.setStyleSheet(color_style)
+    
+    def _on_save_success(self, frame_count: int, filename: str):
+        """在主线程中显示保存成功（由信号触发）"""
+        self.save_status_label.setText(f"✓ 已保存 {frame_count} 帧到: {filename}")
+        self.save_status_label.setStyleSheet("color: green;")
+        InfoBarHelper.success(
+            self,
+            title="保存成功",
+            content=f"已保存 {frame_count} 帧"
+        )
+    
+    def _on_save_error(self, error_msg: str):
+        """在主线程中显示保存错误（由信号触发）"""
+        self.save_status_label.setText(f"✗ {error_msg}")
+        self.save_status_label.setStyleSheet("color: red;")
+        InfoBarHelper.error(
+            self,
+            title="保存失败",
+            content=error_msg
+        )
     
     def _save_recent_frames(self):
         """保存最近N帧数据"""
@@ -1546,39 +1656,24 @@ class BLEHostGUI(QMainWindow):
         def save_in_thread():
             try:
                 self.is_saving = True
-                self.save_status_label.setText(f"正在保存最近 {saved_count} 帧数据...")
-                self.save_status_label.setStyleSheet("color: black;")
+                # 通过信号在主线程中更新状态
+                self.save_status_update_signal.emit(f"正在保存最近 {saved_count} 帧数据...", "color: black;")
                 
                 success = self.data_saver.save_frames(frames, filepath, max_frames=max_frames)
                 
                 if success:
-                    self.save_status_label.setText(f"✓ 已保存最近 {saved_count} 帧数据到: {filepath}")
-                    self.save_status_label.setStyleSheet("color: green;")
-                    # 在主线程中显示成功提示
-                    QTimer.singleShot(0, lambda: InfoBarHelper.success(
-                        self,
-                        title="保存成功",
-                        content=f"已保存最近 {saved_count} 帧数据到: {os.path.basename(filepath)}"
-                    ))
+                    # 显示简洁的保存信息（只显示文件名）
+                    filename = os.path.basename(filepath)
+                    # 通过信号在主线程中更新UI和显示InfoBar
+                    self.save_success_signal.emit(saved_count, filename)
                 else:
-                    self.save_status_label.setText("✗ 保存失败，请查看日志")
-                    self.save_status_label.setStyleSheet("color: red;")
-                    # 在主线程中显示错误提示
-                    QTimer.singleShot(0, lambda: InfoBarHelper.error(
-                        self,
-                        title="保存失败",
-                        content="保存失败，请查看日志"
-                    ))
+                    # 通过信号在主线程中显示错误提示
+                    self.save_error_signal.emit("保存失败，请查看日志")
             except Exception as e:
                 self.logger.error(f"保存数据时出错: {e}")
-                self.save_status_label.setText(f"✗ 保存失败: {str(e)}")
-                self.save_status_label.setStyleSheet("color: red;")
-                # 在主线程中显示错误提示
-                QTimer.singleShot(0, lambda: InfoBarHelper.error(
-                    self,
-                    title="保存失败",
-                    content=f"保存失败: {str(e)}"
-                ))
+                error_msg = str(e)
+                # 通过信号在主线程中显示错误提示
+                self.save_error_signal.emit(f"保存失败: {error_msg}")
             finally:
                 self.is_saving = False
         
@@ -1593,7 +1688,7 @@ class BLEHostGUI(QMainWindow):
             self.is_holding_clear_btn = True
             self.clear_data_progress_value = 0
             self.clear_data_progress_ring.setValue(0)
-            self.clear_data_progress_ring.setVisible(True)
+            self.clear_data_progress_ring.setStyleSheet("opacity: 1;")  # 显示进度环
             
             # 创建定时器来更新进度
             if self.clear_data_progress_timer is None:
@@ -1616,7 +1711,7 @@ class BLEHostGUI(QMainWindow):
             
             # 如果进度未完成，隐藏进度环
             if self.clear_data_progress_value < 100:
-                self.clear_data_progress_ring.setVisible(False)
+                self.clear_data_progress_ring.setStyleSheet("opacity: 0;")  # 隐藏进度环但保持占用空间
                 self.clear_data_progress_value = 0
                 self.clear_data_progress_ring.setValue(0)
     
@@ -1626,9 +1721,9 @@ class BLEHostGUI(QMainWindow):
             # 如果已经松开，停止更新
             if self.clear_data_progress_timer:
                 self.clear_data_progress_timer.stop()
-            self.clear_data_progress_ring.setVisible(False)
-            self.clear_data_progress_value = 0
-            self.clear_data_progress_ring.setValue(0)
+                self.clear_data_progress_ring.setStyleSheet("opacity: 0;")  # 隐藏进度环但保持占用空间
+                self.clear_data_progress_value = 0
+                self.clear_data_progress_ring.setValue(0)
             return
         
         # 增加进度值（每次增加1%，100次达到100%）
@@ -1640,7 +1735,7 @@ class BLEHostGUI(QMainWindow):
             if self.clear_data_progress_timer:
                 self.clear_data_progress_timer.stop()
             self.is_holding_clear_btn = False
-            self.clear_data_progress_ring.setVisible(False)
+            self.clear_data_progress_ring.setStyleSheet("opacity: 0;")  # 隐藏进度环但保持占用空间
             self.clear_data_progress_value = 0
             self.clear_data_progress_ring.setValue(0)
             
@@ -1750,12 +1845,14 @@ class BLEHostGUI(QMainWindow):
             # 更新文件信息显示（完整信息）
             self._update_load_file_info()
             
-            # 显示滑动条并更新范围
-            self.slider_frame.setVisible(True)
+            # 启用时间窗控制并更新范围
             max_start = max(0, len(self.loaded_frames) - self.display_max_frames)
             self.time_window_slider.setMaximum(max_start)
             self.time_window_slider.setValue(0)
             self.window_start_entry.setText("0")
+            
+            # 启用时间窗控制控件
+            self._set_load_tab_enabled(True)
             
             # 禁用连接tab的功能（加载模式和连接态互斥）
             self._set_connection_tab_enabled(False)
@@ -1791,6 +1888,9 @@ class BLEHostGUI(QMainWindow):
             
             # 更新加载模式的绘图
             self._update_loaded_mode_plots()
+            
+            # 初始化重置按钮状态（确保颜色正确）
+            self._check_and_update_reset_button()
             
             self.logger.info(f"文件加载成功: {filepath}, 共 {len(self.loaded_frames)} 帧")
             InfoBarHelper.success(
@@ -1851,20 +1951,20 @@ class BLEHostGUI(QMainWindow):
         self.loaded_file_info = None
         self.current_window_start = 0
         
-        # 隐藏滑动条
-        self.slider_frame.setVisible(False)
+        # 禁用时间窗控制控件
+        self._set_load_tab_enabled(False)
         
         # 启用连接tab的功能
         self._set_connection_tab_enabled(True)
-        
-        # 启用文件加载tab
-        self._set_load_tab_enabled(True)
         
         # 呼吸估计控制面板已经常驻显示，不需要切换
         
         # 切换按钮为加载文件
         self.load_unload_btn.setText("加载文件")
         self.load_unload_btn.setStyleSheet("background-color: #2196F3; color: white;")  # 浅蓝色
+        
+        # 恢复重置按钮的默认样式（因为不再处于加载模式）
+        self.reset_view_btn.setStyleSheet(self.reset_view_btn_default_style)
         
         # 清空文件信息
         self.load_file_info_text.clear()
@@ -1894,13 +1994,28 @@ class BLEHostGUI(QMainWindow):
             self.baudrate_combo.setEnabled(enabled)
     
     def _set_load_tab_enabled(self, enabled: bool):
-        """启用或禁用文件加载tab的功能"""
+        """启用或禁用文件加载tab的功能（包括时间窗控制）"""
+        # 文件路径相关控件（加载文件时应该禁用，避免重复加载）
+        # 注意：这里的逻辑是反的，enabled=True表示已加载文件，应该禁用文件选择
+        # 但时间窗控制应该启用
         if hasattr(self, 'load_file_entry'):
-            self.load_file_entry.setEnabled(enabled)
+            self.load_file_entry.setEnabled(not enabled)  # 已加载时禁用文件选择
         if hasattr(self, 'load_unload_btn'):
-            self.load_unload_btn.setEnabled(enabled)
+            self.load_unload_btn.setEnabled(True)  # 加载/取消加载按钮始终启用
         if hasattr(self, 'browse_btn'):
-            self.browse_btn.setEnabled(enabled)
+            self.browse_btn.setEnabled(not enabled)  # 已加载时禁用浏览按钮
+        
+        # 时间窗控制控件（加载文件时启用，未加载时禁用）
+        if hasattr(self, 'window_start_entry'):
+            self.window_start_entry.setEnabled(enabled)
+        if hasattr(self, 'time_window_slider'):
+            self.time_window_slider.setEnabled(enabled)
+        if hasattr(self, 'slider_left_btn'):
+            self.slider_left_btn.setEnabled(enabled)
+        if hasattr(self, 'slider_right_btn'):
+            self.slider_right_btn.setEnabled(enabled)
+        if hasattr(self, 'reset_view_btn'):
+            self.reset_view_btn.setEnabled(enabled)
     
     def _calculate_frequency(self):
         """计算频率"""
@@ -2209,6 +2324,82 @@ class BLEHostGUI(QMainWindow):
             # 如果输入无效，恢复为当前值
             self.window_start_entry.setText(str(self.current_window_start))
     
+    def _on_reset_view_clicked(self):
+        """回到当前帧按钮点击时的回调"""
+        if not self.is_loaded_mode:
+            return
+        
+        # 重置所有plot tab的视图到当前帧窗口
+        reset_count = 0
+        for tab_key, plotter_info in self.plotters.items():
+            if tab_key == 'breathing_estimation':
+                continue  # 呼吸估计tab使用matplotlib，单独处理
+            
+            plotter = plotter_info.get('plotter')
+            if plotter is None:
+                continue
+            
+            if hasattr(plotter, 'reset_to_current_frame'):
+                if plotter.reset_to_current_frame():
+                    reset_count += 1
+        
+        # 恢复按钮颜色（因为已经重置，不再需要提示）
+        self._update_reset_button_style()
+        
+        if reset_count > 0:
+            self.logger.info(f"已重置 {reset_count} 个plot tab的视图到当前帧窗口")
+            InfoBarHelper.information(
+                self,
+                title="视图已重置",
+                content=f"已重置 {reset_count} 个绘图窗口到当前时间窗范围"
+            )
+    
+    def _on_plot_view_changed(self):
+        """当plot视图变化时的回调（立即检查并更新按钮颜色）"""
+        # 延迟一小段时间再检查，避免频繁更新（因为视图变化可能连续触发多次）
+        # 使用 QTimer.singleShot 来延迟执行
+        if hasattr(self, '_view_changed_timer'):
+            self._view_changed_timer.stop()
+        
+        from PySide6.QtCore import QTimer
+        self._view_changed_timer = QTimer()
+        self._view_changed_timer.setSingleShot(True)
+        self._view_changed_timer.timeout.connect(self._check_and_update_reset_button)
+        self._view_changed_timer.start(100)  # 100ms后检查，避免频繁更新
+    
+    def _check_and_update_reset_button(self):
+        """检查是否有plotter被用户手动操作过，并更新按钮颜色"""
+        if not self.is_loaded_mode:
+            return
+        
+        # 检查是否有任何plotter被用户手动操作过
+        has_panned = False
+        for tab_key, plotter_info in self.plotters.items():
+            if tab_key == 'breathing_estimation':
+                continue
+            
+            plotter = plotter_info.get('plotter')
+            if plotter is None:
+                continue
+            
+            if hasattr(plotter, 'user_has_panned') and plotter.user_has_panned:
+                has_panned = True
+                break
+        
+        # 更新按钮样式
+        if has_panned:
+            # 使用醒目的颜色提示（橙色/黄色系）
+            self.reset_view_btn.setStyleSheet(
+                "background-color: #ff9800; color: white; font-weight: bold;"
+            )
+        else:
+            # 恢复默认样式
+            self.reset_view_btn.setStyleSheet(self.reset_view_btn_default_style)
+    
+    def _update_reset_button_style(self):
+        """更新重置按钮的样式（检查所有plotter状态）"""
+        self._check_and_update_reset_button()
+    
     def _on_breathing_control_changed(self):
         """呼吸估计控制参数变化时的回调（单个参数变化时）"""
         # 移除自动更新，改为手动Update按钮控制
@@ -2401,10 +2592,20 @@ class BLEHostGUI(QMainWindow):
             self.window_length_label.setText("时间窗长度: -- 秒")
     
     def _update_loaded_plots_for_tabs(self, window_frames: List[Dict]):
-        """更新加载模式下各个tab的绘图"""
-        # 提取所有通道的数据
+        """更新加载模式下各个tab的绘图
+        
+        现在会显示所有加载的数据，而不仅仅是窗口内的帧。
+        窗口范围用于确定当前视图焦点，但所有数据都会被绘制。
+        """
+        # 使用所有加载的帧，而不仅仅是窗口内的帧
+        all_frames = self.loaded_frames if self.loaded_frames else []
+        
+        if not all_frames:
+            return
+        
+        # 提取所有通道的数据（从所有帧中）
         all_channels = set()
-        for frame in window_frames:
+        for frame in all_frames:
             channels = frame.get('channels', {})
             for ch in channels.keys():
                 try:
@@ -2425,6 +2626,22 @@ class BLEHostGUI(QMainWindow):
         if not display_channels:
             return
         
+        # 计算当前窗口范围（用于视图定位）
+        window_start = self.current_window_start
+        window_size = self.display_max_frames
+        window_end = min(window_start + window_size, len(all_frames))
+        
+        # 确保窗口范围有效
+        if window_start >= len(all_frames) or window_end <= window_start:
+            view_range = None
+        else:
+            window_start_index = all_frames[window_start].get('index', window_start)
+            window_end_index = all_frames[window_end - 1].get('index', window_end - 1)
+            # 确保索引顺序正确
+            if window_start_index > window_end_index:
+                window_start_index, window_end_index = window_end_index, window_start_index
+            view_range = (window_start_index, window_end_index)
+        
         # 更新每个绘图tab
         tab_configs = [
             ('amplitude', 'amplitude'),
@@ -2444,12 +2661,12 @@ class BLEHostGUI(QMainWindow):
             if plotter is None:
                 continue
             
-            # 准备该数据类型的所有通道数据
+            # 准备该数据类型的所有通道数据（使用所有帧）
             channel_data = {}
             for ch in display_channels:
                 indices = []
                 values = []
-                for i, frame in enumerate(window_frames):
+                for frame in all_frames:
                     channels = frame.get('channels', {})
                     ch_data = None
                     if ch in channels:
@@ -2458,15 +2675,22 @@ class BLEHostGUI(QMainWindow):
                         ch_data = channels[str(ch)]
                     
                     if ch_data:
-                        indices.append(frame.get('index', self.current_window_start + i))
+                        indices.append(frame.get('index', 0))
                         values.append(ch_data.get(data_type, 0.0))
                 
                 if len(indices) > 0 and len(values) > 0:
                     channel_data[ch] = (np.array(indices), np.array(values))
             
-            # 更新绘图
+            # 更新绘图（传入窗口范围用于视图定位）
             if channel_data:
-                plotter.update_frame_data(channel_data, max_channels=len(display_channels))
+                plotter.update_frame_data(
+                    channel_data, 
+                    max_channels=len(display_channels),
+                    view_range=view_range
+                )
+        
+        # 注意：按钮颜色更新现在由视图变化信号自动触发（_on_plot_view_changed）
+        # 这里不再需要手动检查，因为视图变化时会立即触发更新
     
     def _update_breathing_estimation_plot(self, window_frames: List[Dict]):
         """更新呼吸估计tab的绘图"""
@@ -2661,6 +2885,10 @@ def main():
     """主函数"""
     # 创建应用程序
     app = QApplication(sys.argv)
+    
+    # 设置全局字体为微软雅黑
+    font = QFont("Microsoft YaHei", 10)  # 默认10号字体
+    app.setFont(font)
     
     # 设置应用程序图标
     try:
