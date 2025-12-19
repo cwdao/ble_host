@@ -17,3 +17,6 @@ PySide6>=6.6.0
 # 实时绘图库（用于高频数据更新）
 pyqtgraph>=0.13.0
 
+# Fluent UI 组件库（用于 InfoBar 等现代化 UI 组件）
+qfluentwidgets>=1.5.0
+

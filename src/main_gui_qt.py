@@ -11,6 +11,32 @@ import logging
 import numpy as np
 from typing import List, Optional, Dict
 from datetime import datetime
+import platform
+
+# 在导入 Qt 之前设置 DPI 感知（Windows）
+# 这必须在创建 QApplication 之前完成，以避免 Qt 的 DPI 感知警告
+if platform.system() == 'Windows':
+    try:
+        from ctypes import windll
+        # 尝试设置 DPI 感知上下文（Windows 10 1703+）
+        # 使用 PER_MONITOR_AWARE_V2，这是 Qt 6 默认使用的
+        try:
+            # 首先尝试使用 SetProcessDpiAwarenessContext（Windows 10 1703+）
+            # -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+            windll.user32.SetProcessDpiAwarenessContext(-4)
+        except (AttributeError, OSError):
+            # 如果失败，尝试使用 SetProcessDpiAwareness（Windows 8.1+）
+            try:
+                # 2 = PROCESS_PER_MONITOR_DPI_AWARE
+                windll.shcore.SetProcessDpiAwareness(2)
+            except (AttributeError, OSError):
+                # 最后尝试使用旧版 API（Windows Vista+）
+                try:
+                    windll.user32.SetProcessDPIAware()
+                except (AttributeError, OSError):
+                    pass  # 如果都失败，Qt 会使用默认设置
+    except Exception:
+        pass  # 忽略所有错误，让 Qt 使用默认设置
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -31,6 +57,7 @@ try:
     from .breathing_estimator import BreathingEstimator
     from .plotter_qt_realtime import RealtimePlotter
     from .plotter_qt_matplotlib import MatplotlibPlotter
+    from .gui.info_bar_helper import InfoBarHelper
 except ImportError:
     # 直接运行时使用绝对导入
     from serial_reader import SerialReader
@@ -41,6 +68,7 @@ except ImportError:
     from breathing_estimator import BreathingEstimator
     from plotter_qt_realtime import RealtimePlotter
     from plotter_qt_matplotlib import MatplotlibPlotter
+    from gui.info_bar_helper import InfoBarHelper
 
 # 版本信息
 __version__ = config.version
@@ -98,7 +126,7 @@ class BLEHostGUI(QMainWindow):
         self.breathing_estimator = BreathingEstimator()
         
         # 主题模式
-        self.current_theme_mode = "light"  # auto, light, dark
+        self.current_theme_mode = "auto"  # auto, light, dark（默认跟随系统）
         
         # 实时呼吸估计相关
         self.breathing_update_interval = 2.0  # 默认2秒
@@ -114,8 +142,9 @@ class BLEHostGUI(QMainWindow):
             self.display_channels_entry.setText(config.default_display_channels)
             self._apply_frame_settings()
         
-        # 应用初始主题（跟随系统）
-        self._apply_theme("light")
+        # 应用初始主题（跟随系统）- 初始化时不显示提示
+        # 注意：这里不调用 _on_theme_mode_changed，因为界面还没创建完成
+        # 主题会在 _create_settings_tab 中统一初始化
         
         # 定时刷新（使用 QTimer 替代 threading）
         self._start_update_loop()
@@ -311,7 +340,7 @@ class BLEHostGUI(QMainWindow):
         
         # Update按钮（控制所有参数，放在更新间隔下面）
         update_layout = QHBoxLayout()
-        self.update_all_btn = QPushButton("Update")
+        self.update_all_btn = QPushButton("更新参数")
         self.update_all_btn.setStyleSheet("background-color: #2196F3; color: white;")
         self.update_all_btn.clicked.connect(self._on_update_all_breathing_params)
         update_layout.addWidget(self.update_all_btn)
@@ -353,10 +382,28 @@ class BLEHostGUI(QMainWindow):
         # 菜单栏已移除，所有设置都在设置tab中
         pass
     
-    def _on_theme_mode_changed(self, theme: str):
+    def _on_theme_mode_changed(self, theme: str, show_info: bool = True):
         """主题模式改变时的回调"""
+        # 如果主题没有实际改变，不执行任何操作
+        if self.current_theme_mode == theme:
+            return
+        
         self.current_theme_mode = theme
         self._apply_theme(theme)
+        
+        # 只在用户主动切换时显示信息提示（初始化时不显示）
+        if show_info:
+            theme_names = {
+                "auto": "跟随系统",
+                "light": "浅色模式",
+                "dark": "深色模式"
+            }
+            theme_name = theme_names.get(theme, theme)
+            InfoBarHelper.information(
+                self,
+                title="主题已切换",
+                content=f"当前主题: {theme_name}"
+            )
     
     def _apply_theme(self, theme: str):
         """应用主题"""
@@ -775,17 +822,18 @@ class BLEHostGUI(QMainWindow):
         self.theme_mode_group = QButtonGroup(self)
         self.theme_auto_radio = QRadioButton("跟随系统")
         self.theme_auto_radio.setChecked(True)  # 默认跟随系统
-        self.theme_auto_radio.toggled.connect(lambda: self._on_theme_mode_changed("auto"))
+        # 使用 lambda 来只在选中时触发，避免取消选中时触发
+        self.theme_auto_radio.toggled.connect(lambda checked: self._on_theme_mode_changed("auto") if checked else None)
         self.theme_mode_group.addButton(self.theme_auto_radio, 0)
         theme_layout.addWidget(self.theme_auto_radio)
         
         self.theme_light_radio = QRadioButton("浅色模式")
-        self.theme_light_radio.toggled.connect(lambda: self._on_theme_mode_changed("light"))
+        self.theme_light_radio.toggled.connect(lambda checked: self._on_theme_mode_changed("light") if checked else None)
         self.theme_mode_group.addButton(self.theme_light_radio, 1)
         theme_layout.addWidget(self.theme_light_radio)
         
         self.theme_dark_radio = QRadioButton("深色模式")
-        self.theme_dark_radio.toggled.connect(lambda: self._on_theme_mode_changed("dark"))
+        self.theme_dark_radio.toggled.connect(lambda checked: self._on_theme_mode_changed("dark") if checked else None)
         self.theme_mode_group.addButton(self.theme_dark_radio, 2)
         theme_layout.addWidget(self.theme_dark_radio)
         
@@ -816,8 +864,8 @@ class BLEHostGUI(QMainWindow):
         
         self.config_tabs.addTab(tab, "设置")
         
-        # 初始化主题（跟随系统）
-        self._on_theme_mode_changed("auto")
+        # 初始化主题（跟随系统）- 不显示提示
+        self._on_theme_mode_changed("auto", show_info=False)
     
     def _create_plot_tabs(self):
         """创建绘图选项卡"""
@@ -915,12 +963,20 @@ class BLEHostGUI(QMainWindow):
             # 连接
             # 检查是否在加载模式（连接和加载互斥）
             if self.is_loaded_mode:
-                QMessageBox.warning(self, "警告", "加载文件状态下不能连接，请先取消加载")
+                InfoBarHelper.warning(
+                    self,
+                    title="无法连接",
+                    content="加载文件状态下不能连接，请先取消加载"
+                )
                 return
             
             port_data = self.port_combo.currentData()
             if not port_data:
-                QMessageBox.warning(self, "警告", "请选择串口")
+                InfoBarHelper.warning(
+                    self,
+                    title="参数错误",
+                    content="请选择串口"
+                )
                 return
             
             port = port_data
@@ -935,6 +991,13 @@ class BLEHostGUI(QMainWindow):
                 self.status_label.setStyleSheet("color: green;")
                 self.logger.info(f"串口连接成功: {port} @ {baudrate}")
                 
+                # 显示成功提示
+                InfoBarHelper.success(
+                    self,
+                    title="连接成功",
+                    content=f"串口连接成功: {port} @ {baudrate}"
+                )
+                
                 # 清空呼吸估计结果显示
                 if hasattr(self, 'breathing_result_text'):
                     self.breathing_result_text.setPlainText("等待数据积累...")
@@ -942,7 +1005,11 @@ class BLEHostGUI(QMainWindow):
                 # 禁用文件加载tab
                 self._set_load_tab_enabled(False)
             else:
-                QMessageBox.critical(self, "错误", "串口连接失败")
+                InfoBarHelper.error(
+                    self,
+                    title="连接失败",
+                    content="串口连接失败，请检查串口设置"
+                )
         else:
             # 断开
             if self.serial_reader:
@@ -953,6 +1020,13 @@ class BLEHostGUI(QMainWindow):
             self.status_label.setText("未连接")
             self.status_label.setStyleSheet("color: red;")
             self.logger.info("串口已断开")
+            
+            # 显示警告提示
+            InfoBarHelper.warning(
+                self,
+                title="已断开连接",
+                content="串口连接已断开"
+            )
             
             # 清空呼吸估计结果显示
             if hasattr(self, 'breathing_result_text'):
@@ -1211,6 +1285,14 @@ class BLEHostGUI(QMainWindow):
         self.display_channel_list = new_display_channel_list
         self.logger.info(f"展示信道设置为: {self.display_channel_list} (模式: {mode})")
         
+        # 显示信息提示
+        channel_info = f"信道: {self.display_channel_list}, 显示帧数: {self.display_max_frames}"
+        InfoBarHelper.information(
+            self,
+            title="信道配置已更新",
+            content=channel_info
+        )
+        
         # 如果处于加载模式，更新滑动条范围
         if self.is_loaded_mode and self.loaded_frames:
             max_start = max(0, len(self.loaded_frames) - self.display_max_frames)
@@ -1232,6 +1314,13 @@ class BLEHostGUI(QMainWindow):
             display_path = directory if len(directory) <= 50 else "..." + directory[-47:]
             self.path_label.setText(f"当前路径: {display_path}")
             self.logger.info(f"保存路径已设置为: {directory}")
+            
+            # 显示信息提示
+            InfoBarHelper.information(
+                self,
+                title="保存路径已设置",
+                content=f"保存路径: {display_path}"
+            )
     
     def _toggle_auto_save(self, checked):
         """切换自动保存路径"""
@@ -1249,16 +1338,28 @@ class BLEHostGUI(QMainWindow):
     def _save_all_frames(self):
         """保存所有帧数据"""
         if not self.frame_mode:
-            QMessageBox.warning(self, "警告", "当前不是帧模式，无法保存帧数据")
+            InfoBarHelper.warning(
+                self,
+                title="无法保存",
+                content="当前不是帧模式，无法保存帧数据"
+            )
             return
         
         if self.is_saving:
-            QMessageBox.warning(self, "警告", "保存操作正在进行中，请稍候...")
+            InfoBarHelper.warning(
+                self,
+                title="操作进行中",
+                content="保存操作正在进行中，请稍候..."
+            )
             return
         
         frames = self.data_processor.raw_frames
         if not frames:
-            QMessageBox.warning(self, "警告", "没有可保存的帧数据")
+            InfoBarHelper.warning(
+                self,
+                title="无数据",
+                content="没有可保存的帧数据"
+            )
             return
         
         # 根据设置决定是否弹出对话框
@@ -1286,13 +1387,31 @@ class BLEHostGUI(QMainWindow):
                 if success:
                     self.save_status_label.setText(f"✓ 已保存 {len(frames)} 帧数据到: {filepath}")
                     self.save_status_label.setStyleSheet("color: green;")
+                    # 在主线程中显示成功提示
+                    QTimer.singleShot(0, lambda: InfoBarHelper.success(
+                        self,
+                        title="保存成功",
+                        content=f"已保存 {len(frames)} 帧数据到: {os.path.basename(filepath)}"
+                    ))
                 else:
                     self.save_status_label.setText("✗ 保存失败，请查看日志")
                     self.save_status_label.setStyleSheet("color: red;")
+                    # 在主线程中显示错误提示
+                    QTimer.singleShot(0, lambda: InfoBarHelper.error(
+                        self,
+                        title="保存失败",
+                        content="保存失败，请查看日志"
+                    ))
             except Exception as e:
                 self.logger.error(f"保存数据时出错: {e}")
                 self.save_status_label.setText(f"✗ 保存失败: {str(e)}")
                 self.save_status_label.setStyleSheet("color: red;")
+                # 在主线程中显示错误提示
+                QTimer.singleShot(0, lambda: InfoBarHelper.error(
+                    self,
+                    title="保存失败",
+                    content=f"保存失败: {str(e)}"
+                ))
             finally:
                 self.is_saving = False
         
@@ -1303,16 +1422,28 @@ class BLEHostGUI(QMainWindow):
     def _save_recent_frames(self):
         """保存最近N帧数据"""
         if not self.frame_mode:
-            QMessageBox.warning(self, "警告", "当前不是帧模式，无法保存帧数据")
+            InfoBarHelper.warning(
+                self,
+                title="无法保存",
+                content="当前不是帧模式，无法保存帧数据"
+            )
             return
         
         if self.is_saving:
-            QMessageBox.warning(self, "警告", "保存操作正在进行中，请稍候...")
+            InfoBarHelper.warning(
+                self,
+                title="操作进行中",
+                content="保存操作正在进行中，请稍候..."
+            )
             return
         
         frames = self.data_processor.raw_frames
         if not frames:
-            QMessageBox.warning(self, "警告", "没有可保存的帧数据")
+            InfoBarHelper.warning(
+                self,
+                title="无数据",
+                content="没有可保存的帧数据"
+            )
             return
         
         # 获取显示帧数参数
@@ -1355,13 +1486,31 @@ class BLEHostGUI(QMainWindow):
                 if success:
                     self.save_status_label.setText(f"✓ 已保存最近 {saved_count} 帧数据到: {filepath}")
                     self.save_status_label.setStyleSheet("color: green;")
+                    # 在主线程中显示成功提示
+                    QTimer.singleShot(0, lambda: InfoBarHelper.success(
+                        self,
+                        title="保存成功",
+                        content=f"已保存最近 {saved_count} 帧数据到: {os.path.basename(filepath)}"
+                    ))
                 else:
                     self.save_status_label.setText("✗ 保存失败，请查看日志")
                     self.save_status_label.setStyleSheet("color: red;")
+                    # 在主线程中显示错误提示
+                    QTimer.singleShot(0, lambda: InfoBarHelper.error(
+                        self,
+                        title="保存失败",
+                        content="保存失败，请查看日志"
+                    ))
             except Exception as e:
                 self.logger.error(f"保存数据时出错: {e}")
                 self.save_status_label.setText(f"✗ 保存失败: {str(e)}")
                 self.save_status_label.setStyleSheet("color: red;")
+                # 在主线程中显示错误提示
+                QTimer.singleShot(0, lambda: InfoBarHelper.error(
+                    self,
+                    title="保存失败",
+                    content=f"保存失败: {str(e)}"
+                ))
             finally:
                 self.is_saving = False
         
@@ -1410,6 +1559,13 @@ class BLEHostGUI(QMainWindow):
             self.breathing_result_text.setPlainText("数据已清空")
         
         self.logger.info("数据已清空")
+        
+        # 显示信息提示
+        InfoBarHelper.information(
+            self,
+            title="数据已清空",
+            content="所有数据已清空"
+        )
     
     def _browse_load_file(self):
         """浏览加载文件"""
@@ -1431,18 +1587,30 @@ class BLEHostGUI(QMainWindow):
         """加载文件"""
         # 检查是否已连接（连接和加载互斥）
         if self.is_running:
-            QMessageBox.warning(self, "警告", "连接状态下不能加载文件，请先断开连接")
+            InfoBarHelper.warning(
+                self,
+                title="无法加载",
+                content="连接状态下不能加载文件，请先断开连接"
+            )
             return
         
         filepath = self.load_file_entry.text().strip()
         if not filepath:
-            QMessageBox.warning(self, "警告", "请选择要加载的文件")
+            InfoBarHelper.warning(
+                self,
+                title="参数错误",
+                content="请选择要加载的文件"
+            )
             return
         
         try:
             data = self.data_saver.load_frames(filepath)
             if not data:
-                QMessageBox.critical(self, "错误", "文件加载失败")
+                InfoBarHelper.error(
+                    self,
+                    title="加载失败",
+                    content="文件加载失败，请查看日志"
+                )
                 return
             
             self.loaded_frames = data.get('frames', [])
@@ -1496,10 +1664,18 @@ class BLEHostGUI(QMainWindow):
             self._update_loaded_mode_plots()
             
             self.logger.info(f"文件加载成功: {filepath}, 共 {len(self.loaded_frames)} 帧")
-            QMessageBox.information(self, "成功", f"文件加载成功，共 {len(self.loaded_frames)} 帧")
+            InfoBarHelper.success(
+                self, 
+                title="加载成功", 
+                content=f"文件加载成功，共 {len(self.loaded_frames)} 帧"
+            )
         except Exception as e:
             self.logger.error(f"加载文件时出错: {e}")
-            QMessageBox.critical(self, "错误", f"加载文件失败: {str(e)}")
+            InfoBarHelper.error(
+                self,
+                title="加载失败",
+                content=f"加载文件失败: {str(e)}"
+            )
     
     def _update_load_file_info(self):
         """更新加载文件信息显示"""
@@ -1574,7 +1750,11 @@ class BLEHostGUI(QMainWindow):
             plotter.clear_plot()
         
         self.logger.info("已取消文件加载")
-        QMessageBox.information(self, "提示", "已取消文件加载")
+        InfoBarHelper.warning(
+            self,
+            title="已取消加载",
+            content="已取消文件加载"
+        )
     
     def _set_connection_tab_enabled(self, enabled: bool):
         """启用或禁用连接tab的功能"""
@@ -1597,7 +1777,11 @@ class BLEHostGUI(QMainWindow):
         """计算频率"""
         var_name = self.freq_var_combo.currentText()
         if not var_name:
-            QMessageBox.warning(self, "警告", "请选择要计算的变量")
+            InfoBarHelper.warning(
+                self,
+                title="参数错误",
+                content="请选择要计算的变量"
+            )
             return
         
         try:
@@ -1614,7 +1798,11 @@ class BLEHostGUI(QMainWindow):
                     else:
                         self.freq_result_label.setText(f"{var_name} 频率计算失败（数据不足）")
                 else:
-                    QMessageBox.warning(self, "警告", "帧模式下请选择通道（ch0, ch1, ...）")
+                    InfoBarHelper.warning(
+                        self,
+                        title="参数错误",
+                        content="帧模式下请选择通道（ch0, ch1, ...）"
+                    )
             else:
                 # 非帧模式：计算变量频率
                 freq = self.data_processor.calculate_frequency(var_name, duration=config.default_frequency_duration)
@@ -1624,7 +1812,11 @@ class BLEHostGUI(QMainWindow):
                     self.freq_result_label.setText(f"{var_name} 频率计算失败（数据不足）")
         except Exception as e:
             self.logger.error(f"计算频率时出错: {e}")
-            QMessageBox.critical(self, "错误", f"计算频率失败: {str(e)}")
+            InfoBarHelper.error(
+                self,
+                title="计算失败",
+                content=f"计算频率失败: {str(e)}"
+            )
     
     def _update_freq_list_and_stats(self):
         """更新频率列表和统计信息"""
@@ -1906,13 +2098,34 @@ class BLEHostGUI(QMainWindow):
                     self.breathing_update_timer.start(int(interval * 1000))
                 self.logger.info(f"呼吸估计更新间隔设置为: {interval}秒")
             else:
-                QMessageBox.warning(self, "警告", "更新间隔必须大于0")
+                InfoBarHelper.warning(
+                    self,
+                    title="参数错误",
+                    content="更新间隔必须大于0"
+                )
                 self.breathing_update_interval_entry.setText(str(self.breathing_update_interval))
                 return
         except ValueError:
-            QMessageBox.warning(self, "警告", "更新间隔必须是数字")
+            InfoBarHelper.warning(
+                self,
+                title="参数错误",
+                content="更新间隔必须是数字"
+            )
             self.breathing_update_interval_entry.setText(str(self.breathing_update_interval))
             return
+        
+        # 获取当前参数信息
+        data_type = self.breathing_data_type_combo.currentText()
+        channel = self.breathing_channel_combo.currentText()
+        threshold = self.breathing_threshold_entry.text()
+        
+        # 显示信息提示
+        params_info = f"数据类型: {data_type}, 信道: {channel}, 阈值: {threshold}, 更新间隔: {interval}秒"
+        InfoBarHelper.information(
+            self,
+            title="呼吸估计参数已更新",
+            content=params_info
+        )
         
         # 更新呼吸估计（根据当前模式）
         if self.is_loaded_mode:
