@@ -133,6 +133,9 @@ class BLEHostGUI(QMainWindow):
         self.frames_since_last_plot = 0  # 自上次绘图更新后处理的帧数
         self.min_frames_before_plot_update = 1  # 至少处理多少帧后才更新绘图（可调整）
         
+        # 呼吸信道列表初始化标志
+        self.breathing_channels_initialized = False  # 是否已初始化呼吸信道列表
+        
         # 帧数据处理
         self.frame_type = config.default_frame_type
         self.frame_mode = (self.frame_type == "演示帧")
@@ -1203,6 +1206,9 @@ class BLEHostGUI(QMainWindow):
             if hasattr(self, 'breathing_result_text'):
                 self.breathing_result_text.setPlainText("未连接")
             
+            # 重置呼吸信道列表初始化标志，以便下次连接时重新初始化
+            self.breathing_channels_initialized = False
+            
             # 启用文件加载tab（断开连接后，如果不在加载模式，加载tab可用）
             # 如果在加载模式，加载tab应该已经可用（因为加载时没有禁用）
             if not self.is_loaded_mode:
@@ -1276,8 +1282,8 @@ class BLEHostGUI(QMainWindow):
                         frames_processed += 1
                         has_new_frame = True
                         
-                        # 更新呼吸估计的信道列表（只在处理第一批数据时更新，避免频繁操作）
-                        if frames_processed == 1 and hasattr(self, 'breathing_channel_combo'):
+                        # 更新呼吸估计的信道列表（只在第一次收到帧数据时更新，避免频繁操作）
+                        if not self.breathing_channels_initialized and hasattr(self, 'breathing_channel_combo'):
                             all_channels = self.data_processor.get_all_frame_channels()
                             if all_channels:
                                 current_items = [self.breathing_channel_combo.itemText(i) 
@@ -1288,6 +1294,7 @@ class BLEHostGUI(QMainWindow):
                                     self.breathing_channel_combo.addItems(channel_list)
                                     if channel_list and self.breathing_channel_combo.currentIndex() < 0:
                                         self.breathing_channel_combo.setCurrentIndex(0)
+                                self.breathing_channels_initialized = True
                 
                 # 帧模式下不处理其他数据
                 continue
@@ -1817,6 +1824,8 @@ class BLEHostGUI(QMainWindow):
         )
         
         self.data_processor.clear_buffer(clear_frames=True)
+        # 重置呼吸信道列表初始化标志，以便下次收到数据时重新初始化
+        self.breathing_channels_initialized = False
         # 清空所有绘图器（包括实时绘图和呼吸估计）
         for plotter_info in self.plotters.values():
             plotter = plotter_info.get('plotter')

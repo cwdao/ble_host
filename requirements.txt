@@ -18,5 +18,9 @@ PySide6>=6.6.0
 pyqtgraph>=0.13.0
 
 # Fluent UI 组件库（用于 InfoBar 等现代化 UI 组件）
-qfluentwidgets>=1.5.0
+# 注意：根据使用的 Qt 绑定选择对应的包
+# PySide6 版本（当前使用）
+PySide6-Fluent-Widgets>=1.5.0
+# 如果使用 PyQt6，请使用：PyQt6-Fluent-Widgets>=1.5.0
+# 如果使用 PyQt5，请使用：PyQt-Fluent-Widgets>=1.5.0
 
