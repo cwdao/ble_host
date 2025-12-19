@@ -42,10 +42,12 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QCheckBox,
     QRadioButton, QSlider, QTabWidget, QSplitter, QGroupBox, QMessageBox,
-    QFileDialog, QButtonGroup, QFrame, QMenuBar, QMenu, QDialog, QDialogButtonBox
+    QFileDialog, QButtonGroup, QFrame, QMenuBar, QMenu, QDialog, QDialogButtonBox,
+    QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup
+from qfluentwidgets import SwitchButton, ProgressRing, ToolTipFilter, ToolTipPosition
 
 # 业务逻辑模块（无需修改）
 try:
@@ -126,12 +128,18 @@ class BLEHostGUI(QMainWindow):
         self.breathing_estimator = BreathingEstimator()
         
         # 主题模式
-        self.current_theme_mode = "auto"  # auto, light, dark（默认跟随系统）
+        self.current_theme_mode = "light"  # auto, light, dark（默认浅色模式）
         
         # 实时呼吸估计相关
         self.breathing_update_interval = 2.0  # 默认2秒
         self.breathing_update_timer = None
         self.last_breathing_update_time = 0
+        
+        # 清除数据长按相关
+        self.clear_data_hold_duration = 2.0  # 需要按住2秒
+        self.clear_data_progress_timer = None
+        self.clear_data_progress_value = 0
+        self.is_holding_clear_btn = False
         
         # 创建界面
         self._create_widgets()
@@ -140,7 +148,7 @@ class BLEHostGUI(QMainWindow):
         if self.frame_mode:
             # 先设置默认值
             self.display_channels_entry.setText(config.default_display_channels)
-            self._apply_frame_settings()
+            self._apply_frame_settings(show_info=False)  # 初始化时不显示提示
         
         # 应用初始主题（跟随系统）- 初始化时不显示提示
         # 注意：这里不调用 _on_theme_mode_changed，因为界面还没创建完成
@@ -386,6 +394,8 @@ class BLEHostGUI(QMainWindow):
         """主题模式改变时的回调"""
         # 如果主题没有实际改变，不执行任何操作
         if self.current_theme_mode == theme:
+            # 即使主题相同，也强制应用一次，确保界面正确显示
+            self._apply_theme(theme)
             return
         
         self.current_theme_mode = theme
@@ -453,7 +463,10 @@ class BLEHostGUI(QMainWindow):
                 style_hints = app.styleHints()
                 if hasattr(style_hints, 'setColorScheme'):
                     style_hints.setColorScheme(Qt.ColorScheme.Unknown)  # Unknown表示跟随系统
-                    self.update()  # 更新窗口
+                    # 强制刷新整个应用程序
+                    app.processEvents()
+                    self.repaint()  # 重绘窗口
+                    self.update()   # 更新窗口
         except Exception as e:
             self.logger.warning(f"设置系统主题失败: {e}")
         
@@ -467,7 +480,7 @@ class BLEHostGUI(QMainWindow):
             self._apply_light_theme_plot_only()
     
     def _apply_light_theme(self):
-        """应用浅色主题（只改波形图背景）"""
+        """应用浅色主题"""
         # 使用Qt的热切换主题API（Windows 11有效）
         try:
             app = QApplication.instance()
@@ -475,7 +488,10 @@ class BLEHostGUI(QMainWindow):
                 style_hints = app.styleHints()
                 if hasattr(style_hints, 'setColorScheme'):
                     style_hints.setColorScheme(Qt.ColorScheme.Light)
-                    self.update()  # 更新窗口
+                    # 强制刷新整个应用程序
+                    app.processEvents()
+                    self.repaint()  # 重绘窗口
+                    self.update()   # 更新窗口
         except Exception as e:
             self.logger.warning(f"设置浅色主题失败: {e}")
         
@@ -516,7 +532,7 @@ class BLEHostGUI(QMainWindow):
                     plotter.plot_widget.getAxis('bottom').setTextPen(pg.mkPen(color='k'))
     
     def _apply_dark_theme(self):
-        """应用深色主题（只改波形图背景）"""
+        """应用深色主题"""
         # 使用Qt的热切换主题API（Windows 11有效）
         try:
             app = QApplication.instance()
@@ -524,7 +540,10 @@ class BLEHostGUI(QMainWindow):
                 style_hints = app.styleHints()
                 if hasattr(style_hints, 'setColorScheme'):
                     style_hints.setColorScheme(Qt.ColorScheme.Dark)
-                    self.update()  # 更新窗口
+                    # 强制刷新整个应用程序
+                    app.processEvents()
+                    self.repaint()  # 重绘窗口
+                    self.update()   # 更新窗口
         except Exception as e:
             self.logger.warning(f"设置深色主题失败: {e}")
         
@@ -682,7 +701,8 @@ class BLEHostGUI(QMainWindow):
         
         # 应用按钮
         self.apply_settings_btn = QPushButton("应用")
-        self.apply_settings_btn.clicked.connect(self._apply_frame_settings)
+        # 使用 lambda 确保传递 show_info=True（用户主动点击时显示提示）
+        self.apply_settings_btn.clicked.connect(lambda: self._apply_frame_settings(show_info=True))
         layout.addWidget(self.apply_settings_btn)
         
         layout.addStretch()
@@ -696,16 +716,18 @@ class BLEHostGUI(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
         
-        # 第一行：设置保存路径、自动保存路径复选框、当前路径显示
+        # 第一行：设置保存路径、自动保存路径开关、当前路径显示
         row1 = QHBoxLayout()
         set_path_btn = QPushButton("设置保存路径...")
         set_path_btn.clicked.connect(self._set_save_path)
         row1.addWidget(set_path_btn)
         
-        self.auto_save_check = QCheckBox("使用自动保存路径")
-        self.auto_save_check.setChecked(self.use_auto_save)
-        self.auto_save_check.toggled.connect(self._toggle_auto_save)
-        row1.addWidget(self.auto_save_check)
+        # 使用 SwitchButton 替代 CheckBox
+        row1.addWidget(QLabel("使用自动保存路径:"))
+        self.auto_save_switch = SwitchButton(self)
+        self.auto_save_switch.setChecked(self.use_auto_save)
+        self.auto_save_switch.checkedChanged.connect(self._toggle_auto_save)
+        row1.addWidget(self.auto_save_switch)
         
         # 显示当前保存路径
         current_path = user_settings.get_save_directory()
@@ -733,10 +755,52 @@ class BLEHostGUI(QMainWindow):
         row2.addWidget(self.save_all_radio)
         row2.addWidget(self.save_recent_radio)
         
-        self.clear_data_btn = QPushButton("清空当前数据")
+        # 清除数据按钮和进度环容器
+        clear_data_container = QHBoxLayout()
+        clear_data_container.setSpacing(5)
+        clear_data_container.setContentsMargins(0, 0, 0, 0)  # 确保没有额外的边距
+        
+        # 创建一个自定义按钮类来处理长按事件
+        class LongPressButton(QPushButton):
+            def __init__(self, text, parent, press_callback, release_callback):
+                super().__init__(text, parent)
+                self.press_callback = press_callback
+                self.release_callback = release_callback
+            
+            def mousePressEvent(self, event):
+                if event.button() == Qt.MouseButton.LeftButton and self.press_callback:
+                    self.press_callback(event)
+                super().mousePressEvent(event)  # 调用父类方法保持默认行为
+            
+            def mouseReleaseEvent(self, event):
+                if event.button() == Qt.MouseButton.LeftButton and self.release_callback:
+                    self.release_callback(event)
+                super().mouseReleaseEvent(event)  # 调用父类方法保持默认行为
+        
+        self.clear_data_btn = LongPressButton(
+            "清空当前数据", 
+            self,
+            self._on_clear_data_btn_pressed,
+            self._on_clear_data_btn_released
+        )
         self.clear_data_btn.setStyleSheet("background-color: #f44336; color: white;")
-        self.clear_data_btn.clicked.connect(self._clear_data)
-        row2.addWidget(self.clear_data_btn)
+        # 设置按钮大小策略，避免被拉伸
+        from PySide6.QtWidgets import QSizePolicy
+        self.clear_data_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        # 使用 qfluentwidgets 的 ToolTip
+        self.clear_data_btn.setToolTip("长按删除")
+        self.clear_data_btn.installEventFilter(ToolTipFilter(self.clear_data_btn, 0, ToolTipPosition.TOP))
+        clear_data_container.addWidget(self.clear_data_btn)
+        
+        # 进度环（初始隐藏）
+        self.clear_data_progress_ring = ProgressRing(self)
+        self.clear_data_progress_ring.setFixedSize(32, 32)  # 小尺寸，显示在按钮旁边
+        self.clear_data_progress_ring.setTextVisible(False)  # 不显示文字
+        self.clear_data_progress_ring.setValue(0)
+        self.clear_data_progress_ring.setVisible(False)  # 初始隐藏
+        clear_data_container.addWidget(self.clear_data_progress_ring)
+        
+        row2.addLayout(clear_data_container)
         row2.addStretch()
         layout.addLayout(row2)
         
@@ -821,13 +885,13 @@ class BLEHostGUI(QMainWindow):
         # 主题模式选择
         self.theme_mode_group = QButtonGroup(self)
         self.theme_auto_radio = QRadioButton("跟随系统")
-        self.theme_auto_radio.setChecked(True)  # 默认跟随系统
         # 使用 lambda 来只在选中时触发，避免取消选中时触发
         self.theme_auto_radio.toggled.connect(lambda checked: self._on_theme_mode_changed("auto") if checked else None)
         self.theme_mode_group.addButton(self.theme_auto_radio, 0)
         theme_layout.addWidget(self.theme_auto_radio)
         
         self.theme_light_radio = QRadioButton("浅色模式")
+        self.theme_light_radio.setChecked(True)  # 默认浅色模式
         self.theme_light_radio.toggled.connect(lambda checked: self._on_theme_mode_changed("light") if checked else None)
         self.theme_mode_group.addButton(self.theme_light_radio, 1)
         theme_layout.addWidget(self.theme_light_radio)
@@ -864,8 +928,11 @@ class BLEHostGUI(QMainWindow):
         
         self.config_tabs.addTab(tab, "设置")
         
-        # 初始化主题（跟随系统）- 不显示提示
-        self._on_theme_mode_changed("auto", show_info=False)
+        # 初始化主题（浅色模式）- 不显示提示
+        # 注意：这里设置主题，但实际应用会在窗口显示时（showEvent）再次确认
+        self._on_theme_mode_changed("light", show_info=False)
+        # 强制应用一次主题，确保界面正确显示
+        self._apply_theme("light")
     
     def _create_plot_tabs(self):
         """创建绘图选项卡"""
@@ -1238,7 +1305,7 @@ class BLEHostGUI(QMainWindow):
             self.logger.warning(f"解析展示信道失败: {text}, 错误: {e}, 使用默认值")
             return list(range(10))
     
-    def _apply_frame_settings(self):
+    def _apply_frame_settings(self, show_info: bool = True):
         """应用帧模式设置"""
         # 解析展示帧数
         try:
@@ -1285,13 +1352,14 @@ class BLEHostGUI(QMainWindow):
         self.display_channel_list = new_display_channel_list
         self.logger.info(f"展示信道设置为: {self.display_channel_list} (模式: {mode})")
         
-        # 显示信息提示
-        channel_info = f"信道: {self.display_channel_list}, 显示帧数: {self.display_max_frames}"
-        InfoBarHelper.information(
-            self,
-            title="信道配置已更新",
-            content=channel_info
-        )
+        # 只在用户主动调整时显示信息提示（初始化时不显示）
+        if show_info:
+            channel_info = f"信道: {self.display_channel_list}, 显示帧数: {self.display_max_frames}"
+            InfoBarHelper.information(
+                self,
+                title="信道配置已更新",
+                content=channel_info
+            )
         
         # 如果处于加载模式，更新滑动条范围
         if self.is_loaded_mode and self.loaded_frames:
@@ -1518,8 +1586,76 @@ class BLEHostGUI(QMainWindow):
         save_thread = threading.Thread(target=save_in_thread, daemon=True)
         save_thread.start()
     
+    def _on_clear_data_btn_pressed(self, event):
+        """清除数据按钮按下事件"""
+        # 只响应左键按下
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.is_holding_clear_btn = True
+            self.clear_data_progress_value = 0
+            self.clear_data_progress_ring.setValue(0)
+            self.clear_data_progress_ring.setVisible(True)
+            
+            # 创建定时器来更新进度
+            if self.clear_data_progress_timer is None:
+                self.clear_data_progress_timer = QTimer()
+                self.clear_data_progress_timer.timeout.connect(self._update_clear_data_progress)
+            
+            # 计算更新间隔（每20ms更新一次，2秒共100次，每次增加1%）
+            update_interval = int((self.clear_data_hold_duration * 1000) / 100)  # 20ms，100次更新
+            self.clear_data_progress_timer.start(update_interval)
+        
+    def _on_clear_data_btn_released(self, event):
+        """清除数据按钮松开事件"""
+        # 只响应左键松开
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.is_holding_clear_btn = False
+            
+            # 停止定时器
+            if self.clear_data_progress_timer:
+                self.clear_data_progress_timer.stop()
+            
+            # 如果进度未完成，隐藏进度环
+            if self.clear_data_progress_value < 100:
+                self.clear_data_progress_ring.setVisible(False)
+                self.clear_data_progress_value = 0
+                self.clear_data_progress_ring.setValue(0)
+    
+    def _update_clear_data_progress(self):
+        """更新清除数据进度"""
+        if not self.is_holding_clear_btn:
+            # 如果已经松开，停止更新
+            if self.clear_data_progress_timer:
+                self.clear_data_progress_timer.stop()
+            self.clear_data_progress_ring.setVisible(False)
+            self.clear_data_progress_value = 0
+            self.clear_data_progress_ring.setValue(0)
+            return
+        
+        # 增加进度值（每次增加1%，100次达到100%）
+        self.clear_data_progress_value += 1
+        self.clear_data_progress_ring.setValue(self.clear_data_progress_value)
+        
+        # 如果达到100%，执行清除操作
+        if self.clear_data_progress_value >= 100:
+            if self.clear_data_progress_timer:
+                self.clear_data_progress_timer.stop()
+            self.is_holding_clear_btn = False
+            self.clear_data_progress_ring.setVisible(False)
+            self.clear_data_progress_value = 0
+            self.clear_data_progress_ring.setValue(0)
+            
+            # 执行清除数据操作
+            self._clear_data()
+    
     def _clear_data(self):
         """清空数据"""
+        # 显示警告提示
+        InfoBarHelper.warning(
+            self,
+            title="数据已清空",
+            content="所有数据已清空"
+        )
+        
         self.data_processor.clear_buffer(clear_frames=True)
         # 清空所有绘图器（包括实时绘图和呼吸估计）
         for plotter_info in self.plotters.values():
@@ -1559,13 +1695,6 @@ class BLEHostGUI(QMainWindow):
             self.breathing_result_text.setPlainText("数据已清空")
         
         self.logger.info("数据已清空")
-        
-        # 显示信息提示
-        InfoBarHelper.information(
-            self,
-            title="数据已清空",
-            content="所有数据已清空"
-        )
     
     def _browse_load_file(self):
         """浏览加载文件"""
@@ -2484,6 +2613,21 @@ class BLEHostGUI(QMainWindow):
         
         # 刷新画布
         plot_info['canvas'].draw_idle()
+    
+    def showEvent(self, event):
+        """窗口显示事件 - 确保主题正确应用"""
+        super().showEvent(event)
+        # 窗口显示后，根据当前选中的单选按钮强制应用一次主题
+        # 这样可以确保界面主题与选项一致
+        if hasattr(self, 'theme_light_radio') and self.theme_light_radio.isChecked():
+            self._apply_theme("light")
+        elif hasattr(self, 'theme_dark_radio') and self.theme_dark_radio.isChecked():
+            self._apply_theme("dark")
+        elif hasattr(self, 'theme_auto_radio') and self.theme_auto_radio.isChecked():
+            self._apply_theme("auto")
+        else:
+            # 如果单选按钮还没创建，使用默认主题
+            self._apply_theme(self.current_theme_mode)
     
     def closeEvent(self, event):
         """窗口关闭事件"""
