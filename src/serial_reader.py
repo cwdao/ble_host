@@ -162,6 +162,29 @@ class SerialReader:
         except:
             return None
     
+    def get_data_batch(self, max_count=20):
+        """
+        批量获取接收到的数据
+        
+        Args:
+            max_count: 最多获取的数据条数
+        
+        Returns:
+            数据列表，如果没有数据则返回空列表
+        """
+        batch = []
+        for _ in range(max_count):
+            try:
+                data = self.data_queue.get_nowait()
+                batch.append(data)
+            except:
+                break
+        return batch
+    
+    def get_queue_size(self):
+        """获取队列当前大小"""
+        return self.data_queue.qsize()
+    
     def clear_queue(self):
         """清空数据队列"""
         while not self.data_queue.empty():

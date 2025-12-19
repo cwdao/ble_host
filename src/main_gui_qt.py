@@ -123,6 +123,16 @@ class BLEHostGUI(QMainWindow):
         self.last_plot_refresh_time = 0
         self.plot_refresh_interval = 0.2  # 最多每200ms刷新一次
         
+        # 批量处理控制
+        self.max_batch_size = 20  # 每次最多处理的数据条数
+        self.last_queue_warning_time = 0
+        self.queue_warning_interval = 5.0  # 队列警告间隔（秒）
+        
+        # 绘图更新优化：累积一定数量的帧后再更新
+        self.pending_plot_update = False  # 是否有待更新的绘图
+        self.frames_since_last_plot = 0  # 自上次绘图更新后处理的帧数
+        self.min_frames_before_plot_update = 1  # 至少处理多少帧后才更新绘图（可调整）
+        
         # 帧数据处理
         self.frame_type = config.default_frame_type
         self.frame_mode = (self.frame_type == "演示帧")
@@ -1211,13 +1221,38 @@ class BLEHostGUI(QMainWindow):
         self.update_timer.start(int(config.update_interval_sec * 1000))  # 转换为毫秒
     
     def _update_data(self):
-        """更新数据（在主线程中调用）"""
+        """更新数据（在主线程中调用，批量处理队列数据）"""
         if not self.is_running or not self.serial_reader:
             return
         
-        # 获取串口数据
-        data = self.serial_reader.get_data(block=False)
-        if data:
+        # 批量获取串口数据（每次最多处理max_batch_size条）
+        data_batch = self.serial_reader.get_data_batch(max_count=self.max_batch_size)
+        
+        if not data_batch:
+            # 没有数据时，检查是否有待更新的绘图（处理队列积压后的遗留更新）
+            if self.pending_plot_update and self.frame_mode:
+                self._update_frame_plots()
+                self.frames_since_last_plot = 0
+                self.pending_plot_update = False
+            
+            # 检查队列大小并发出警告（如果队列积压过多）
+            queue_size = self.serial_reader.get_queue_size()
+            if queue_size > 100:  # 队列积压超过100条
+                current_time = time.time()
+                if current_time - self.last_queue_warning_time >= self.queue_warning_interval:
+                    self.last_queue_warning_time = current_time
+                    self.logger.warning(
+                        f"[性能警告] 数据队列积压: {queue_size}条数据待处理，"
+                        f"可能导致显示延迟。建议检查数据处理性能。"
+                    )
+            return
+        
+        # 记录处理的帧数
+        frames_processed = 0
+        has_new_frame = False
+        
+        # 批量处理数据
+        for data in data_batch:
             # 如果是帧模式，优先处理帧数据
             if self.frame_mode:
                 # 解析数据（会更新内部状态，累积IQ数据）
@@ -1227,22 +1262,22 @@ class BLEHostGUI(QMainWindow):
                 if parsed and parsed.get('frame'):
                     frame_data = parsed
                     if len(frame_data.get('channels', {})) > 0:
-                        # 打印帧详细信息
-                        channels = sorted(frame_data['channels'].keys())
-                        self.logger.info(
-                            f"[帧完成] index={frame_data['index']}, "
-                            f"timestamp={frame_data['timestamp_ms']}ms, "
-                            f"通道数={len(channels)}, "
-                            f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
-                        )
+                        # 只在处理第一批数据时打印详细信息，避免日志过多
+                        if frames_processed == 0:
+                            channels = sorted(frame_data['channels'].keys())
+                            self.logger.info(
+                                f"[帧完成] index={frame_data['index']}, "
+                                f"timestamp={frame_data['timestamp_ms']}ms, "
+                                f"通道数={len(channels)}, "
+                                f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
+                            )
                         
                         self.data_processor.add_frame_data(frame_data)
-                        self._update_frame_plots()
-                        # 使用节流刷新，避免频繁刷新导致GUI卡顿
-                        self._refresh_plotters_throttled()
+                        frames_processed += 1
+                        has_new_frame = True
                         
-                        # 更新呼吸估计的信道列表（如果还没有设置）
-                        if hasattr(self, 'breathing_channel_combo'):
+                        # 更新呼吸估计的信道列表（只在处理第一批数据时更新，避免频繁操作）
+                        if frames_processed == 1 and hasattr(self, 'breathing_channel_combo'):
                             all_channels = self.data_processor.get_all_frame_channels()
                             if all_channels:
                                 current_items = [self.breathing_channel_combo.itemText(i) 
@@ -1255,7 +1290,7 @@ class BLEHostGUI(QMainWindow):
                                         self.breathing_channel_combo.setCurrentIndex(0)
                 
                 # 帧模式下不处理其他数据
-                return
+                continue
             
             # 非帧模式：解析简单数据
             parsed = self.data_parser.parse(data['text'])
@@ -1263,26 +1298,56 @@ class BLEHostGUI(QMainWindow):
             # 处理简单数据（向后兼容）
             if parsed and not parsed.get('frame'):
                 self.data_processor.add_data(data['timestamp'], parsed)
+                has_new_frame = True
+        
+        # 批量处理完成后，统一更新绘图（避免每处理一条数据就更新一次）
+        if has_new_frame:
+            if self.frame_mode:
+                # 帧模式：累积帧数，达到阈值或队列积压较多时才更新绘图
+                self.frames_since_last_plot += frames_processed
+                queue_size = self.serial_reader.get_queue_size()
                 
-                # 更新绘图 - 使用第一个绘图器
+                # 如果累积了足够多的帧，或者队列积压较多，则更新绘图
+                should_update_plot = (
+                    self.frames_since_last_plot >= self.min_frames_before_plot_update or
+                    queue_size > 50  # 队列积压超过50条时强制更新
+                )
+                
+                if should_update_plot:
+                    self._update_frame_plots()
+                    self.frames_since_last_plot = 0
+                    self.pending_plot_update = False
+                else:
+                    self.pending_plot_update = True
+            else:
+                # 非帧模式：更新绘图
                 if 'amplitude' in self.plotters:
                     plotter = self.plotters['amplitude']['plotter']
-                    for var_name, value in parsed.items():
+                    vars_list = self.data_processor.get_all_variables()
+                    for var_name in vars_list:
                         times, values = self.data_processor.get_data_range(
                             var_name, duration=config.default_frequency_duration
                         )
                         if len(times) > 0:
                             plotter.update_plot(var_name, times, values)
                     
-                    # 更新变量列表（非帧模式）
-                    vars_list = self.data_processor.get_all_variables()
+                    # 更新变量列表
                     self.freq_var_combo.clear()
                     self.freq_var_combo.addItems(vars_list)
                     if vars_list and self.freq_var_combo.currentIndex() < 0:
                         self.freq_var_combo.setCurrentIndex(0)
-                    
-                    # 使用节流刷新，避免频繁刷新导致GUI卡顿
-                    self._refresh_plotters_throttled()
+            
+            # 使用节流刷新，避免频繁刷新导致GUI卡顿
+            self._refresh_plotters_throttled()
+        
+        # 如果批量处理了多条数据，记录日志
+        if len(data_batch) > 1:
+            queue_remaining = self.serial_reader.get_queue_size()
+            if queue_remaining > 0:
+                self.logger.debug(
+                    f"[批量处理] 本次处理{len(data_batch)}条数据，"
+                    f"队列剩余{queue_remaining}条"
+                )
         
         # 定期更新频率列表和统计信息（使用单独的定时器）
         if not hasattr(self, 'freq_update_timer'):
