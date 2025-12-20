@@ -920,6 +920,7 @@ class BLEHostGUI(QMainWindow):
         control_group.setFont(QFont("Microsoft YaHei", 9))
         control_layout = QVBoxLayout(control_group)
         control_group.setMaximumHeight(120)
+        control_group.setMaximumWidth(1000)
         
         # 创建滑动条容器
         slider_layout = QHBoxLayout()
@@ -1023,6 +1024,8 @@ class BLEHostGUI(QMainWindow):
         info_layout.addWidget(self.load_file_info_text)
         
         layout.addWidget(info_group)
+        
+        layout.addStretch()  # 添加stretch让三个group靠左排列
         
         self.config_tabs.addTab(tab, "文件加载")
     
