@@ -46,6 +46,20 @@ if errorlevel 1 (
 echo 正在更新 build_qt.spec 文件...
 python update_spec_version.py %VERSION% build_qt.spec
 
+echo 正在清理旧的打包文件...
+if exist "dist\BLEHost-Qt-v%VERSION%.exe" (
+    echo 尝试删除旧的可执行文件...
+    taskkill /F /IM BLEHost-Qt-v%VERSION%.exe 2>nul
+    timeout /t 1 /nobreak >nul
+    del /F /Q "dist\BLEHost-Qt-v%VERSION%.exe" 2>nul
+    if exist "dist\BLEHost-Qt-v%VERSION%.exe" (
+        echo 警告: 无法删除旧文件，可能正在运行或被占用
+        echo 请手动关闭程序后重试
+        pause
+        exit /b 1
+    )
+)
+
 echo 正在打包 Qt 版本...
 python -m PyInstaller --clean build_qt.spec
 
