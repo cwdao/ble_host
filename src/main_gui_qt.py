@@ -164,6 +164,11 @@ class BLEHostGUI(QMainWindow):
         self.clear_data_progress_value = 0
         self.is_holding_clear_btn = False
         
+        # 时间窗滑动条按钮长按相关
+        self.slider_button_timer = None
+        self.is_holding_slider_btn = False
+        self.slider_button_direction = None  # 'left' or 'right'
+        
         # 创建界面
         self._create_widgets()
         
@@ -919,36 +924,131 @@ class BLEHostGUI(QMainWindow):
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
         control_group.setFont(QFont("Microsoft YaHei", 9))
         control_layout = QVBoxLayout(control_group)
-        control_group.setMaximumHeight(120)
+        control_group.setMaximumHeight(150)
         control_group.setMaximumWidth(1000)
+        control_layout.setContentsMargins(5, 5, 5, 5)
+        control_layout.setSpacing(5)
         
-        # 创建滑动条容器
-        slider_layout = QHBoxLayout()
-        slider_layout.setContentsMargins(5, 5, 5, 5)
-        
-        slider_layout.addWidget(QLabel("时间窗起点:"))
+        # 第一行：时间窗起点输入框 + 时间窗长度显示 + 回到当前帧按钮
+        first_row = QHBoxLayout()
+        first_row.addWidget(QLabel("时间窗起点:"))
         self.window_start_entry = QLineEdit("0")
         self.window_start_entry.setMaximumWidth(80)
         self.window_start_entry.setFont(btn_font)
         self.window_start_entry.returnPressed.connect(self._on_window_start_changed)
         self.window_start_entry.setEnabled(False)  # 初始禁用
-        slider_layout.addWidget(self.window_start_entry)
-        slider_layout.addWidget(QLabel("(帧)"))
+        first_row.addWidget(self.window_start_entry)
+        first_row.addWidget(QLabel("(帧)"))
+        first_row.addStretch()
         
-        # 左箭头按钮
+        # 时间窗长度显示
+        self.window_length_label = QLabel("时间窗长度: -- 秒")
+        first_row.addWidget(self.window_length_label)
+        first_row.addStretch()
+        
+        # 回到当前帧按钮
+        self.reset_view_btn = QPushButton("回到当前帧")
+        self.reset_view_btn.setMaximumWidth(100)
+        self.reset_view_btn.setFont(btn_font)
+        self.reset_view_btn.setToolTip("重置视图到当前时间窗范围")
+        self.reset_view_btn.installEventFilter(ToolTipFilter(self.reset_view_btn, 0, ToolTipPosition.TOP))
+        self.reset_view_btn.clicked.connect(self._on_reset_view_clicked)
+        self.reset_view_btn.setEnabled(False)  # 初始禁用
+        # 保存按钮的默认样式（用于恢复）
+        self.reset_view_btn_default_style = self.reset_view_btn.styleSheet()
+        first_row.addWidget(self.reset_view_btn)
+        
+        control_layout.addLayout(first_row)
+        
+        # 第二行：左按钮 + 滑动条 + 右按钮
+        second_row = QHBoxLayout()
+        
+        # 左箭头按钮（支持长按）
         self.slider_left_btn = QPushButton("◄")
         self.slider_left_btn.setMaximumWidth(40)
         self.slider_left_btn.setFont(btn_font)
-        self.slider_left_btn.clicked.connect(self._on_slider_left_click)
+        self.slider_left_btn.pressed.connect(lambda: self._on_slider_button_pressed('left'))
+        self.slider_left_btn.released.connect(self._on_slider_button_released)
         self.slider_left_btn.setEnabled(False)  # 初始禁用
-        slider_layout.addWidget(self.slider_left_btn)
+        second_row.addWidget(self.slider_left_btn)
         
-        # 滑动条（支持鼠标和键盘方向键控制）
-        # 创建自定义滑动条类，支持键盘方向键控制
-        class KeyboardSlider(QSlider):
+        # 滑动条（支持鼠标和键盘方向键控制，拖动时显示tooltip）
+        # 创建自定义滑动条类，支持键盘方向键控制和拖动时显示tooltip
+        class KeyboardSliderWithTooltip(QSlider):
             def __init__(self, orientation, parent=None, update_callback=None):
                 super().__init__(orientation, parent)
                 self.update_callback = update_callback
+                # 连接sliderMoved信号，在拖动时显示tooltip（传递value）
+                self.sliderMoved.connect(self._show_tooltip)
+                # sliderPressed不传递value，需要手动获取
+                self.sliderPressed.connect(self._on_slider_pressed_for_tooltip)
+                self.sliderReleased.connect(self._hide_tooltip)
+            
+            def _on_slider_pressed_for_tooltip(self):
+                """滑动条按下时的回调，显示tooltip"""
+                self._show_tooltip(self.value())
+            
+            def _show_tooltip(self, value):
+                """显示tooltip显示当前位置，显示在滑动条正上方中心"""
+                from PySide6.QtCore import QPoint
+                
+                # 计算滑动条的中心位置（局部坐标）
+                slider_rect = self.rect()
+                slider_center_x = slider_rect.center().x()
+                slider_top_y = slider_rect.top()
+                
+                # 转换为全局坐标
+                local_pos = QPoint(slider_center_x, slider_top_y)
+                global_pos = self.mapToGlobal(local_pos)
+                
+                # 在滑动条正上方显示tooltip（上方70像素）
+                tooltip_pos = QPoint(global_pos.x(), global_pos.y() - 70)
+                from PySide6.QtWidgets import QToolTip
+                QToolTip.showText(tooltip_pos, f"帧: {value}", self)
+            
+            # 备用方案：使用qfluentwidgets的ToolTip（注释掉，需要时可以启用）
+            # def _show_tooltip_fluent(self, value):
+            #     """备用方案：使用qfluentwidgets的ToolTip显示在滑动条正上方中心"""
+            #     from qfluentwidgets import ToolTip
+            #     from PySide6.QtCore import QPoint
+            #     from PySide6.QtWidgets import QWidget
+            #     
+            #     # 关闭之前的tooltip
+            #     if hasattr(self, '_fluent_tooltip') and self._fluent_tooltip:
+            #         self._fluent_tooltip.close()
+            #         self._fluent_tooltip = None
+            #     
+            #     # 计算滑动条的中心位置（局部坐标）
+            #     slider_rect = self.rect()
+            #     slider_center_x = slider_rect.center().x()
+            #     slider_top_y = slider_rect.top()
+            #     
+            #     # 转换为全局坐标
+            #     local_pos = QPoint(slider_center_x, slider_top_y)
+            #     global_pos = self.mapToGlobal(local_pos)
+            #     
+            #     # 创建一个临时的QWidget作为tooltip的target
+            #     # 注意：qfluentwidgets的ToolTip需要target widget，但位置控制有限
+            #     # 这里我们使用滑动条本身作为target
+            #     self._fluent_tooltip = ToolTip(
+            #         text=f"帧: {value}",
+            #         target=self,
+            #         duration=-1  # 不自动消失
+            #     )
+            #     self._fluent_tooltip.show()
+            #     
+            #     # 尝试移动tooltip到正确位置（如果支持）
+            #     # 注意：qfluentwidgets的ToolTip可能不支持直接设置位置
+            #     # 如果ToolTip不支持move，可能需要使用其他方法
+            #     tooltip_x = global_pos.x() - (self._fluent_tooltip.width() // 2 if hasattr(self._fluent_tooltip, 'width') else 30)
+            #     tooltip_y = global_pos.y() - 40
+            #     if hasattr(self._fluent_tooltip, 'move'):
+            #         self._fluent_tooltip.move(tooltip_x, tooltip_y)
+            
+            def _hide_tooltip(self):
+                """隐藏tooltip"""
+                from PySide6.QtWidgets import QToolTip
+                QToolTip.hideText()
             
             def keyPressEvent(self, event):
                 # 处理方向键
@@ -970,7 +1070,7 @@ class BLEHostGUI(QMainWindow):
                     # 其他键使用默认处理
                     super().keyPressEvent(event)
         
-        self.time_window_slider = KeyboardSlider(Qt.Orientation.Horizontal, update_callback=self._on_slider_keyboard_changed)
+        self.time_window_slider = KeyboardSliderWithTooltip(Qt.Orientation.Horizontal, update_callback=self._on_slider_keyboard_changed)
         self.time_window_slider.setMinimum(0)
         self.time_window_slider.setMaximum(100)
         # 允许键盘焦点，以便响应方向键
@@ -980,34 +1080,18 @@ class BLEHostGUI(QMainWindow):
         # 鼠标点击时也更新
         self.time_window_slider.sliderPressed.connect(self._on_slider_pressed)
         self.time_window_slider.setEnabled(False)  # 初始禁用
-        slider_layout.addWidget(self.time_window_slider)
+        second_row.addWidget(self.time_window_slider)
         
-        # 右箭头按钮
+        # 右箭头按钮（支持长按）
         self.slider_right_btn = QPushButton("►")
         self.slider_right_btn.setMaximumWidth(40)
         self.slider_right_btn.setFont(btn_font)
-        self.slider_right_btn.clicked.connect(self._on_slider_right_click)
+        self.slider_right_btn.pressed.connect(lambda: self._on_slider_button_pressed('right'))
+        self.slider_right_btn.released.connect(self._on_slider_button_released)
         self.slider_right_btn.setEnabled(False)  # 初始禁用
-        slider_layout.addWidget(self.slider_right_btn)
+        second_row.addWidget(self.slider_right_btn)
         
-        # 时间窗长度显示
-        self.window_length_label = QLabel("时间窗长度: -- 秒")
-        # self.window_length_label.setFont(btn_font)
-        slider_layout.addWidget(self.window_length_label)
-        
-        # 回到当前帧按钮
-        self.reset_view_btn = QPushButton("回到当前帧")
-        self.reset_view_btn.setMaximumWidth(100)
-        self.reset_view_btn.setFont(btn_font)
-        self.reset_view_btn.setToolTip("重置视图到当前时间窗范围（在手动拖动/缩放后使用）")
-        self.reset_view_btn.installEventFilter(ToolTipFilter(self.reset_view_btn, 0, ToolTipPosition.TOP))
-        self.reset_view_btn.clicked.connect(self._on_reset_view_clicked)
-        self.reset_view_btn.setEnabled(False)  # 初始禁用
-        # 保存按钮的默认样式（用于恢复）
-        self.reset_view_btn_default_style = self.reset_view_btn.styleSheet()
-        slider_layout.addWidget(self.reset_view_btn)
-        
-        control_layout.addLayout(slider_layout)
+        control_layout.addLayout(second_row)
         control_layout.addStretch()
         layout.addWidget(control_group)
         
@@ -2449,6 +2533,45 @@ class BLEHostGUI(QMainWindow):
         self.time_window_slider.setValue(new_value)
         if self.is_loaded_mode:
             self._update_loaded_mode_plots()
+    
+    def _on_slider_button_pressed(self, direction):
+        """滑动条按钮按下时的回调（支持长按）"""
+        self.slider_button_direction = direction
+        self.is_holding_slider_btn = True
+        
+        # 立即执行一次点击
+        if direction == 'left':
+            self._on_slider_left_click()
+        else:
+            self._on_slider_right_click()
+        
+        # 启动定时器，实现长按持续滑动
+        if self.slider_button_timer is None:
+            self.slider_button_timer = QTimer()
+            self.slider_button_timer.timeout.connect(self._on_slider_button_timer_timeout)
+        
+        # 初始延迟300ms，然后每100ms执行一次
+        self.slider_button_timer.setSingleShot(False)
+        self.slider_button_timer.start(100)  # 100ms间隔
+    
+    def _on_slider_button_released(self):
+        """滑动条按钮释放时的回调"""
+        self.is_holding_slider_btn = False
+        self.slider_button_direction = None
+        
+        # 停止定时器
+        if self.slider_button_timer:
+            self.slider_button_timer.stop()
+    
+    def _on_slider_button_timer_timeout(self):
+        """滑动条按钮长按定时器回调"""
+        if not self.is_holding_slider_btn:
+            return
+        
+        if self.slider_button_direction == 'left':
+            self._on_slider_left_click()
+        elif self.slider_button_direction == 'right':
+            self._on_slider_right_click()
     
     def _on_window_start_changed(self):
         """时间窗起点输入框变化时的回调"""
