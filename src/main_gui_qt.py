@@ -323,7 +323,7 @@ class BLEHostGUI(QMainWindow):
         # Update按钮（控制所有参数，放在更新间隔下面）
         update_layout = QHBoxLayout()
         self.update_all_btn = QPushButton("更新参数")
-        self.update_all_btn.setStyleSheet("background-color: #2196F3; color: white;")
+        self.update_all_btn.setStyleSheet(self._get_button_style("#2196F3"))
         self.update_all_btn.clicked.connect(self._on_update_all_breathing_params)
         update_layout.addWidget(self.update_all_btn)
         update_layout.addStretch()
@@ -363,6 +363,62 @@ class BLEHostGUI(QMainWindow):
         """创建菜单栏（已移除，设置改为tab）"""
         # 菜单栏已移除，所有设置都在设置tab中
         pass
+    
+    @staticmethod
+    def _get_button_style(bg_color: str, text_color: str = "white") -> str:
+        """
+        生成带悬停和按下状态的按钮样式表
+        
+        Args:
+            bg_color: 背景颜色（十六进制，如 "#4CAF50"）
+            text_color: 文字颜色（默认白色）
+        
+        Returns:
+            完整的样式表字符串，包含normal、hover、pressed状态
+        """
+        # 将十六进制颜色转换为RGB
+        def hex_to_rgb(hex_color):
+            hex_color = hex_color.lstrip('#')
+            return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        
+        # 将RGB转换为十六进制
+        def rgb_to_hex(rgb):
+            return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+        
+        # 计算更深的颜色（按下状态，亮度降低25%）
+        def darken_color(rgb, factor=0.75):
+            return tuple(int(c * factor) for c in rgb)
+        
+        # 计算稍亮的颜色（悬停状态，亮度增加10%）
+        def lighten_color(rgb, factor=1.1):
+            return tuple(min(255, int(c * factor)) for c in rgb)
+        
+        rgb = hex_to_rgb(bg_color)
+        hover_rgb = lighten_color(rgb)
+        pressed_rgb = darken_color(rgb)
+        
+        hover_color = rgb_to_hex(hover_rgb)
+        pressed_color = rgb_to_hex(pressed_rgb)
+        
+        return f"""
+            QPushButton {{
+                background-color: {bg_color};
+                color: {text_color};
+                border: none;
+                padding: 5px 15px;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_color};
+            }}
+            QPushButton:pressed {{
+                background-color: {pressed_color};
+            }}
+            QPushButton:disabled {{
+                background-color: #cccccc;
+                color: #666666;
+            }}
+        """
     
     def _on_theme_mode_changed(self, theme: str, show_info: bool = True):
         """主题模式改变时的回调"""
@@ -604,7 +660,7 @@ class BLEHostGUI(QMainWindow):
         
         # 连接按钮
         self.connect_btn = QPushButton("连接")
-        self.connect_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+        self.connect_btn.setStyleSheet(self._get_button_style("#4CAF50"))
         self.connect_btn.clicked.connect(self._toggle_connection)
         layout.addWidget(self.connect_btn)
         
@@ -699,6 +755,7 @@ class BLEHostGUI(QMainWindow):
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
         path_group.setFont(QFont("Microsoft YaHei", 9))
         path_group.setMaximumWidth(300)
+        path_group.setMaximumHeight(120)
         path_layout = QVBoxLayout(path_group)
         
         set_path_btn = QPushButton("设置保存路径...")
@@ -729,10 +786,11 @@ class BLEHostGUI(QMainWindow):
         save_group = QGroupBox("保存数据")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
         save_group.setFont(QFont("Microsoft YaHei", 9))
+        save_group.setMaximumHeight(120)
         save_layout = QVBoxLayout(save_group)
         
         self.save_btn = QPushButton("保存数据")
-        self.save_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+        self.save_btn.setStyleSheet(self._get_button_style("#4CAF50"))
         self.save_btn.clicked.connect(self._save_data)
         save_layout.addWidget(self.save_btn)
         
@@ -754,6 +812,7 @@ class BLEHostGUI(QMainWindow):
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
         clear_group.setFont(QFont("Microsoft YaHei", 9))
         clear_group.setMaximumWidth(200)
+        clear_group.setMaximumHeight(120)
         clear_layout = QVBoxLayout(clear_group)
         
         # 清除数据按钮和进度环容器
@@ -784,7 +843,7 @@ class BLEHostGUI(QMainWindow):
             self._on_clear_data_btn_pressed,
             self._on_clear_data_btn_released
         )
-        self.clear_data_btn.setStyleSheet("background-color: #f44336; color: white;")
+        self.clear_data_btn.setStyleSheet(self._get_button_style("#f44336"))
         # 设置按钮大小策略，避免被拉伸
         from PySide6.QtWidgets import QSizePolicy
         self.clear_data_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -831,7 +890,7 @@ class BLEHostGUI(QMainWindow):
         path_group.setFont(QFont("Microsoft YaHei", 9))
         path_layout = QVBoxLayout(path_group)
         path_group.setMaximumWidth(200)  # 保持左右宽度限制
-        path_group.setMaximumHeight(100)
+        path_group.setMaximumHeight(120)
         
         path_input_layout = QHBoxLayout()
         self.load_file_entry = QLineEdit()
@@ -847,7 +906,7 @@ class BLEHostGUI(QMainWindow):
         # 合并加载/取消加载按钮为一个按钮
         self.load_unload_btn = QPushButton("加载文件")
         self.load_unload_btn.setFont(btn_font)
-        self.load_unload_btn.setStyleSheet("background-color: #2196F3; color: white;")  # 浅蓝色
+        self.load_unload_btn.setStyleSheet(self._get_button_style("#2196F3"))  # 浅蓝色
         self.load_unload_btn.clicked.connect(self._toggle_load_file)
         button_layout.addWidget(self.load_unload_btn)
         path_layout.addLayout(button_layout)
@@ -860,7 +919,7 @@ class BLEHostGUI(QMainWindow):
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
         control_group.setFont(QFont("Microsoft YaHei", 9))
         control_layout = QVBoxLayout(control_group)
-        control_group.setMaximumHeight(100)
+        control_group.setMaximumHeight(120)
         
         # 创建滑动条容器
         slider_layout = QHBoxLayout()
@@ -932,7 +991,7 @@ class BLEHostGUI(QMainWindow):
         
         # 时间窗长度显示
         self.window_length_label = QLabel("时间窗长度: -- 秒")
-        self.window_length_label.setFont(btn_font)
+        # self.window_length_label.setFont(btn_font)
         slider_layout.addWidget(self.window_length_label)
         
         # 回到当前帧按钮
@@ -957,7 +1016,7 @@ class BLEHostGUI(QMainWindow):
         info_group.setFont(QFont("Microsoft YaHei", 9))
         info_layout = QVBoxLayout(info_group)
         info_group.setMaximumWidth(150)  # 保持左右宽度限制不变
-        info_group.setMaximumHeight(100)
+        info_group.setMaximumHeight(120)
         self.load_file_info_text = QTextEdit()
         self.load_file_info_text.setReadOnly(True)
         self.load_file_info_text.setFont(QFont("Consolas", 8))
@@ -979,7 +1038,7 @@ class BLEHostGUI(QMainWindow):
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
         theme_group.setFont(QFont("Microsoft YaHei", 9))
         theme_layout = QVBoxLayout(theme_group)
-        theme_group.setMaximumHeight(100)
+        theme_group.setMaximumHeight(120)
         theme_group.setMaximumWidth(200)
         # 主题模式选择
         self.theme_mode_group = QButtonGroup(self)
@@ -1018,7 +1077,7 @@ class BLEHostGUI(QMainWindow):
         <p>BLE Channel Sounding 上位机应用程序</p>
         <p>基于 PySide6 开发</p>
         """)
-        about_group.setMaximumHeight(100)  # 限制高度，内容可滚动
+        about_group.setMaximumHeight(120)  # 限制高度，内容可滚动
         about_group.setMaximumWidth(500)
         about_layout.addWidget(about_text)
         layout.addWidget(about_group)
@@ -1165,7 +1224,7 @@ class BLEHostGUI(QMainWindow):
             if self.serial_reader.connect():
                 self.is_running = True
                 self.connect_btn.setText("断开")
-                self.connect_btn.setStyleSheet("background-color: #f44336; color: white;")
+                self.connect_btn.setStyleSheet(self._get_button_style("#f44336"))
                 self.status_label.setText("已连接")
                 self.status_label.setStyleSheet("color: green;")
                 self.logger.info(f"串口连接成功: {port} @ {baudrate}")
@@ -1195,7 +1254,7 @@ class BLEHostGUI(QMainWindow):
                 self.serial_reader.disconnect()
             self.is_running = False
             self.connect_btn.setText("连接")
-            self.connect_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+            self.connect_btn.setStyleSheet(self._get_button_style("#4CAF50"))
             self.status_label.setText("未连接")
             self.status_label.setStyleSheet("color: red;")
             self.logger.info("串口已断开")
@@ -1958,7 +2017,7 @@ class BLEHostGUI(QMainWindow):
             
             # 切换按钮为取消加载
             self.load_unload_btn.setText("取消加载")
-            self.load_unload_btn.setStyleSheet("background-color: #f44336; color: white;")  # 红色
+            self.load_unload_btn.setStyleSheet(self._get_button_style("#f44336"))  # 红色
             
             # 加载数据到处理器
             self.data_processor.clear_buffer(clear_frames=True)
@@ -2040,7 +2099,7 @@ class BLEHostGUI(QMainWindow):
         
         # 切换按钮为加载文件
         self.load_unload_btn.setText("加载文件")
-        self.load_unload_btn.setStyleSheet("background-color: #2196F3; color: white;")  # 浅蓝色
+        self.load_unload_btn.setStyleSheet(self._get_button_style("#2196F3"))  # 浅蓝色
         
         # 恢复重置按钮的默认样式（因为不再处于加载模式）
         self.reset_view_btn.setStyleSheet(self.reset_view_btn_default_style)
