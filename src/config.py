@@ -15,13 +15,13 @@ from typing import List, Optional
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "3.1.1"
+    version: str = "3.2.0"
     version_date: str = "2025-12-20"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     
     # 窗口配置
     base_window_width: int = 1200
-    base_window_height: int = 800
+    base_window_height: int = 900
     
     # 字体配置
     base_font_size: int = 9
