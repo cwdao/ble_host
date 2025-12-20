@@ -696,7 +696,8 @@ class BLEHostGUI(QMainWindow):
         
         # 第一组：设置保存路径+自动保存开关+显示当前路径
         path_group = QGroupBox("路径设置")
-        path_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        # 使用setFont设置字体大小，而不是样式表，以保持主题响应
+        path_group.setFont(QFont("Microsoft YaHei", 9))
         path_group.setMaximumWidth(300)
         path_layout = QVBoxLayout(path_group)
         
@@ -726,7 +727,8 @@ class BLEHostGUI(QMainWindow):
         
         # 第二组：保存数据+全部保存/最近N帧
         save_group = QGroupBox("保存数据")
-        save_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        # 使用setFont设置字体大小，而不是样式表，以保持主题响应
+        save_group.setFont(QFont("Microsoft YaHei", 9))
         save_layout = QVBoxLayout(save_group)
         
         self.save_btn = QPushButton("保存数据")
@@ -749,7 +751,8 @@ class BLEHostGUI(QMainWindow):
         
         # 第三组：清空当前数据单独一个组
         clear_group = QGroupBox("清空数据")
-        clear_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        # 使用setFont设置字体大小，而不是样式表，以保持主题响应
+        clear_group.setFont(QFont("Microsoft YaHei", 9))
         clear_group.setMaximumWidth(200)
         clear_layout = QVBoxLayout(clear_group)
         
@@ -824,8 +827,8 @@ class BLEHostGUI(QMainWindow):
         
         # 第一列：文件读取（文件路径部分）
         path_group = QGroupBox("文件读取")
-        # 设置组标题字体较小，但不影响内部控件
-        path_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        # 使用setFont设置字体大小，而不是样式表，以保持主题响应
+        path_group.setFont(QFont("Microsoft YaHei", 9))
         path_layout = QVBoxLayout(path_group)
         path_group.setMaximumWidth(200)  # 保持左右宽度限制
         path_group.setMaximumHeight(100)
@@ -854,8 +857,8 @@ class BLEHostGUI(QMainWindow):
         
         # 第二列：时间窗控制
         control_group = QGroupBox("时间窗控制")
-        # 设置组标题字体较小，但不影响内部控件
-        control_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        # 使用setFont设置字体大小，而不是样式表，以保持主题响应
+        control_group.setFont(QFont("Microsoft YaHei", 9))
         control_layout = QVBoxLayout(control_group)
         control_group.setMaximumHeight(100)
         
@@ -950,8 +953,8 @@ class BLEHostGUI(QMainWindow):
         
         # 第三列：文件信息
         info_group = QGroupBox("文件信息")
-        # 设置组标题字体较小，但不影响内部控件
-        info_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        # 使用setFont设置字体大小，而不是样式表，以保持主题响应
+        info_group.setFont(QFont("Microsoft YaHei", 9))
         info_layout = QVBoxLayout(info_group)
         info_group.setMaximumWidth(150)  # 保持左右宽度限制不变
         info_group.setMaximumHeight(100)
@@ -973,7 +976,8 @@ class BLEHostGUI(QMainWindow):
         
         # 左列：主题设置
         theme_group = QGroupBox("主题设置")
-        theme_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        # 使用setFont设置字体大小，而不是样式表，以保持主题响应
+        theme_group.setFont(QFont("Microsoft YaHei", 9))
         theme_layout = QVBoxLayout(theme_group)
         theme_group.setMaximumHeight(100)
         theme_group.setMaximumWidth(200)
@@ -1000,7 +1004,8 @@ class BLEHostGUI(QMainWindow):
         
         # 右列：关于信息
         about_group = QGroupBox("关于")
-        about_group.setStyleSheet("QGroupBox { font-size: 9pt; }")
+        # 使用setFont设置字体大小，而不是样式表，以保持主题响应
+        about_group.setFont(QFont("Microsoft YaHei", 9))
         about_layout = QVBoxLayout(about_group)
         about_text = QTextEdit()
         about_text.setReadOnly(True)
