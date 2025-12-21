@@ -197,6 +197,9 @@ class BLEHostGUI(QMainWindow):
                 app.paletteChanged.connect(self._on_system_theme_changed)
         except:
             pass
+        
+        # 初始化文件加载tab的状态（确保初始状态正确）
+        self._update_load_tab_state()
     
     def _setup_logging(self):
         """设置日志"""
@@ -1327,8 +1330,8 @@ class BLEHostGUI(QMainWindow):
                 if hasattr(self, 'breathing_result_text'):
                     self.breathing_result_text.setPlainText("等待数据积累...")
                 
-                # 禁用文件加载tab
-                self._set_load_tab_enabled(False)
+                # 更新文件加载tab状态（连接时禁用文件加载功能）
+                self._update_load_tab_state()
             else:
                 InfoBarHelper.error(
                     self,
@@ -1360,10 +1363,8 @@ class BLEHostGUI(QMainWindow):
             # 重置呼吸信道列表初始化标志，以便下次连接时重新初始化
             self.breathing_channels_initialized = False
             
-            # 启用文件加载tab（断开连接后，如果不在加载模式，加载tab可用）
-            # 如果在加载模式，加载tab应该已经可用（因为加载时没有禁用）
-            if not self.is_loaded_mode:
-                self._set_load_tab_enabled(True)
+            # 更新文件加载tab状态（断开连接后，如果未加载文件，则启用文件加载功能）
+            self._update_load_tab_state()
     
     def _on_frame_type_changed(self, text):
         """帧类型改变"""
@@ -2076,8 +2077,8 @@ class BLEHostGUI(QMainWindow):
             self.time_window_slider.setValue(0)
             self.window_start_entry.setText("0")
             
-            # 启用时间窗控制控件
-            self._set_load_tab_enabled(True)
+            # 更新文件加载tab状态（加载文件后，禁用文件选择，启用时间窗控制）
+            self._update_load_tab_state()
             
             # 禁用连接tab的功能（加载模式和连接态互斥）
             self._set_connection_tab_enabled(False)
@@ -2176,8 +2177,8 @@ class BLEHostGUI(QMainWindow):
         self.loaded_file_info = None
         self.current_window_start = 0
         
-        # 禁用时间窗控制控件
-        self._set_load_tab_enabled(False)
+        # 更新文件加载tab状态（取消加载后，启用文件选择，禁用时间窗控制）
+        self._update_load_tab_state()
         
         # 启用连接tab的功能
         self._set_connection_tab_enabled(True)
@@ -2218,29 +2219,39 @@ class BLEHostGUI(QMainWindow):
         if hasattr(self, 'baudrate_combo'):
             self.baudrate_combo.setEnabled(enabled)
     
-    def _set_load_tab_enabled(self, enabled: bool):
-        """启用或禁用文件加载tab的功能（包括时间窗控制）"""
-        # 文件路径相关控件（加载文件时应该禁用，避免重复加载）
-        # 注意：这里的逻辑是反的，enabled=True表示已加载文件，应该禁用文件选择
-        # 但时间窗控制应该启用
-        if hasattr(self, 'load_file_entry'):
-            self.load_file_entry.setEnabled(not enabled)  # 已加载时禁用文件选择
-        if hasattr(self, 'load_unload_btn'):
-            self.load_unload_btn.setEnabled(True)  # 加载/取消加载按钮始终启用
-        if hasattr(self, 'browse_btn'):
-            self.browse_btn.setEnabled(not enabled)  # 已加载时禁用浏览按钮
+    def _update_load_tab_state(self):
+        """
+        更新文件加载tab的状态（综合考虑连接状态和文件加载状态）
         
-        # 时间窗控制控件（加载文件时启用，未加载时禁用）
+        状态机逻辑：
+        - 文件选择控件（浏览按钮、文件输入框）：未连接 AND 未加载文件 时启用
+        - 时间窗控制控件：已加载文件 时启用
+        - 加载/取消加载按钮：始终启用
+        """
+        # 文件选择控件：只有在未连接且未加载文件时才启用
+        file_selection_enabled = not self.is_running and not self.is_loaded_mode
+        
+        if hasattr(self, 'load_file_entry'):
+            self.load_file_entry.setEnabled(file_selection_enabled)
+        if hasattr(self, 'browse_btn'):
+            self.browse_btn.setEnabled(file_selection_enabled)
+        
+        # 加载/取消加载按钮始终启用
+        if hasattr(self, 'load_unload_btn'):
+            self.load_unload_btn.setEnabled(True)
+        
+        # 时间窗控制控件：只有在已加载文件时才启用
+        time_window_enabled = self.is_loaded_mode
         if hasattr(self, 'window_start_entry'):
-            self.window_start_entry.setEnabled(enabled)
+            self.window_start_entry.setEnabled(time_window_enabled)
         if hasattr(self, 'time_window_slider'):
-            self.time_window_slider.setEnabled(enabled)
+            self.time_window_slider.setEnabled(time_window_enabled)
         if hasattr(self, 'slider_left_btn'):
-            self.slider_left_btn.setEnabled(enabled)
+            self.slider_left_btn.setEnabled(time_window_enabled)
         if hasattr(self, 'slider_right_btn'):
-            self.slider_right_btn.setEnabled(enabled)
+            self.slider_right_btn.setEnabled(time_window_enabled)
         if hasattr(self, 'reset_view_btn'):
-            self.reset_view_btn.setEnabled(enabled)
+            self.reset_view_btn.setEnabled(time_window_enabled)
     
     def _calculate_frequency(self):
         """计算频率"""
