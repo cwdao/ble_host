@@ -43,8 +43,9 @@ if errorlevel 1 (
     echo 警告: ICO 文件生成失败，将使用 PNG 文件
 )
 
-echo 正在更新 build_qt_onedir.spec 文件...
+echo 正在更新 spec 文件版本号...
 python update_spec_version.py %VERSION% build_qt_onedir.spec
+python update_spec_version.py %VERSION% build_qt.spec
 
 echo 正在清理旧的打包文件...
 if exist "dist\BLEHost-Qt-v%VERSION%.exe" (

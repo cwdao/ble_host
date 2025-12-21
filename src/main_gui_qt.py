@@ -1072,6 +1072,15 @@ class BLEHostGUI(QMainWindow):
                 else:
                     # 其他键使用默认处理
                     super().keyPressEvent(event)
+            
+            def wheelEvent(self, event):
+                """处理鼠标滚轮事件，滚轮改变滑块值时立即更新"""
+                # 先调用父类方法，让滑块值改变
+                super().wheelEvent(event)
+                # 滚轮改变后立即调用更新回调
+                if self.update_callback:
+                    self.update_callback()
+                event.accept()
         
         self.time_window_slider = KeyboardSliderWithTooltip(Qt.Orientation.Horizontal, update_callback=self._on_slider_keyboard_changed)
         self.time_window_slider.setMinimum(0)
