@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
     QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QMetaObject
-from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup
+from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup, QFontDatabase
 from qfluentwidgets import SwitchButton, ProgressRing, ToolTipFilter, ToolTipPosition
 
 # 业务逻辑模块（无需修改）
@@ -3145,14 +3145,108 @@ class TextHandler(logging.Handler):
         self.text_widget.append(msg)  # QTextEdit 的 append 方法
 
 
+def setup_fonts(app: QApplication, font_name: str = "Microsoft YaHei", font_size: int = 10, 
+                ttf_path: Optional[str] = None, bold: bool = False) -> QFont:
+    """
+    设置应用程序字体，启用抗锯齿和优化渲染
+    
+    Args:
+        app: QApplication 实例
+        font_name: 字体名称（如果加载了 TTF 文件，使用 TTF 中的字体族名）
+        font_size: 字体大小
+        ttf_path: 可选的 TTF 字体文件路径（相对于 assets 目录或绝对路径）
+        bold: 是否使用粗体（默认 False）
+    
+    Returns:
+        配置好的 QFont 对象
+    """
+    # 如果提供了 TTF 文件路径，尝试加载
+    if ttf_path:
+        try:
+            # 获取资源路径
+            if getattr(sys, 'frozen', False):
+                base_path = sys._MEIPASS
+            else:
+                base_path = os.path.dirname(os.path.dirname(__file__))
+            
+            # 如果是相对路径，从 assets 目录查找
+            if not os.path.isabs(ttf_path):
+                ttf_full_path = os.path.join(base_path, 'assets', ttf_path)
+            else:
+                ttf_full_path = ttf_path
+            
+            if os.path.exists(ttf_full_path):
+                # 使用 QFontDatabase 加载 TTF 字体
+                font_id = QFontDatabase.addApplicationFont(ttf_full_path)
+                if font_id != -1:
+                    # 获取加载的字体族名
+                    font_families = QFontDatabase.applicationFontFamilies(font_id)
+                    if font_families:
+                        font_name = font_families[0]  # 使用 TTF 文件中的第一个字体族
+                        logging.getLogger(__name__).info(f"成功加载 TTF 字体: {font_name} from {ttf_full_path}")
+                    else:
+                        logging.getLogger(__name__).warning(f"TTF 字体文件未包含有效的字体族: {ttf_full_path}")
+                else:
+                    logging.getLogger(__name__).warning(f"无法加载 TTF 字体文件: {ttf_full_path}")
+            else:
+                logging.getLogger(__name__).warning(f"TTF 字体文件不存在: {ttf_full_path}")
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"加载 TTF 字体时出错: {e}")
+    
+    # 创建字体对象
+    # 如果使用粗体，在创建时指定 Weight
+    if bold:
+        font = QFont(font_name, font_size, QFont.Weight.Bold)
+    else:
+        font = QFont(font_name, font_size)
+    
+    # 启用抗锯齿（消除锯齿）
+    # 在 PySide6 中，使用 StyleStrategy 枚举值
+    try:
+        # 尝试使用新的 API（PySide6 6.0+）
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    except (AttributeError, TypeError):
+        # 如果新 API 不可用，使用旧的方式
+        try:
+            font.setStyleStrategy(QFont.PreferAntialias)
+        except (AttributeError, TypeError):
+            # 如果都不可用，至少设置平滑缩放
+            pass
+    
+    # 设置字体渲染提示（优化小字体显示）
+    try:
+        # 尝试使用 HintingPreference（PySide6 6.0+）
+        font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)
+    except (AttributeError, TypeError):
+        # 如果 API 不可用，跳过（使用系统默认）
+        pass
+    
+    # 确保字体平滑渲染
+    try:
+        font.setSmoothScaling(True)
+    except (AttributeError, TypeError):
+        pass
+    
+    # 设置应用程序默认字体
+    app.setFont(font)
+    
+    return font
+
+
 def main():
     """主函数"""
     # 创建应用程序
     app = QApplication(sys.argv)
     
-    # 设置全局字体为微软雅黑
-    font = QFont("Microsoft YaHei", 10)  # 默认10号字体
-    app.setFont(font)
+    # 设置全局字体，启用抗锯齿和优化渲染
+    # 方式 1：使用系统自带的微软雅黑粗体（推荐）
+    setup_fonts(app, font_name="Microsoft YaHei", font_size=10, bold=True)
+    
+    # 方式 2：使用系统自带的微软雅黑（普通）
+    # setup_fonts(app, font_name="Microsoft YaHei", font_size=10)
+    
+    # 方式 3：使用自定义 TTF 字体文件
+    # setup_fonts(app, font_name="Microsoft YaHei", font_size=10, ttf_path="MSYHBD.ttc")
     
     # 设置应用程序图标
     try:
