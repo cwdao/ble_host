@@ -8,6 +8,8 @@ import pyqtgraph as pg
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 import logging
+from PySide6.QtWidgets import QToolTip
+from PySide6.QtCore import Qt
 
 
 class RealtimePlotter:
@@ -40,12 +42,33 @@ class RealtimePlotter:
         self.data_lines = {}  # {var_name: PlotDataItem}
         self.max_points = 10000  # 每条曲线最大点数（PyQtGraph 可以处理更多）
         
-        # 颜色列表（自动分配）
+        # 扩展的颜色列表（支持更多通道，使用更易区分的颜色）
         self.colors = [
             '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+            '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
+            '#c49c94', '#f7b6d3', '#c7c7c7', '#dbdb8d', '#9edae5',
+            '#393b79', '#5254a3', '#6b6ecf', '#9c9ede', '#637939',
+            '#8ca252', '#b5cf6b', '#cedb9c', '#8c6d31', '#bd9e39',
+            '#e7ba52', '#e7cb94', '#843c39', '#ad494a', '#d6616b',
+            '#e7969c', '#7b4173', '#a55194', '#ce6dbd', '#de9ed6'
         ]
         self.color_index = 0
+        
+        # 鼠标悬停相关
+        self.hovered_line = None  # 当前悬停的线条
+        self.hover_pen_width = 3.5  # 悬停时的线条宽度
+        self.normal_pen_width = 2.5  # 正常线条宽度（从1.5增加到2.5）
+        self.hover_distance_threshold = 10  # 鼠标到线条的距离阈值（像素）
+        
+        # 工具提示文本项
+        self.tooltip_text = None
+        
+        # 启用鼠标跟踪
+        self.plot_widget.setMouseTracking(True)
+        
+        # 连接鼠标移动事件
+        self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
         
         # 视图状态跟踪
         self.current_view_range = None  # 当前应该显示的视图范围 (x_min, x_max)
@@ -83,14 +106,16 @@ class RealtimePlotter:
             color = self.colors[self.color_index % len(self.colors)]
             self.color_index += 1
         
-        # 创建空的 PlotDataItem
-        pen = pg.mkPen(color=color, width=1.5)
+        # 创建空的 PlotDataItem，使用更粗的线条
+        pen = pg.mkPen(color=color, width=self.normal_pen_width)
         curve = self.plot_widget.plot([], [], name=label, pen=pen)
         
         self.data_lines[var_name] = {
             'curve': curve,
             'x_data': [],
-            'y_data': []
+            'y_data': [],
+            'label': label,
+            'color': color
         }
     
     def update_line(self, var_name: str, x_data: np.ndarray, y_data: np.ndarray):
@@ -188,6 +213,10 @@ class RealtimePlotter:
         if var_name in self.data_lines:
             self.plot_widget.removeItem(self.data_lines[var_name]['curve'])
             del self.data_lines[var_name]
+            # 如果移除的是当前悬停的线条，清除悬停状态
+            if self.hovered_line == var_name:
+                self.hovered_line = None
+                QToolTip.hideText()
     
     def set_ylabel(self, label: str):
         """设置Y轴标签"""
@@ -332,3 +361,102 @@ class RealtimePlotter:
             # 更新当前视图范围
             self.current_view_range = (x_min, x_max)
             self.user_has_panned = False
+    
+    def _on_mouse_moved(self, pos):
+        """
+        鼠标移动事件处理，用于检测鼠标是否悬停在线条上
+        
+        Args:
+            pos: 鼠标在场景中的位置 (QPointF)
+        """
+        # 将场景坐标转换为视图坐标
+        view_pos = self.plot_widget.plotItem.vb.mapSceneToView(pos)
+        
+        # 获取视图范围，用于归一化距离计算
+        view_range = self.plot_widget.plotItem.vb.viewRange()
+        x_range = view_range[0]
+        y_range = view_range[1]
+        x_span = x_range[1] - x_range[0] if x_range[1] > x_range[0] else 1.0
+        y_span = y_range[1] - y_range[0] if y_range[1] > y_range[0] else 1.0
+        
+        # 找到距离鼠标最近的线条
+        closest_line = None
+        min_distance = float('inf')
+        
+        for var_name, line_info in self.data_lines.items():
+            x_data = line_info['x_data']
+            y_data = line_info['y_data']
+            
+            if not x_data or not y_data or len(x_data) == 0:
+                continue
+            
+            # 计算鼠标到线条的距离
+            x_array = np.array(x_data)
+            y_array = np.array(y_data)
+            
+            # 找到最接近鼠标X坐标的数据点
+            x_diff = np.abs(x_array - view_pos.x())
+            if len(x_diff) == 0:
+                continue
+                
+            closest_idx = np.argmin(x_diff)
+            closest_x = x_array[closest_idx]
+            closest_y = y_array[closest_idx]
+            
+            # 计算归一化的距离（考虑X和Y轴的范围）
+            dx = (closest_x - view_pos.x()) / x_span
+            dy = (closest_y - view_pos.y()) / y_span
+            # 使用归一化距离，并考虑Y轴通常范围较小，给予更高权重
+            normalized_distance = np.sqrt(dx**2 + (dy * 2)**2) * 100  # 乘以100转换为百分比距离
+            
+            # 将归一化距离转换为近似像素距离（假设视图高度约为400-800像素）
+            # 使用一个启发式值：10%的归一化距离约等于10像素
+            pixel_distance = normalized_distance * 0.1
+            
+            if pixel_distance < min_distance and pixel_distance < self.hover_distance_threshold:
+                min_distance = pixel_distance
+                closest_line = (var_name, line_info, closest_x, closest_y)
+        
+        # 更新悬停状态
+        if closest_line is not None:
+            var_name, line_info, x_val, y_val = closest_line
+            if self.hovered_line != var_name:
+                # 取消之前线条的高亮
+                if self.hovered_line and self.hovered_line in self.data_lines:
+                    old_pen = pg.mkPen(
+                        color=self.data_lines[self.hovered_line]['color'],
+                        width=self.normal_pen_width
+                    )
+                    self.data_lines[self.hovered_line]['curve'].setPen(old_pen)
+                
+                # 高亮当前线条
+                hover_pen = pg.mkPen(
+                    color=line_info['color'],
+                    width=self.hover_pen_width
+                )
+                line_info['curve'].setPen(hover_pen)
+                self.hovered_line = var_name
+                
+                # 显示工具提示
+                tooltip_text = f"{line_info['label']}\nX: {x_val:.2f}, Y: {y_val:.4f}"
+                # 将场景坐标转换为widget坐标，再转换为全局坐标
+                widget_pos = self.plot_widget.plotItem.mapFromScene(pos)
+                if hasattr(widget_pos, 'toPoint'):
+                    widget_point = widget_pos.toPoint()
+                else:
+                    from PySide6.QtCore import QPoint
+                    widget_point = QPoint(int(widget_pos.x()), int(widget_pos.y()))
+                global_pos = self.plot_widget.mapToGlobal(widget_point)
+                QToolTip.showText(global_pos, tooltip_text, self.plot_widget)
+        else:
+            # 鼠标不在任何线条附近
+            if self.hovered_line and self.hovered_line in self.data_lines:
+                # 恢复正常显示
+                line_info = self.data_lines[self.hovered_line]
+                normal_pen = pg.mkPen(
+                    color=line_info['color'],
+                    width=self.normal_pen_width
+                )
+                line_info['curve'].setPen(normal_pen)
+                self.hovered_line = None
+                QToolTip.hideText()
