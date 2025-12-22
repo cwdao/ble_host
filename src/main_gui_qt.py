@@ -299,7 +299,9 @@ class BLEHostGUI(QMainWindow):
         
         # 数据类型选择
         data_type_layout = QHBoxLayout()
-        data_type_layout.addWidget(QLabel("Data Type:"))
+        data_type_label = QLabel("Data Type:")
+        data_type_label.setToolTip("选择用于呼吸估计的数据类型")
+        data_type_layout.addWidget(data_type_label)
         self.breathing_data_type_combo = QComboBox()
         self.breathing_data_type_combo.addItems(["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"])
         data_type_layout.addWidget(self.breathing_data_type_combo)
@@ -307,24 +309,32 @@ class BLEHostGUI(QMainWindow):
         
         # 信道选择
         channel_layout = QHBoxLayout()
-        channel_layout.addWidget(QLabel("Channel:"))
+        channel_label = QLabel("Channel:")
+        channel_label.setToolTip("选择用于呼吸估计的信道")
+        channel_layout.addWidget(channel_label)
         self.breathing_channel_combo = QComboBox()
         channel_layout.addWidget(self.breathing_channel_combo)
         breathing_control_layout.addLayout(channel_layout)
         
         # 阈值输入
         threshold_layout = QHBoxLayout()
-        threshold_layout.addWidget(QLabel("Threshold:"))
+        threshold_label = QLabel("Threshold:")
+        threshold_label.setToolTip("呼吸频段能量最低占比")
+        threshold_layout.addWidget(threshold_label)
         self.breathing_threshold_entry = QLineEdit("0.6")
         self.breathing_threshold_entry.setMaximumWidth(80)
+        self.breathing_threshold_entry.setToolTip("呼吸频段能量最低占比")
         threshold_layout.addWidget(self.breathing_threshold_entry)
         breathing_control_layout.addLayout(threshold_layout)
         
         # 实时更新间隔（N秒）
         interval_layout = QHBoxLayout()
-        interval_layout.addWidget(QLabel("更新间隔(秒):"))
+        interval_label = QLabel("更新间隔(秒):")
+        interval_label.setToolTip("呼吸估计结果的更新间隔时间（秒）")
+        interval_layout.addWidget(interval_label)
         self.breathing_update_interval_entry = QLineEdit("2.0")
         self.breathing_update_interval_entry.setMaximumWidth(80)
+        self.breathing_update_interval_entry.setToolTip("呼吸估计结果的更新间隔时间（秒）")
         interval_layout.addWidget(self.breathing_update_interval_entry)
         breathing_control_layout.addLayout(interval_layout)
         
