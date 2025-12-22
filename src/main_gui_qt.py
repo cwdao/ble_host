@@ -77,6 +77,10 @@ __version__ = config.version
 __version_date__ = config.version_date
 __version_author__ = config.version_author
 
+# 全局变量：保存实际加载的应用程序字体族名
+_app_font_family = None
+_app_font_size = 10
+
 
 class BLEHostGUI(QMainWindow):
     """主GUI应用程序 - PySide6 版本"""
@@ -230,14 +234,14 @@ class BLEHostGUI(QMainWindow):
         status_layout.setContentsMargins(5, 5, 5, 5)
         
         status_label = QLabel("连接状态:")
-        status_label.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        status_label.setFont(get_app_font(9, bold=True))
         self.status_label = QLabel("未连接")
         self.status_label.setStyleSheet("color: red;")
-        self.status_label.setFont(QFont("Arial", 9))
+        self.status_label.setFont(get_app_font(9))
         
         # 保存状态显示（在连接状态后面）
         self.save_status_label = QLabel("")
-        self.save_status_label.setFont(QFont("Arial", 9))
+        self.save_status_label.setFont(get_app_font(9))
         # 设置自动换行：当文本宽度超过可用空间时自动换行
         # setWordWrap(True) 会根据QLabel的可用宽度自动换行
         # 在QHBoxLayout中，可用宽度 = 布局总宽度 - 前面固定元素宽度 - 间距
@@ -259,7 +263,7 @@ class BLEHostGUI(QMainWindow):
         # 2. 配置选项卡区域
         self.config_tabs = QTabWidget()
         # 设置tab字体更大
-        tab_font = QFont("Microsoft YaHei", 11)
+        tab_font = get_app_font(11)
         self.config_tabs.setFont(tab_font)
         self._create_connection_tab()
         self._create_channel_config_tab()
@@ -280,7 +284,7 @@ class BLEHostGUI(QMainWindow):
         # 绘图选项卡
         self.plot_tabs = QTabWidget()
         # 设置tab字体更大
-        tab_font = QFont("Microsoft YaHei", 11)
+        tab_font = get_app_font(11)
         self.plot_tabs.setFont(tab_font)
         self._create_plot_tabs()
         left_layout.addWidget(self.plot_tabs)
@@ -771,7 +775,7 @@ class BLEHostGUI(QMainWindow):
         # 第一组：设置保存路径+自动保存开关+显示当前路径
         path_group = QGroupBox("路径设置")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
-        path_group.setFont(QFont("Microsoft YaHei", 9))
+        path_group.setFont(get_app_font(9))
         path_group.setMaximumWidth(300)
         path_group.setMaximumHeight(120)
         path_layout = QVBoxLayout(path_group)
@@ -803,7 +807,7 @@ class BLEHostGUI(QMainWindow):
         # 第二组：保存数据+全部保存/最近N帧
         save_group = QGroupBox("保存数据")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
-        save_group.setFont(QFont("Microsoft YaHei", 9))
+        save_group.setFont(get_app_font(9))
         save_group.setMaximumHeight(120)
         save_layout = QVBoxLayout(save_group)
         
@@ -828,7 +832,7 @@ class BLEHostGUI(QMainWindow):
         # 第三组：清空当前数据单独一个组
         clear_group = QGroupBox("清空数据")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
-        clear_group.setFont(QFont("Microsoft YaHei", 9))
+        clear_group.setFont(get_app_font(9))
         clear_group.setMaximumWidth(200)
         clear_group.setMaximumHeight(120)
         clear_layout = QVBoxLayout(clear_group)
@@ -900,12 +904,12 @@ class BLEHostGUI(QMainWindow):
         layout.setSpacing(10)
         
         # 设置按钮字体
-        btn_font = QFont("Microsoft YaHei", 10)
+        btn_font = get_app_font(10)
         
         # 第一列：文件读取（文件路径部分）
         path_group = QGroupBox("文件读取")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
-        path_group.setFont(QFont("Microsoft YaHei", 9))
+        path_group.setFont(get_app_font(9))
         path_layout = QVBoxLayout(path_group)
         path_group.setMaximumWidth(200)  # 保持左右宽度限制
         path_group.setMaximumHeight(120)
@@ -935,7 +939,7 @@ class BLEHostGUI(QMainWindow):
         # 第二列：时间窗控制
         control_group = QGroupBox("时间窗控制")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
-        control_group.setFont(QFont("Microsoft YaHei", 9))
+        control_group.setFont(get_app_font(9))
         control_layout = QVBoxLayout(control_group)
         control_group.setMaximumHeight(150)
         control_group.setMaximumWidth(1000)
@@ -1120,7 +1124,7 @@ class BLEHostGUI(QMainWindow):
         # 第三列：文件信息
         info_group = QGroupBox("文件信息")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
-        info_group.setFont(QFont("Microsoft YaHei", 9))
+        info_group.setFont(get_app_font(9))
         info_layout = QVBoxLayout(info_group)
         info_group.setMaximumWidth(150)  # 保持左右宽度限制不变
         info_group.setMaximumHeight(120)
@@ -1145,7 +1149,7 @@ class BLEHostGUI(QMainWindow):
         # 左列：主题设置
         theme_group = QGroupBox("主题设置")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
-        theme_group.setFont(QFont("Microsoft YaHei", 9))
+        theme_group.setFont(get_app_font(9))
         theme_layout = QVBoxLayout(theme_group)
         theme_group.setMaximumHeight(120)
         theme_group.setMaximumWidth(200)
@@ -1173,7 +1177,7 @@ class BLEHostGUI(QMainWindow):
         # 右列：关于信息
         about_group = QGroupBox("关于")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
-        about_group.setFont(QFont("Microsoft YaHei", 9))
+        about_group.setFont(get_app_font(9))
         about_layout = QVBoxLayout(about_group)
         about_text = QTextEdit()
         about_text.setReadOnly(True)
@@ -3175,7 +3179,7 @@ class TextHandler(logging.Handler):
         self.text_widget.append(msg)  # QTextEdit 的 append 方法
 
 
-def setup_fonts(app: QApplication, font_name: str = "Microsoft YaHei", font_size: int = 10, 
+def setup_fonts(app: QApplication, font_name: str = "PingFang Regular", font_size: int = 10, 
                 ttf_path: Optional[str] = None, bold: bool = False) -> QFont:
     """
     设置应用程序字体，启用抗锯齿和优化渲染
@@ -3190,6 +3194,9 @@ def setup_fonts(app: QApplication, font_name: str = "Microsoft YaHei", font_size
     Returns:
         配置好的 QFont 对象
     """
+    # 声明全局变量
+    global _app_font_family, _app_font_size
+    
     # 如果提供了 TTF 文件路径，尝试加载
     if ttf_path:
         try:
@@ -3213,6 +3220,9 @@ def setup_fonts(app: QApplication, font_name: str = "Microsoft YaHei", font_size
                     font_families = QFontDatabase.applicationFontFamilies(font_id)
                     if font_families:
                         font_name = font_families[0]  # 使用 TTF 文件中的第一个字体族
+                        # 保存到全局变量
+                        _app_font_family = font_name
+                        _app_font_size = font_size
                         logging.getLogger(__name__).info(f"成功加载 TTF 字体: {font_name} from {ttf_full_path}")
                     else:
                         logging.getLogger(__name__).warning(f"TTF 字体文件未包含有效的字体族: {ttf_full_path}")
@@ -3257,8 +3267,67 @@ def setup_fonts(app: QApplication, font_name: str = "Microsoft YaHei", font_size
     except (AttributeError, TypeError):
         pass
     
+    # 保存字体族名和大小到全局变量（如果没有通过TTF加载，使用传入的font_name）
+    _app_font_family = font_name
+    _app_font_size = font_size
+    
     # 设置应用程序默认字体
     app.setFont(font)
+    
+    return font
+
+
+def get_app_font(size: Optional[int] = None, bold: bool = False) -> QFont:
+    """
+    获取应用程序字体，可以指定大小和是否粗体
+    
+    Args:
+        size: 字体大小，如果为None则使用应用程序默认大小
+        bold: 是否使用粗体
+    
+    Returns:
+        QFont对象
+    """
+    global _app_font_family, _app_font_size
+    
+    # 如果字体族名未设置，尝试从应用程序获取
+    if _app_font_family is None:
+        app = QApplication.instance()
+        if app:
+            app_font = app.font()
+            _app_font_family = app_font.family()
+            _app_font_size = app_font.pointSize()
+        else:
+            # 如果应用程序未创建，使用默认值
+            _app_font_family = "PingFang Regular"
+            _app_font_size = 10
+    
+    # 使用保存的字体族名和指定的大小
+    font_size = size if size is not None else _app_font_size
+    
+    if bold:
+        font = QFont(_app_font_family, font_size, QFont.Weight.Bold)
+    else:
+        font = QFont(_app_font_family, font_size)
+    
+    # 应用相同的渲染优化
+    try:
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    except (AttributeError, TypeError):
+        try:
+            font.setStyleStrategy(QFont.PreferAntialias)
+        except (AttributeError, TypeError):
+            pass
+    
+    try:
+        font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)
+    except (AttributeError, TypeError):
+        pass
+    
+    try:
+        font.setSmoothScaling(True)
+    except (AttributeError, TypeError):
+        pass
     
     return font
 
@@ -3270,13 +3339,13 @@ def main():
     
     # 设置全局字体，启用抗锯齿和优化渲染
     # 方式 1：使用系统自带的微软雅黑粗体（推荐）
-    setup_fonts(app, font_name="Microsoft YaHei", font_size=10, bold=True)
+    # setup_fonts(app, font_name="Microsoft YaHei", font_size=10, bold=False)
     
     # 方式 2：使用系统自带的微软雅黑（普通）
     # setup_fonts(app, font_name="Microsoft YaHei", font_size=10)
     
     # 方式 3：使用自定义 TTF 字体文件
-    # setup_fonts(app, font_name="Microsoft YaHei", font_size=10, ttf_path="MSYHBD.ttc")
+    setup_fonts(app, font_name="PingFang Regular", font_size=10, ttf_path="PingFang Bold_0.ttf")
     
     # 设置应用程序图标
     try:
