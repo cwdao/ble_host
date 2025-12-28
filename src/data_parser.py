@@ -32,6 +32,9 @@ class DataParser:
         self.re_iq_line_has_prefix = re.compile(r"\bIQ:\s*(.*)")
         self.re_iq_tokens = re.compile(rf"ch:(\d+):({self.NUM}),({self.NUM}),({self.NUM}),({self.NUM});")
         
+        # 方向估计帧格式：$DF,<ver>,<ch>,<seq>,<ts_ms>,<p_avg>\r\n
+        self.re_direction_frame = re.compile(r"\$DF,(\d+),(\d+),(\d+),(\d+),(\d+)\s*")
+        
         # 缓冲区：用于存储多行的帧数据
         self.frame_buffer = {}  # {index: {'timestamp': ts, 'iq_data': {ch: [il,ql,ir,qr]}}}
         self.current_frame = None
@@ -123,27 +126,108 @@ class DataParser:
         
         return iq_data
     
+    def parse_direction_frame(self, text: str) -> Optional[Dict]:
+        """
+        解析方向估计帧：$DF,<ver>,<ch>,<seq>,<ts_ms>,<p_avg>\r\n
+        
+        Args:
+            text: 从串口接收的文本字符串
+        
+        Returns:
+            解析后的帧数据字典，格式：
+            {
+                'frame': True,
+                'frame_type': 'direction_estimation',
+                'frame_version': int,
+                'index': int (seq),
+                'timestamp_ms': int,
+                'channels': {
+                    ch: {
+                        'amplitude': float (sqrt(p_avg)),
+                        'phase': float (0.0, 方向估计帧没有相位信息),
+                        'p_avg': float (原始功率值)
+                    }
+                }
+            }
+            如果解析失败返回None
+        """
+        if not text:
+            return None
+        
+        line = remove_ansi_escape(text.strip())
+        m = self.re_direction_frame.match(line)
+        if m:
+            try:
+                ver = int(m.group(1))
+                ch = int(m.group(2))
+                seq = int(m.group(3))
+                ts_ms = int(m.group(4))
+                p_avg = float(m.group(5))
+                
+                # 计算幅值（开方）
+                amplitude = math.sqrt(p_avg) if p_avg >= 0 else 0.0
+                
+                # 构建帧数据
+                result = {
+                    'frame': True,
+                    'frame_type': 'direction_estimation',
+                    'frame_version': ver,
+                    'index': seq,
+                    'timestamp_ms': ts_ms,
+                    'channels': OrderedDict()
+                }
+                
+                # 方向估计帧只有一个信道
+                result['channels'][ch] = {
+                    'amplitude': amplitude,
+                    'phase': 0.0,  # 方向估计帧没有相位信息
+                    'p_avg': p_avg,  # 保存原始功率值
+                    'I': 0.0,  # 方向估计帧没有IQ数据
+                    'Q': 0.0,
+                    'local_amplitude': amplitude,  # 使用相同幅值
+                    'local_phase': 0.0,
+                    'remote_amplitude': 0.0,
+                    'remote_phase': 0.0,
+                    'il': 0.0, 'ql': 0.0, 'ir': 0.0, 'qr': 0.0
+                }
+                
+                self.logger.debug(f"[方向估计帧] seq={seq}, ch={ch}, ts={ts_ms}ms, p_avg={p_avg}, amplitude={amplitude:.2f}")
+                return result
+                
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"[方向估计帧解析] 解析失败: {e}, 原始数据: {line}")
+                return None
+        
+        return None
+    
     def parse(self, text: str) -> Optional[Dict]:
         """
         解析接收到的文本数据
-        支持两种模式：
-        1. 帧模式：解析BLE CS Report帧格式
+        支持三种模式：
+        1. 方向估计帧：$DF,<ver>,<ch>,<seq>,<ts_ms>,<p_avg>\r\n
+        2. 信道探测帧：解析BLE CS Report帧格式
            - 帧头：== Basic Report == index:X, timestamp:Y
            - 帧尾：== End Report ==（检测到帧尾时完成当前帧）
            - IQ数据：ch:0:il,ql,ir,qr;ch:1:...
-        2. 简单模式：解析JSON或键值对格式（向后兼容）
+        3. 简单模式：解析JSON或键值对格式（向后兼容）
         
         Args:
             text: 从串口接收的文本字符串
         
         Returns:
             解析后的数据字典：
-            - 帧模式：{'frame': True, 'index': int, 'timestamp_ms': int, 'channels': {ch: {'amplitude': float, 'phase': float, 'I': float, 'Q': float}}}
+            - 方向估计帧：{'frame': True, 'frame_type': 'direction_estimation', 'frame_version': int, 'index': int, 'timestamp_ms': int, 'channels': {ch: {'amplitude': float, ...}}}
+            - 信道探测帧：{'frame': True, 'index': int, 'timestamp_ms': int, 'channels': {ch: {'amplitude': float, 'phase': float, 'I': float, 'Q': float}}}
             - 简单模式：{'var_name': value, ...}
             如果解析失败返回None
         """
         if not text:
             return None
+        
+        # 优先尝试解析方向估计帧（单行格式，优先级最高）
+        direction_frame = self.parse_direction_frame(text)
+        if direction_frame:
+            return direction_frame
         
         # 优先尝试解析帧头
         frame_header = self.parse_frame_header(text)

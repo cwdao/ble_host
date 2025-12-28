@@ -82,6 +82,10 @@ class RealtimePlotter:
         """获取 Qt Widget（用于添加到布局）"""
         return self.plot_widget
     
+    def set_title(self, title: str):
+        """设置图表标题"""
+        self.plot_widget.setTitle(title)
+    
     def add_line(self, var_name: str, color=None, label=None):
         """
         添加一条数据线（如果不存在）

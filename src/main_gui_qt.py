@@ -142,10 +142,15 @@ class BLEHostGUI(QMainWindow):
         
         # 帧数据处理
         self.frame_type = config.default_frame_type
-        self.frame_mode = (self.frame_type == "演示帧")
+        self.frame_mode = (self.frame_type == "信道探测帧" or self.frame_type == "方向估计帧")
+        self.is_direction_estimation_mode = (self.frame_type == "方向估计帧")
         # 使用默认配置解析显示信道列表（临时使用，稍后在_apply_frame_settings中会正确设置）
         self.display_channel_list = []
-        self.display_max_frames = config.default_display_max_frames
+        # 根据帧类型设置默认显示帧数
+        if self.is_direction_estimation_mode:
+            self.display_max_frames = config.df_default_display_max_frames
+        else:
+            self.display_max_frames = config.default_display_max_frames
         
         # 加载模式相关
         self.is_loaded_mode = False
@@ -305,6 +310,7 @@ class BLEHostGUI(QMainWindow):
         data_type_layout = QHBoxLayout()
         data_type_label = QLabel("Data Type:")
         data_type_label.setToolTip("选择用于呼吸估计的数据类型")
+        data_type_label.installEventFilter(ToolTipFilter(data_type_label, 0, ToolTipPosition.TOP))
         data_type_layout.addWidget(data_type_label)
         self.breathing_data_type_combo = QComboBox()
         self.breathing_data_type_combo.addItems(["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"])
@@ -315,6 +321,7 @@ class BLEHostGUI(QMainWindow):
         channel_layout = QHBoxLayout()
         channel_label = QLabel("Channel:")
         channel_label.setToolTip("选择用于呼吸估计的信道")
+        channel_label.installEventFilter(ToolTipFilter(channel_label, 0, ToolTipPosition.TOP))
         channel_layout.addWidget(channel_label)
         self.breathing_channel_combo = QComboBox()
         channel_layout.addWidget(self.breathing_channel_combo)
@@ -324,21 +331,25 @@ class BLEHostGUI(QMainWindow):
         threshold_layout = QHBoxLayout()
         threshold_label = QLabel("Threshold:")
         threshold_label.setToolTip("呼吸频段能量最低占比")
+        threshold_label.installEventFilter(ToolTipFilter(threshold_label, 0, ToolTipPosition.TOP))
         threshold_layout.addWidget(threshold_label)
         self.breathing_threshold_entry = QLineEdit("0.6")
         self.breathing_threshold_entry.setMaximumWidth(80)
-        self.breathing_threshold_entry.setToolTip("呼吸频段能量最低占比")
+        self.breathing_threshold_entry.setToolTip("输入0~1之间的值")
+        self.breathing_threshold_entry.installEventFilter(ToolTipFilter(self.breathing_threshold_entry, 0, ToolTipPosition.TOP))
         threshold_layout.addWidget(self.breathing_threshold_entry)
         breathing_control_layout.addLayout(threshold_layout)
         
         # 实时更新间隔（N秒）
         interval_layout = QHBoxLayout()
         interval_label = QLabel("更新间隔(秒):")
-        interval_label.setToolTip("呼吸估计结果的更新间隔时间（秒）")
+        interval_label.setToolTip("呼吸估计结果的更新间隔时间（秒），也称作时间窗步长")
+        interval_label.installEventFilter(ToolTipFilter(interval_label, 0, ToolTipPosition.TOP))
         interval_layout.addWidget(interval_label)
         self.breathing_update_interval_entry = QLineEdit("2.0")
         self.breathing_update_interval_entry.setMaximumWidth(80)
-        self.breathing_update_interval_entry.setToolTip("呼吸估计结果的更新间隔时间（秒）")
+        self.breathing_update_interval_entry.setToolTip("输入大于0的值（秒）")
+        self.breathing_update_interval_entry.installEventFilter(ToolTipFilter(self.breathing_update_interval_entry, 0, ToolTipPosition.TOP))
         interval_layout.addWidget(self.breathing_update_interval_entry)
         breathing_control_layout.addLayout(interval_layout)
         
@@ -751,6 +762,18 @@ class BLEHostGUI(QMainWindow):
         layout.addWidget(self.display_max_frames_entry)
         layout.addWidget(QLabel("(plot和计算范围)"))
         
+        # DF模式：功率P/RMS幅值选择
+        self.df_amplitude_type_combo = QComboBox()
+        self.df_amplitude_type_combo.addItems(["RMS幅值 (√P)", "功率P"])
+        self.df_amplitude_type_combo.setCurrentText("RMS幅值 (√P)")
+        self.df_amplitude_type_combo.currentTextChanged.connect(self._on_df_amplitude_type_changed)
+        self.df_amplitude_type_label = QLabel("幅值类型:")
+        layout.addWidget(self.df_amplitude_type_label)
+        layout.addWidget(self.df_amplitude_type_combo)
+        
+        # 初始状态：DF模式下启用，其他模式下禁用
+        self._update_df_amplitude_type_enabled()
+        
         # 应用按钮
         self.apply_settings_btn = QPushButton("应用")
         # 使用 lambda 确保传递 show_info=True（用户主动点击时显示提示）
@@ -786,7 +809,7 @@ class BLEHostGUI(QMainWindow):
         
         # 使用 SwitchButton 替代 CheckBox
         auto_save_layout = QHBoxLayout()
-        auto_save_layout.addWidget(QLabel("使用自动保存路径:"))
+        auto_save_layout.addWidget(QLabel("记住保存路径:"))
         self.auto_save_switch = SwitchButton(self)
         self.auto_save_switch.setChecked(self.use_auto_save)
         self.auto_save_switch.checkedChanged.connect(self._toggle_auto_save)
@@ -1231,8 +1254,16 @@ class BLEHostGUI(QMainWindow):
             plotter.plot_widget.sigRangeChanged.connect(self._on_plot_view_changed)
             
             # 添加到选项卡
-            self.plot_tabs.addTab(plotter.get_widget(), tab_name)
+            tab_index = self.plot_tabs.addTab(plotter.get_widget(), tab_name)
             
+            # 为特定tab设置tooltip
+            if tab_key == 'amplitude' or tab_key == 'phase':
+                self.plot_tabs.setTabToolTip(tab_index, "合并双方的测量结果，显示合并后的幅值和相位")
+            if tab_key == 'local_amplitude' or tab_key == 'local_phase':
+                self.plot_tabs.setTabToolTip(tab_index, "reflector向initiator发射信号，并由后者对信号采样")
+            if tab_key == 'remote_amplitude' or tab_key == 'remote_phase':
+                self.plot_tabs.setTabToolTip(tab_index, "initiator向reflector发射信号，并由前者对信号采样")
+
             # 保存引用
             self.plotters[tab_key] = {
                 'plotter': plotter,
@@ -1241,6 +1272,13 @@ class BLEHostGUI(QMainWindow):
         
         # 创建呼吸估计选项卡（使用 Matplotlib）
         self._create_breathing_estimation_tab()
+        
+        # 根据当前帧类型初始化tab的启用状态
+        self._update_plot_tabs_enabled_state()
+        
+        # 初始化DF模式幅值类型选项状态
+        if hasattr(self, 'df_amplitude_type_combo'):
+            self._update_df_amplitude_type_enabled()
     
     def _create_process_panel(self, parent_layout):
         """创建数据处理面板"""
@@ -1391,9 +1429,115 @@ class BLEHostGUI(QMainWindow):
     
     def _on_frame_type_changed(self, text):
         """帧类型改变"""
+        old_frame_type = self.frame_type
         self.frame_type = text
-        self.frame_mode = (self.frame_type == "演示帧")
-        self.logger.info(f"帧类型已设置为: {self.frame_type}")
+        old_frame_mode = self.frame_mode
+        old_is_direction_mode = self.is_direction_estimation_mode
+        
+        self.frame_mode = (self.frame_type == "信道探测帧" or self.frame_type == "方向估计帧")
+        self.is_direction_estimation_mode = (self.frame_type == "方向估计帧")
+        
+        self.logger.info(f"帧类型已设置为: {self.frame_type}, 方向估计模式: {self.is_direction_estimation_mode}")
+        
+        # 如果切换到方向估计帧模式，需要更新tab的启用状态
+        if old_is_direction_mode != self.is_direction_estimation_mode:
+            self._update_plot_tabs_enabled_state()
+            
+            # 更新显示帧数设置
+            if self.is_direction_estimation_mode:
+                # DF模式：设置默认显示帧数为1000
+                self.display_max_frames = config.df_default_display_max_frames
+                if hasattr(self, 'display_max_frames_entry'):
+                    self.display_max_frames_entry.setText(str(config.df_default_display_max_frames))
+                self.logger.info("切换到方向估计帧模式 - 清空之前的数据，显示帧数设置为1000")
+            else:
+                # CS模式：恢复默认显示帧数
+                self.display_max_frames = config.default_display_max_frames
+                if hasattr(self, 'display_max_frames_entry'):
+                    self.display_max_frames_entry.setText(str(config.default_display_max_frames))
+                self.logger.info("切换到非方向估计帧模式 - 清空之前的数据，显示帧数恢复为50")
+            
+            # 清空数据
+            if self.is_direction_estimation_mode:
+                self.data_processor.clear_buffer(clear_frames=True)
+                for plotter_info in self.plotters.values():
+                    plotter = plotter_info.get('plotter')
+                    if plotter is not None:
+                        plotter.clear_plot()
+                self.data_parser.clear_buffer()
+            elif old_is_direction_mode:
+                self.data_processor.clear_buffer(clear_frames=True)
+                for plotter_info in self.plotters.values():
+                    plotter = plotter_info.get('plotter')
+                    if plotter is not None:
+                        plotter.clear_plot()
+                self.data_parser.clear_buffer()
+    
+    def _update_plot_tabs_enabled_state(self):
+        """根据帧类型更新plot tabs的启用状态"""
+        # 在方向估计帧模式下，只启用幅值tab，禁用其他tab
+        tab_configs = [
+            ('amplitude', 0),
+            ('phase', 1),
+            ('local_amplitude', 2),
+            ('local_phase', 3),
+            ('remote_amplitude', 4),
+            ('remote_phase', 5),
+        ]
+        
+        for tab_key, tab_index in tab_configs:
+            if tab_key in self.plotters:
+                # 方向估计帧模式下，只启用幅值tab
+                enabled = not self.is_direction_estimation_mode or (tab_key == 'amplitude')
+                self.plot_tabs.setTabEnabled(tab_index, enabled)
+                
+                # 如果当前tab被禁用，切换到幅值tab
+                if not enabled and self.plot_tabs.currentIndex() == tab_index:
+                    self.plot_tabs.setCurrentIndex(0)  # 切换到幅值tab
+        
+        # 更新plot tab标题
+        self._update_plot_tab_titles()
+        
+        # 更新DF模式幅值类型选项状态
+        if hasattr(self, 'df_amplitude_type_combo'):
+            self._update_df_amplitude_type_enabled()
+    
+    def _update_plot_tab_titles(self):
+        """根据帧类型更新plot tab标题"""
+        if 'amplitude' in self.plotters:
+            plotter = self.plotters['amplitude']['plotter']
+            if plotter:
+                if self.is_direction_estimation_mode:
+                    plotter.set_title('BLE Direction Finding - 幅值')
+                else:
+                    plotter.set_title('BLE Channel Sounding - 幅值')
+    
+    def _update_df_amplitude_type_enabled(self):
+        """更新DF模式幅值类型选项的启用状态"""
+        if hasattr(self, 'df_amplitude_type_combo') and hasattr(self, 'df_amplitude_type_label'):
+            enabled = self.is_direction_estimation_mode
+            self.df_amplitude_type_combo.setEnabled(enabled)
+            self.df_amplitude_type_label.setEnabled(enabled)
+    
+    def _on_df_amplitude_type_changed(self, text):
+        """DF模式幅值类型改变时的回调"""
+        if not self.is_direction_estimation_mode:
+            return
+        
+        self.logger.info(f"DF模式幅值类型已设置为: {text}")
+        
+        # 更新y轴标签
+        if 'amplitude' in self.plotters:
+            plotter = self.plotters['amplitude']['plotter']
+            if plotter:
+                if text == "功率P":
+                    plotter.plot_widget.setLabel('left', 'Power (P)')
+                else:
+                    plotter.plot_widget.setLabel('left', 'Amplitude (√P)')
+        
+        # 触发绘图更新
+        if self.frame_mode:
+            self._update_frame_plots('amplitude')
     
     def _start_update_loop(self):
         """启动更新循环（使用 QTimer）"""
@@ -1439,26 +1583,45 @@ class BLEHostGUI(QMainWindow):
                 # 解析数据（会更新内部状态，累积IQ数据）
                 parsed = self.data_parser.parse(data['text'])
                 
-                # 如果parse返回了完成的帧（检测到帧尾时完成）
+                # 如果parse返回了完成的帧（检测到帧尾时完成，或方向估计帧单行完成）
                 if parsed and parsed.get('frame'):
                     frame_data = parsed
                     if len(frame_data.get('channels', {})) > 0:
                         # 只在处理第一批数据时打印详细信息，避免日志过多
                         if frames_processed == 0:
                             channels = sorted(frame_data['channels'].keys())
-                            self.logger.info(
-                                f"[帧完成] index={frame_data['index']}, "
-                                f"timestamp={frame_data['timestamp_ms']}ms, "
-                                f"通道数={len(channels)}, "
-                                f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
-                            )
+                            if self.is_direction_estimation_mode:
+                                self.logger.info(
+                                    f"[方向估计帧] seq={frame_data['index']}, "
+                                    f"timestamp={frame_data['timestamp_ms']}ms, "
+                                    f"信道={channels[0] if channels else 'N/A'}, "
+                                    f"幅值={list(frame_data['channels'].values())[0].get('amplitude', 0):.2f}"
+                                )
+                            else:
+                                self.logger.info(
+                                    f"[帧完成] index={frame_data['index']}, "
+                                    f"timestamp={frame_data['timestamp_ms']}ms, "
+                                    f"通道数={len(channels)}, "
+                                    f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
+                                )
                         
                         self.data_processor.add_frame_data(frame_data)
                         frames_processed += 1
                         has_new_frame = True
                         
+                        # 方向估计帧模式下，自动更新display_channel_list为实际接收到的信道
+                        if self.is_direction_estimation_mode:
+                            channels = sorted(frame_data['channels'].keys())
+                            if channels and (not self.display_channel_list or self.display_channel_list != channels):
+                                self.display_channel_list = channels
+                                # 更新显示信道输入框
+                                if hasattr(self, 'display_channels_entry'):
+                                    self.display_channels_entry.setText(','.join(str(ch) for ch in channels))
+                                self.logger.info(f"[方向估计帧] 自动更新显示信道列表: {channels}")
+                        
                         # 更新呼吸估计的信道列表（只在第一次收到帧数据时更新，避免频繁操作）
-                        if not self.breathing_channels_initialized and hasattr(self, 'breathing_channel_combo'):
+                        # 方向估计帧模式下不启用呼吸估计
+                        if not self.is_direction_estimation_mode and not self.breathing_channels_initialized and hasattr(self, 'breathing_channel_combo'):
                             all_channels = self.data_processor.get_all_frame_channels()
                             if all_channels:
                                 current_items = [self.breathing_channel_combo.itemText(i) 
@@ -1648,20 +1811,28 @@ class BLEHostGUI(QMainWindow):
     
     def _apply_frame_settings(self, show_info: bool = True):
         """应用帧模式设置"""
+        # 根据帧类型确定最大帧数限制和默认值
+        if self.is_direction_estimation_mode:
+            max_frames_limit = config.df_max_display_max_frames
+            default_frames = config.df_default_display_max_frames
+        else:
+            max_frames_limit = config.max_display_max_frames
+            default_frames = config.default_display_max_frames
+        
         # 解析展示帧数
         try:
             display_frames = int(self.display_max_frames_entry.text())
             if display_frames > 0:
-                self.display_max_frames = min(display_frames, config.max_display_max_frames)
+                self.display_max_frames = min(display_frames, max_frames_limit)
                 self.logger.info(f"显示帧数设置为: {self.display_max_frames}")
             else:
-                self.logger.warning(f"显示帧数必须大于0，使用默认值{config.default_display_max_frames}")
-                self.display_max_frames = config.default_display_max_frames
-                self.display_max_frames_entry.setText(str(config.default_display_max_frames))
+                self.logger.warning(f"显示帧数必须大于0，使用默认值{default_frames}")
+                self.display_max_frames = default_frames
+                self.display_max_frames_entry.setText(str(default_frames))
         except ValueError:
-            self.logger.warning(f"显示帧数无效，使用默认值{config.default_display_max_frames}")
-            self.display_max_frames = config.default_display_max_frames
-            self.display_max_frames_entry.setText(str(config.default_display_max_frames))
+            self.logger.warning(f"显示帧数无效，使用默认值{default_frames}")
+            self.display_max_frames = default_frames
+            self.display_max_frames_entry.setText(str(default_frames))
         
         # 根据选择的模式解析展示信道
         mode = self.channel_mode_combo.currentText()
@@ -1776,12 +1947,22 @@ class BLEHostGUI(QMainWindow):
             )
             return
         
+        # 确定帧类型（用于文件名前缀）- 根据当前模式判断，而不是帧数据
+        # 这样可以确保切换模式后保存的文件名正确
+        if self.is_direction_estimation_mode:
+            frame_type = 'direction_estimation'
+        else:
+            frame_type = 'channel_sounding'
+        
+        # 在保存前获取frames的引用（不复制，避免大文件时占用过多内存）
+        # 注意：在后台线程中保存时，会进行深拷贝，所以这里不需要复制
+        
         # 根据设置决定是否弹出对话框
         if self.use_auto_save:
-            filepath = self.data_saver.get_auto_save_path(prefix="frames", save_all=True)
+            filepath = self.data_saver.get_auto_save_path(prefix="frames", save_all=True, frame_type=frame_type)
             self.logger.info(f"使用自动保存路径: {filepath}")
         else:
-            default_filename = self.data_saver.get_default_filename(prefix="frames", save_all=True)
+            default_filename = self.data_saver.get_default_filename(prefix="frames", save_all=True, frame_type=frame_type)
             filepath, _ = QFileDialog.getSaveFileName(
                 self, "保存所有帧数据", default_filename,
                 "JSON文件 (*.json);;所有文件 (*.*)"
@@ -1796,7 +1977,8 @@ class BLEHostGUI(QMainWindow):
                 # 通过信号在主线程中更新状态
                 self.save_status_update_signal.emit(f"正在保存 {len(frames)} 帧数据...", "color: black;")
                 
-                success = self.data_saver.save_frames(frames, filepath, max_frames=None)
+                # 传递frame_type给save_frames，确保保存的文件信息正确
+                success = self.data_saver.save_frames(frames, filepath, max_frames=None, frame_type=frame_type)
                 
                 if success:
                     # 显示简洁的保存信息（只显示文件名）
@@ -1807,17 +1989,43 @@ class BLEHostGUI(QMainWindow):
                 else:
                     # 通过信号在主线程中显示错误提示
                     self.save_error_signal.emit("保存失败，请查看日志")
+            except MemoryError as e:
+                self.logger.error(f"保存数据时内存不足: {e}", exc_info=True)
+                error_msg = f"保存失败: 内存不足，请尝试保存更少的数据或关闭其他程序"
+                self.save_error_signal.emit(error_msg)
+            except IOError as e:
+                self.logger.error(f"保存数据时IO错误: {e}", exc_info=True)
+                error_msg = f"保存失败: 文件写入错误 - {str(e)}"
+                self.save_error_signal.emit(error_msg)
             except Exception as e:
-                self.logger.error(f"保存数据时出错: {e}")
-                error_msg = str(e)
+                self.logger.error(f"保存数据时出错: {e}", exc_info=True)
+                error_msg = f"保存失败: {str(e)}"
                 # 通过信号在主线程中显示错误提示
-                self.save_error_signal.emit(f"保存失败: {error_msg}")
+                self.save_error_signal.emit(error_msg)
             finally:
                 self.is_saving = False
         
         import threading
-        save_thread = threading.Thread(target=save_in_thread, daemon=True)
+        # 使用非daemon线程，确保保存操作完成
+        # 但设置较短的超时时间，避免阻塞主程序
+        save_thread = threading.Thread(target=save_in_thread, daemon=False, name="SaveThread")
         save_thread.start()
+        
+        # 保存线程引用，防止被垃圾回收
+        if not hasattr(self, '_save_threads'):
+            self._save_threads = []
+        self._save_threads.append(save_thread)
+        
+        # 清理旧的已完成线程（避免内存泄漏）
+        self._save_threads = [t for t in self._save_threads if t.is_alive()]
+        
+        # 限制保存线程数量，避免创建过多线程
+        if len(self._save_threads) > 5:
+            # 等待最旧的线程完成
+            oldest_thread = self._save_threads[0]
+            if oldest_thread.is_alive():
+                oldest_thread.join(timeout=1.0)  # 最多等待1秒
+            self._save_threads = [t for t in self._save_threads if t.is_alive()]
     
     def _on_save_status_update(self, text: str, color_style: str):
         """在主线程中更新保存状态（由信号触发）"""
@@ -1880,15 +2088,21 @@ class BLEHostGUI(QMainWindow):
             max_frames = config.default_display_max_frames
             self.logger.warning(f"显示帧数无效，使用默认值: {max_frames}")
         
+        # 确定帧类型（用于文件名前缀）- 根据当前模式判断，而不是帧数据
+        if self.is_direction_estimation_mode:
+            frame_type = 'direction_estimation'
+        else:
+            frame_type = 'channel_sounding'
+        
         # 根据设置决定是否弹出对话框
         if self.use_auto_save:
             filepath = self.data_saver.get_auto_save_path(
-                prefix="frames", save_all=False, max_frames=max_frames
+                prefix="frames", save_all=False, max_frames=max_frames, frame_type=frame_type
             )
             self.logger.info(f"使用自动保存路径: {filepath}")
         else:
             default_filename = self.data_saver.get_default_filename(
-                prefix="frames", save_all=False, max_frames=max_frames
+                prefix="frames", save_all=False, max_frames=max_frames, frame_type=frame_type
             )
             filepath, _ = QFileDialog.getSaveFileName(
                 self, f"保存最近{max_frames}帧数据", default_filename,
@@ -1906,7 +2120,8 @@ class BLEHostGUI(QMainWindow):
                 # 通过信号在主线程中更新状态
                 self.save_status_update_signal.emit(f"正在保存最近 {saved_count} 帧数据...", "color: black;")
                 
-                success = self.data_saver.save_frames(frames, filepath, max_frames=max_frames)
+                # 传递frame_type给save_frames，确保保存的文件信息正确
+                success = self.data_saver.save_frames(frames, filepath, max_frames=max_frames, frame_type=frame_type)
                 
                 if success:
                     # 显示简洁的保存信息（只显示文件名）
@@ -1916,17 +2131,43 @@ class BLEHostGUI(QMainWindow):
                 else:
                     # 通过信号在主线程中显示错误提示
                     self.save_error_signal.emit("保存失败，请查看日志")
+            except MemoryError as e:
+                self.logger.error(f"保存数据时内存不足: {e}", exc_info=True)
+                error_msg = f"保存失败: 内存不足，请尝试保存更少的数据或关闭其他程序"
+                self.save_error_signal.emit(error_msg)
+            except IOError as e:
+                self.logger.error(f"保存数据时IO错误: {e}", exc_info=True)
+                error_msg = f"保存失败: 文件写入错误 - {str(e)}"
+                self.save_error_signal.emit(error_msg)
             except Exception as e:
-                self.logger.error(f"保存数据时出错: {e}")
-                error_msg = str(e)
+                self.logger.error(f"保存数据时出错: {e}", exc_info=True)
+                error_msg = f"保存失败: {str(e)}"
                 # 通过信号在主线程中显示错误提示
-                self.save_error_signal.emit(f"保存失败: {error_msg}")
+                self.save_error_signal.emit(error_msg)
             finally:
                 self.is_saving = False
         
         import threading
-        save_thread = threading.Thread(target=save_in_thread, daemon=True)
+        # 使用非daemon线程，确保保存操作完成
+        # 但设置较短的超时时间，避免阻塞主程序
+        save_thread = threading.Thread(target=save_in_thread, daemon=False, name="SaveThread")
         save_thread.start()
+        
+        # 保存线程引用，防止被垃圾回收
+        if not hasattr(self, '_save_threads'):
+            self._save_threads = []
+        self._save_threads.append(save_thread)
+        
+        # 清理旧的已完成线程（避免内存泄漏）
+        self._save_threads = [t for t in self._save_threads if t.is_alive()]
+        
+        # 限制保存线程数量，避免创建过多线程
+        if len(self._save_threads) > 5:
+            # 等待最旧的线程完成
+            oldest_thread = self._save_threads[0]
+            if oldest_thread.is_alive():
+                oldest_thread.join(timeout=1.0)  # 最多等待1秒
+            self._save_threads = [t for t in self._save_threads if t.is_alive()]
     
     def _on_clear_data_btn_pressed(self, event):
         """清除数据按钮按下事件"""
@@ -2086,6 +2327,19 @@ class BLEHostGUI(QMainWindow):
                 )
                 return
             
+            # 检查版本兼容性错误
+            if data.get('error') == 'version_incompatible':
+                file_version = data.get('file_version', 'unknown')
+                app_version = data.get('app_version', 'unknown')
+                error_msg = data.get('message', f'文件版本 {file_version} 高于APP版本 {app_version}')
+                InfoBarHelper.error(
+                    self,
+                    title="版本不兼容",
+                    content=error_msg
+                )
+                self.logger.error(f"版本不兼容: {error_msg}")
+                return
+            
             self.loaded_frames = data.get('frames', [])
             self.loaded_file_info = data
             self.is_loaded_mode = True
@@ -2161,7 +2415,19 @@ class BLEHostGUI(QMainWindow):
             return
 
         info_lines = []
-        info_lines.append(f"版本: {self.loaded_file_info.get('version', 'N/A')}")
+        # 显示文件版本（从loaded_file_info中获取，而不是默认值）
+        file_version = self.loaded_file_info.get('version', 'N/A')
+        info_lines.append(f"版本: {file_version}")
+        
+        # 显示帧类型和帧版本（如果有）
+        frame_type = self.loaded_file_info.get('frame_type')
+        if frame_type:
+            frame_type_name = "方向估计帧" if frame_type == 'direction_estimation' else "信道探测帧"
+            info_lines.append(f"帧类型: {frame_type_name}")
+            frame_version = self.loaded_file_info.get('frame_version')
+            if frame_version:
+                info_lines.append(f"帧版本: {frame_version}")
+        
         info_lines.append(f"保存时间: {self.loaded_file_info.get('saved_at', 'N/A')}")
         info_lines.append(f"原始总帧数: {self.loaded_file_info.get('total_frames', 0)}")
         info_lines.append(f"保存的帧数: {self.loaded_file_info.get('saved_frames', 0)}")
@@ -2447,8 +2713,23 @@ class BLEHostGUI(QMainWindow):
             # 准备该数据类型的所有通道数据
             channel_data = {}
             for ch in display_channels:
+                # DF模式下，根据选择的幅值类型决定使用哪个数据
+                if self.is_direction_estimation_mode and data_type == 'amplitude':
+                    if hasattr(self, 'df_amplitude_type_combo'):
+                        amplitude_type = self.df_amplitude_type_combo.currentText()
+                        if amplitude_type == "功率P":
+                            # 使用功率P（p_avg）
+                            actual_data_type = 'p_avg'
+                        else:
+                            # 使用RMS幅值（amplitude，即sqrt(p_avg)）
+                            actual_data_type = 'amplitude'
+                    else:
+                        actual_data_type = 'amplitude'
+                else:
+                    actual_data_type = data_type
+                
                 indices, values = self.data_processor.get_frame_data_range(
-                    ch, max_frames=self.display_max_frames, data_type=data_type
+                    ch, max_frames=self.display_max_frames, data_type=actual_data_type
                 )
                 if len(indices) > 0 and len(values) > 0:
                     channel_data[ch] = (indices, values)

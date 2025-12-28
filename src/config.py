@@ -15,8 +15,8 @@ from typing import List, Optional
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "3.3.1"
-    version_date: str = "2025-12-22"
+    version: str = "3.4.0"
+    version_date: str = "2025-12-28"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     
     # 窗口配置
@@ -45,11 +45,14 @@ class AppConfig:
     
     # 帧模式默认配置
     default_frame_mode: bool = True  # 保留用于向后兼容，但不再使用
-    default_frame_type: str = "演示帧"  # 默认帧类型
+    default_frame_type: str = "信道探测帧"  # 默认帧类型
     frame_type_options: List[str] = None  # 帧类型列表
     default_display_channels: str = "0,4,8,12,16,20,24,28,32,36,40,44,48,52,56,60,64,68,72"
     default_display_max_frames: int = 50
     max_display_max_frames: int = 100
+    # DF模式专用配置
+    df_default_display_max_frames: int = 1000  # DF模式默认显示帧数（50Hz下约20秒）
+    df_max_display_max_frames: int = 5000  # DF模式最大显示帧数
     
     # 串口配置
     default_baudrate: str = "230400"
@@ -73,8 +76,8 @@ class AppConfig:
         if self.baudrate_options is None:
             self.baudrate_options = ["9600", "19200", "38400", "57600", "115200", "230400"]
         if self.frame_type_options is None:
-            # 帧类型列表：演示帧对应原来的帧模式，其他选项可以后续添加（目前先留空）
-            self.frame_type_options = ["演示帧"]
+            # 帧类型列表：信道探测帧对应原来的帧模式，其他选项可以后续添加（目前先留空）
+            self.frame_type_options = ["信道探测帧","方向估计帧"]
 
 
 class UserSettings:

@@ -97,7 +97,8 @@ class DataProcessor:
                 self.frame_buffer[ch] = {
                     'amplitude': [], 'phase': [],
                     'local_amplitude': [], 'local_phase': [],
-                    'remote_amplitude': [], 'remote_phase': []
+                    'remote_amplitude': [], 'remote_phase': [],
+                    'p_avg': []  # DF模式：功率值
                 }
             
             # 存储所有数据类型
@@ -107,6 +108,10 @@ class DataProcessor:
             self.frame_buffer[ch]['local_phase'].append((index, local_phase))
             self.frame_buffer[ch]['remote_amplitude'].append((index, remote_amplitude))
             self.frame_buffer[ch]['remote_phase'].append((index, remote_phase))
+            
+            # DF模式：存储功率值（p_avg）
+            p_avg = channel_data.get('p_avg', 0.0)
+            self.frame_buffer[ch]['p_avg'].append((index, p_avg))
             self.logger.debug(
                 f"[数据存储] 通道{ch}: index={index}, "
                 f"amplitude={amplitude:.2f}, phase={phase:.4f}, "
@@ -162,6 +167,7 @@ class DataProcessor:
                 - 'local_phase': Local相位
                 - 'remote_amplitude': Remote幅值
                 - 'remote_phase': Remote相位
+                - 'p_avg': 功率值（DF模式）
         
         Returns:
             (index数组, 数据数组)
@@ -568,6 +574,7 @@ class DataProcessor:
                 - 'local_phase': Local相位
                 - 'remote_amplitude': Remote幅值
                 - 'remote_phase': Remote相位
+                - 'p_avg': 功率值（DF模式）
         
         Returns:
             主频率（Hz），如果计算失败返回None
@@ -597,6 +604,7 @@ class DataProcessor:
                 - 'local_phase': Local相位
                 - 'remote_amplitude': Remote幅值
                 - 'remote_phase': Remote相位
+                - 'p_avg': 功率值（DF模式）
         
         Returns:
             统计信息字典
