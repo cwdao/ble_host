@@ -2345,8 +2345,41 @@ class BLEHostGUI(QMainWindow):
             self.is_loaded_mode = True
             self.current_window_start = 0
             
+            # 根据文件中的frame_type自动设置模式
+            file_frame_type = data.get('frame_type')
+            if file_frame_type:
+                if file_frame_type == 'direction_estimation':
+                    # 设置为方向估计帧模式
+                    self.frame_type = "方向估计帧"
+                    self.is_direction_estimation_mode = True
+                    self.frame_mode = True
+                    # 更新UI中的帧类型选择
+                    if hasattr(self, 'frame_type_combo'):
+                        self.frame_type_combo.setCurrentText("方向估计帧")
+                    # 设置DF模式的默认显示帧数
+                    self.display_max_frames = config.df_default_display_max_frames
+                    if hasattr(self, 'display_max_frames_entry'):
+                        self.display_max_frames_entry.setText(str(config.df_default_display_max_frames))
+                    self.logger.info(f"根据文件内容自动设置为方向估计帧模式")
+                elif file_frame_type == 'channel_sounding':
+                    # 设置为信道探测帧模式
+                    self.frame_type = "信道探测帧"
+                    self.is_direction_estimation_mode = False
+                    self.frame_mode = True
+                    # 更新UI中的帧类型选择
+                    if hasattr(self, 'frame_type_combo'):
+                        self.frame_type_combo.setCurrentText("信道探测帧")
+                    # 设置CS模式的默认显示帧数
+                    self.display_max_frames = config.default_display_max_frames
+                    if hasattr(self, 'display_max_frames_entry'):
+                        self.display_max_frames_entry.setText(str(config.default_display_max_frames))
+                    self.logger.info(f"根据文件内容自动设置为信道探测帧模式")
+            
             # 更新文件信息显示（完整信息）
             self._update_load_file_info()
+            
+            # 更新tab的启用状态（根据帧类型）
+            self._update_plot_tabs_enabled_state()
             
             # 启用时间窗控制并更新范围
             max_start = max(0, len(self.loaded_frames) - self.display_max_frames)
@@ -2362,7 +2395,7 @@ class BLEHostGUI(QMainWindow):
             
             # 注意：不禁用文件加载tab，因为用户可以取消加载
             
-            # 更新信道列表（用于呼吸估计）
+            # 更新信道列表（用于呼吸估计和显示）
             all_channels = set()
             for frame in self.loaded_frames[:10]:  # 只检查前10帧
                 channels = frame.get('channels', {})
@@ -2373,10 +2406,26 @@ class BLEHostGUI(QMainWindow):
                     except:
                         all_channels.add(ch)
             channel_list = sorted(list(all_channels))
+            
+            # 更新呼吸估计的信道列表
             self.breathing_channel_combo.clear()
             self.breathing_channel_combo.addItems([str(ch) for ch in channel_list])
             if channel_list:
                 self.breathing_channel_combo.setCurrentIndex(0)
+            
+            # 更新显示信道列表（特别是DF模式需要自动设置）
+            if self.is_direction_estimation_mode and channel_list:
+                # DF模式：自动设置为实际接收到的信道
+                self.display_channel_list = channel_list
+                if hasattr(self, 'display_channels_entry'):
+                    self.display_channels_entry.setText(','.join(str(ch) for ch in channel_list))
+                self.logger.info(f"[加载DF文件] 自动设置显示信道列表: {channel_list}")
+            elif not self.display_channel_list and channel_list:
+                # 如果当前没有设置显示信道列表，使用文件中的信道
+                self.display_channel_list = channel_list
+                if hasattr(self, 'display_channels_entry'):
+                    self.display_channels_entry.setText(','.join(str(ch) for ch in channel_list))
+                self.logger.info(f"[加载文件] 设置显示信道列表: {channel_list}")
             
             # 呼吸估计控制面板已经常驻显示，不需要切换
             
@@ -3243,6 +3292,21 @@ class BLEHostGUI(QMainWindow):
             # 准备该数据类型的所有通道数据（使用所有帧）
             channel_data = {}
             for ch in display_channels:
+                # DF模式下，根据选择的幅值类型决定使用哪个数据（与实时模式保持一致）
+                if self.is_direction_estimation_mode and data_type == 'amplitude':
+                    if hasattr(self, 'df_amplitude_type_combo'):
+                        amplitude_type = self.df_amplitude_type_combo.currentText()
+                        if amplitude_type == "功率P":
+                            # 使用功率P（p_avg）
+                            actual_data_type = 'p_avg'
+                        else:
+                            # 使用RMS幅值（amplitude，即sqrt(p_avg)）
+                            actual_data_type = 'amplitude'
+                    else:
+                        actual_data_type = 'amplitude'
+                else:
+                    actual_data_type = data_type
+                
                 indices = []
                 values = []
                 for frame in all_frames:
@@ -3255,7 +3319,7 @@ class BLEHostGUI(QMainWindow):
                     
                     if ch_data:
                         indices.append(frame.get('index', 0))
-                        values.append(ch_data.get(data_type, 0.0))
+                        values.append(ch_data.get(actual_data_type, 0.0))
                 
                 if len(indices) > 0 and len(values) > 0:
                     channel_data[ch] = (np.array(indices), np.array(values))

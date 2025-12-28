@@ -33,7 +33,8 @@ class DataParser:
         self.re_iq_tokens = re.compile(rf"ch:(\d+):({self.NUM}),({self.NUM}),({self.NUM}),({self.NUM});")
         
         # 方向估计帧格式：$DF,<ver>,<ch>,<seq>,<ts_ms>,<p_avg>\r\n
-        self.re_direction_frame = re.compile(r"\$DF,(\d+),(\d+),(\d+),(\d+),(\d+)\s*")
+        # p_avg 可以是整数或浮点数
+        self.re_direction_frame = re.compile(r"\$DF,(\d+),(\d+),(\d+),(\d+),(\d+(?:\.\d+)?)\s*")
         
         # 缓冲区：用于存储多行的帧数据
         self.frame_buffer = {}  # {index: {'timestamp': ts, 'iq_data': {ch: [il,ql,ir,qr]}}}
