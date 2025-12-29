@@ -64,7 +64,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,  # onedir 模式：不将二进制文件打包进 exe
-    name='BLEHost-Qt-v3.4.0',
+    name='BLEHost-Qt-v3.4.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -86,6 +86,6 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='BLEHost-Qt-v3.4.0',
+    name='BLEHost-Qt-v3.4.1',
 )
 
