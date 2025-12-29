@@ -15,7 +15,7 @@ from typing import List, Optional
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "3.4.0"
+    version: str = "3.4.1"
     version_date: str = "2025-12-28"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     

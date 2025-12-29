@@ -47,11 +47,21 @@ class DataSaver:
             
             self.logger.info(f"开始保存 {len(frames_to_save)} 帧数据到: {filepath}")
             
+            # 对于大量数据，使用更小的批次大小以减少内存峰值
+            # 根据数据量动态调整批次大小
+            total_frames = len(frames_to_save)
+            if total_frames > 5000:
+                batch_size = 200  # 大量数据时使用更小的批次
+            elif total_frames > 2000:
+                batch_size = 500
+            else:
+                batch_size = 1000  # 少量数据时可以使用较大的批次
+            
+            self.logger.debug(f"使用批次大小: {batch_size}, 总帧数: {total_frames}")
+            
             # 在保存时进行深拷贝，确保数据完整性（避免在保存过程中数据被修改）
             # 对于大文件，分批处理以减少内存峰值
             frames_copy = []
-            batch_size = 1000  # 每批处理1000帧
-            total_frames = len(frames_to_save)
             
             try:
                 for i in range(0, total_frames, batch_size):
@@ -59,12 +69,31 @@ class DataSaver:
                     batch = frames_to_save[i:batch_end]
                     
                     # 处理当前批次
+                    batch_copy = []
                     for frame in batch:
-                        frames_copy.append(copy.deepcopy(frame))
+                        try:
+                            batch_copy.append(copy.deepcopy(frame))
+                        except MemoryError as e:
+                            self.logger.error(f"深拷贝第 {i + len(batch_copy)} 帧时内存不足: {e}")
+                            # 清理已处理的数据，释放内存
+                            frames_copy = None
+                            batch_copy = None
+                            raise
+                        except Exception as e:
+                            self.logger.error(f"深拷贝第 {i + len(batch_copy)} 帧时出错: {e}")
+                            frames_copy = None
+                            batch_copy = None
+                            raise
                     
-                    # 每批处理后记录进度
-                    if i % (batch_size * 10) == 0 or batch_end == total_frames:
-                        self.logger.debug(f"正在处理第 {batch_end}/{total_frames} 帧...")
+                    # 将批次添加到总列表
+                    frames_copy.extend(batch_copy)
+                    batch_copy = None  # 释放批次引用
+                    
+                    # 每批处理后记录进度（更频繁的进度更新）
+                    progress_interval = max(batch_size * 5, 1000)  # 至少每1000帧更新一次
+                    if i % progress_interval == 0 or batch_end == total_frames:
+                        progress_pct = (batch_end / total_frames * 100) if total_frames > 0 else 0
+                        self.logger.info(f"正在处理第 {batch_end}/{total_frames} 帧 ({progress_pct:.1f}%)...")
             except MemoryError as e:
                 self.logger.error(f"保存时内存不足: {e}")
                 # 清理已处理的数据，释放内存
@@ -117,12 +146,23 @@ class DataSaver:
             # 确保目录存在
             os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
             
-            # 保存为JSON（使用更紧凑的格式以减少文件大小和写入时间）
-            # 对于大文件，可以考虑使用json.dump的separators参数
+            # 保存为JSON
+            # 对于大文件，使用更紧凑的格式以减少文件大小和写入时间
             self.logger.debug("开始写入JSON文件...")
             try:
+                # 对于大文件（>5000帧），使用更紧凑的格式（无缩进）以减少内存和写入时间
+                use_compact = len(frames_to_save) > 5000
+                
                 with open(filepath, 'w', encoding='utf-8') as f:
-                    json.dump(save_data, f, indent=2, ensure_ascii=False)
+                    if use_compact:
+                        # 紧凑格式：无缩进，减少文件大小和写入时间
+                        json.dump(save_data, f, separators=(',', ':'), ensure_ascii=False)
+                    else:
+                        # 可读格式：有缩进，便于查看
+                        json.dump(save_data, f, indent=2, ensure_ascii=False)
+                
+                # 写入完成后立即释放save_data引用，帮助GC回收内存
+                save_data = None
             except IOError as e:
                 self.logger.error(f"写入文件失败: {e}")
                 raise

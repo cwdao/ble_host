@@ -212,11 +212,31 @@ class BLEHostGUI(QMainWindow):
     
     def _setup_logging(self):
         """设置日志"""
+        import sys
+        
+        # 创建日志目录
+        log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # 日志文件名（带时间戳）
+        log_filename = os.path.join(log_dir, f'ble_host_{datetime.now().strftime("%Y%m%d")}.log')
+        
+        # 配置日志格式
+        log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        date_format = '%Y-%m-%d %H:%M:%S'
+        
+        # 配置日志：同时输出到控制台和文件
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            format=log_format,
+            datefmt=date_format,
+            handlers=[
+                logging.StreamHandler(sys.stdout),  # 控制台输出
+                logging.FileHandler(log_filename, encoding='utf-8', mode='a')  # 文件输出
+            ]
         )
         self.logger = logging.getLogger(__name__)
+        self.logger.info(f"日志文件: {log_filename}")
     
     def _create_widgets(self):
         """创建GUI组件"""
@@ -3498,17 +3518,60 @@ class BLEHostGUI(QMainWindow):
     
     def closeEvent(self, event):
         """窗口关闭事件"""
+        self.logger.info("=" * 60)
+        self.logger.info("程序开始退出...")
+        self.logger.info(f"退出原因: 用户关闭窗口")
+        self.logger.info(f"当前状态 - 运行中: {self.is_running}, 保存中: {self.is_saving}")
+        
         # 停止所有定时器
         if hasattr(self, 'update_timer'):
             self.update_timer.stop()
+            self.logger.debug("已停止更新定时器")
         if hasattr(self, 'breathing_update_timer') and self.breathing_update_timer:
             self.breathing_update_timer.stop()
+            self.logger.debug("已停止呼吸估计定时器")
         if hasattr(self, 'freq_update_timer') and self.freq_update_timer:
             self.freq_update_timer.stop()
+            self.logger.debug("已停止频率更新定时器")
         
+        # 断开串口连接
         if self.is_running:
             if self.serial_reader:
+                self.logger.info("正在断开串口连接...")
                 self.serial_reader.disconnect()
+                self.logger.info("串口已断开")
+        
+        # 等待保存线程完成（最多等待30秒）
+        if hasattr(self, '_save_threads') and self._save_threads:
+            alive_threads = [t for t in self._save_threads if t.is_alive()]
+            if alive_threads:
+                self.logger.info(f"检测到 {len(alive_threads)} 个保存线程仍在运行，等待完成...")
+                max_wait_time = 30.0  # 最多等待30秒
+                start_time = time.time()
+                
+                for thread in alive_threads:
+                    remaining_time = max_wait_time - (time.time() - start_time)
+                    if remaining_time <= 0:
+                        self.logger.warning("等待保存线程超时，强制退出")
+                        break
+                    
+                    self.logger.info(f"等待保存线程 '{thread.name}' 完成（剩余时间: {remaining_time:.1f}秒）...")
+                    thread.join(timeout=min(remaining_time, 10.0))  # 每次最多等待10秒
+                    
+                    if thread.is_alive():
+                        self.logger.warning(f"保存线程 '{thread.name}' 仍在运行，但已超时")
+                    else:
+                        self.logger.info(f"保存线程 '{thread.name}' 已完成")
+        
+        # 记录退出信息
+        self.logger.info("程序正常退出")
+        self.logger.info("=" * 60)
+        
+        # 确保日志刷新到文件
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.FileHandler):
+                handler.flush()
+        
         event.accept()
 
 
@@ -3679,6 +3742,36 @@ def get_app_font(size: Optional[int] = None, bold: bool = False) -> QFont:
 
 def main():
     """主函数"""
+    # 设置全局异常处理
+    def exception_handler(exc_type, exc_value, exc_traceback):
+        """全局异常处理器"""
+        if issubclass(exc_type, KeyboardInterrupt):
+            # 用户中断，正常退出
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        # 记录未捕获的异常
+        logger = logging.getLogger(__name__)
+        logger.critical(
+            "=" * 60,
+            exc_info=(exc_type, exc_value, exc_traceback)
+        )
+        logger.critical("程序因未捕获的异常而退出")
+        logger.critical(f"异常类型: {exc_type.__name__}")
+        logger.critical(f"异常信息: {exc_value}")
+        logger.critical("=" * 60)
+        
+        # 确保日志刷新到文件
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.FileHandler):
+                handler.flush()
+        
+        # 调用默认异常处理器
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+    
+    # 安装全局异常处理器
+    sys.excepthook = exception_handler
+    
     # 创建应用程序
     app = QApplication(sys.argv)
     
@@ -3706,11 +3799,35 @@ def main():
         logging.getLogger(__name__).warning(f"无法设置图标: {e}")
     
     # 创建主窗口
-    window = BLEHostGUI()
-    window.show()
-    
-    # 运行应用程序
-    sys.exit(app.exec())
+    try:
+        window = BLEHostGUI()
+        window.show()
+        
+        # 运行应用程序
+        exit_code = app.exec()
+        
+        # 记录正常退出
+        logger = logging.getLogger(__name__)
+        logger.info(f"应用程序正常退出，退出代码: {exit_code}")
+        
+        # 确保日志刷新到文件
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.FileHandler):
+                handler.flush()
+        
+        sys.exit(exit_code)
+    except Exception as e:
+        # 捕获创建窗口时的异常
+        logger = logging.getLogger(__name__)
+        logger.critical(f"创建主窗口时发生异常: {e}", exc_info=True)
+        logger.critical("程序异常退出")
+        
+        # 确保日志刷新到文件
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.FileHandler):
+                handler.flush()
+        
+        sys.exit(1)
 
 
 if __name__ == "__main__":
