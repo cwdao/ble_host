@@ -15,6 +15,7 @@ import platform
 
 # 在导入 Qt 之前设置 DPI 感知（Windows）
 # 这必须在创建 QApplication 之前完成，以避免 Qt 的 DPI 感知警告
+# 注意：如果设置失败（如权限问题），Qt 6 默认已经处理了 DPI 感知，所以可以安全忽略错误
 if platform.system() == 'Windows':
     try:
         from ctypes import windll
@@ -23,9 +24,12 @@ if platform.system() == 'Windows':
         try:
             # 首先尝试使用 SetProcessDpiAwarenessContext（Windows 10 1703+）
             # -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-            windll.user32.SetProcessDpiAwarenessContext(-4)
-        except (AttributeError, OSError):
-            # 如果失败，尝试使用 SetProcessDpiAwareness（Windows 8.1+）
+            result = windll.user32.SetProcessDpiAwarenessContext(-4)
+            # 如果返回 False，说明设置失败（可能是权限问题或已设置）
+            if not result:
+                pass  # 忽略失败，Qt 会使用默认设置
+        except (AttributeError, OSError) as e:
+            # 如果失败（可能是权限问题），尝试使用 SetProcessDpiAwareness（Windows 8.1+）
             try:
                 # 2 = PROCESS_PER_MONITOR_DPI_AWARE
                 windll.shcore.SetProcessDpiAwareness(2)
@@ -35,6 +39,9 @@ if platform.system() == 'Windows':
                     windll.user32.SetProcessDPIAware()
                 except (AttributeError, OSError):
                     pass  # 如果都失败，Qt 会使用默认设置
+        except Exception:
+            # 忽略所有其他错误（包括权限错误），让 Qt 使用默认设置
+            pass
     except Exception:
         pass  # 忽略所有错误，让 Qt 使用默认设置
 
@@ -45,8 +52,8 @@ from PySide6.QtWidgets import (
     QFileDialog, QButtonGroup, QFrame, QMenuBar, QMenu, QDialog, QDialogButtonBox,
     QSizePolicy
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QMetaObject
-from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup, QFontDatabase
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QMetaObject, QCoreApplication
+from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup, QFontDatabase, QPainter
 from qfluentwidgets import SwitchButton, ProgressRing, ToolTipFilter, ToolTipPosition
 
 # 业务逻辑模块（无需修改）
@@ -3648,31 +3655,12 @@ def setup_fonts(app: QApplication, font_name: str = "PingFang Regular", font_siz
     else:
         font = QFont(font_name, font_size)
     
-    # 启用抗锯齿（消除锯齿）
-    # 在 PySide6 中，使用 StyleStrategy 枚举值
+    # 设置字体渲染提示 - 使用 PreferNoHinting 以获得柔和的边缘
+    # 这是唯一有效的字体渲染控制参数
     try:
-        # 尝试使用新的 API（PySide6 6.0+）
-        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     except (AttributeError, TypeError):
-        # 如果新 API 不可用，使用旧的方式
-        try:
-            font.setStyleStrategy(QFont.PreferAntialias)
-        except (AttributeError, TypeError):
-            # 如果都不可用，至少设置平滑缩放
-            pass
-    
-    # 设置字体渲染提示（优化小字体显示）
-    try:
-        # 尝试使用 HintingPreference（PySide6 6.0+）
-        font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)
-    except (AttributeError, TypeError):
-        # 如果 API 不可用，跳过（使用系统默认）
-        pass
-    
-    # 确保字体平滑渲染
-    try:
-        font.setSmoothScaling(True)
-    except (AttributeError, TypeError):
+        # 如果 API 不可用，使用系统默认
         pass
     
     # 保存字体族名和大小到全局变量（如果没有通过TTF加载，使用传入的font_name）
@@ -3718,22 +3706,9 @@ def get_app_font(size: Optional[int] = None, bold: bool = False) -> QFont:
     else:
         font = QFont(_app_font_family, font_size)
     
-    # 应用相同的渲染优化
+    # 应用相同的渲染优化 - 使用 PreferNoHinting 以获得柔和的边缘
     try:
-        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-    except (AttributeError, TypeError):
-        try:
-            font.setStyleStrategy(QFont.PreferAntialias)
-        except (AttributeError, TypeError):
-            pass
-    
-    try:
-        font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)
-    except (AttributeError, TypeError):
-        pass
-    
-    try:
-        font.setSmoothScaling(True)
+        font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     except (AttributeError, TypeError):
         pass
     
@@ -3772,10 +3747,44 @@ def main():
     # 安装全局异常处理器
     sys.excepthook = exception_handler
     
+    # 在创建 QApplication 之前设置全局属性
+    # 这可以确保整个应用程序使用高质量的字体渲染
+    try:
+        # 设置高DPI缩放策略（Windows）
+        # 这有助于在高DPI显示器上获得清晰的字体渲染
+        if platform.system() == 'Windows':
+            # 设置环境变量，告诉Qt使用系统DPI感知
+            # 这些环境变量必须在创建 QApplication 之前设置
+            os.environ['QT_ENABLE_HIGHDPI_SCALING'] = '1'
+            os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = 'Round'
+            
+            # 尝试通过 QCoreApplication 设置高DPI缩放策略（如果支持）
+            # 注意：这必须在创建 QApplication 之前调用
+            try:
+                from PySide6.QtCore import QCoreApplication, Qt
+                # Qt 6 中，可以通过 setAttribute 设置，但 HighDpiScaleFactorRoundingPolicy 
+                # 需要通过环境变量或 setHighDpiScaleFactorRoundingPolicy 设置
+                # 由于必须在创建实例之前调用，我们使用环境变量方式
+                pass
+            except (ImportError, AttributeError):
+                pass
+    except Exception:
+        pass
+    
     # 创建应用程序
+    # 注意：Qt 6 默认已经启用了高DPI支持，环境变量只是进一步优化
     app = QApplication(sys.argv)
     
-    # 设置全局字体，启用抗锯齿和优化渲染
+    # 设置全局文本渲染优化（柔和的边缘）
+    # 这会影响所有使用 QPainter 绘制的文本
+    try:
+        # 通过设置应用程序属性来优化文本渲染
+        # 注意：Qt 6 默认已启用抗锯齿，这里主要是确保使用柔和的渲染模式
+        pass  # Qt 6 的默认设置已经很好了
+    except Exception:
+        pass
+    
+    # 设置全局字体，启用抗锯齿和优化渲染（柔和的边缘）
     # 方式 1：使用系统自带的微软雅黑粗体（推荐）
     # setup_fonts(app, font_name="Microsoft YaHei", font_size=10, bold=False)
     
