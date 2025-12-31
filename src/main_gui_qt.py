@@ -194,6 +194,10 @@ class BLEHostGUI(QMainWindow):
             self.display_channels_entry.setText(config.default_display_channels)
             self._apply_frame_settings(show_info=False)  # 初始化时不显示提示
         
+        # 根据帧类型初始化呼吸估计器的默认参数（在UI创建完成后）
+        if hasattr(self, 'breathing_estimator') and hasattr(self, 'breathing_sampling_rate_entry'):
+            self._update_breathing_params_from_frame_type()
+        
         # 应用初始主题（跟随系统）- 初始化时不显示提示
         # 注意：这里不调用 _on_theme_mode_changed，因为界面还没创建完成
         # 主题会在 _create_settings_tab 中统一初始化
@@ -329,9 +333,20 @@ class BLEHostGUI(QMainWindow):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(5, 5, 5, 5)
         
-        # 呼吸估计控制区域（常驻显示）
+        # 呼吸估计控制区域（改为Tab Widget）
         self.breathing_control_group = QGroupBox("Breathing Estimation Control")
         breathing_control_layout = QVBoxLayout(self.breathing_control_group)
+        
+        # 创建Tab Widget
+        self.breathing_control_tabs = QTabWidget()
+        tab_font = get_app_font(10)
+        self.breathing_control_tabs.setFont(tab_font)
+        
+        # Basic Tab
+        basic_tab = QWidget()
+        basic_layout = QVBoxLayout(basic_tab)
+        basic_layout.setContentsMargins(5, 5, 5, 5)
+        basic_layout.setSpacing(5)
         
         # 数据类型选择
         data_type_layout = QHBoxLayout()
@@ -342,7 +357,7 @@ class BLEHostGUI(QMainWindow):
         self.breathing_data_type_combo = QComboBox()
         self.breathing_data_type_combo.addItems(["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"])
         data_type_layout.addWidget(self.breathing_data_type_combo)
-        breathing_control_layout.addLayout(data_type_layout)
+        basic_layout.addLayout(data_type_layout)
         
         # 信道选择
         channel_layout = QHBoxLayout()
@@ -352,7 +367,7 @@ class BLEHostGUI(QMainWindow):
         channel_layout.addWidget(channel_label)
         self.breathing_channel_combo = QComboBox()
         channel_layout.addWidget(self.breathing_channel_combo)
-        breathing_control_layout.addLayout(channel_layout)
+        basic_layout.addLayout(channel_layout)
         
         # 阈值输入
         threshold_layout = QHBoxLayout()
@@ -365,7 +380,7 @@ class BLEHostGUI(QMainWindow):
         self.breathing_threshold_entry.setToolTip("输入0~1之间的值")
         self.breathing_threshold_entry.installEventFilter(ToolTipFilter(self.breathing_threshold_entry, 0, ToolTipPosition.TOP))
         threshold_layout.addWidget(self.breathing_threshold_entry)
-        breathing_control_layout.addLayout(threshold_layout)
+        basic_layout.addLayout(threshold_layout)
         
         # 实时更新间隔（N秒）
         interval_layout = QHBoxLayout()
@@ -378,11 +393,113 @@ class BLEHostGUI(QMainWindow):
         self.breathing_update_interval_entry.setToolTip("输入大于0的值（秒）")
         self.breathing_update_interval_entry.installEventFilter(ToolTipFilter(self.breathing_update_interval_entry, 0, ToolTipPosition.TOP))
         interval_layout.addWidget(self.breathing_update_interval_entry)
-        breathing_control_layout.addLayout(interval_layout)
+        basic_layout.addLayout(interval_layout)
         
-        # Update按钮（控制所有参数，放在更新间隔下面）
+        basic_layout.addStretch()
+        self.breathing_control_tabs.addTab(basic_tab, "基础设置")
+        
+        # Advanced Tab
+        advanced_tab = QWidget()
+        advanced_layout = QVBoxLayout(advanced_tab)
+        advanced_layout.setContentsMargins(5, 5, 5, 5)
+        advanced_layout.setSpacing(5)
+        
+        # 采样率
+        sampling_rate_layout = QHBoxLayout()
+        sampling_rate_label = QLabel("采样率 (Hz):")
+        sampling_rate_label.setToolTip("信号采样率，方向估计帧为50Hz，信道探测帧为2Hz")
+        sampling_rate_label.installEventFilter(ToolTipFilter(sampling_rate_label, 0, ToolTipPosition.TOP))
+        sampling_rate_layout.addWidget(sampling_rate_label)
+        self.breathing_sampling_rate_entry = QLineEdit("2.0")
+        self.breathing_sampling_rate_entry.setMaximumWidth(100)
+        self.breathing_sampling_rate_entry.setToolTip("输入大于0的值（Hz）")
+        self.breathing_sampling_rate_entry.installEventFilter(ToolTipFilter(self.breathing_sampling_rate_entry, 0, ToolTipPosition.TOP))
+        sampling_rate_layout.addWidget(self.breathing_sampling_rate_entry)
+        advanced_layout.addLayout(sampling_rate_layout)
+        
+        # 中值滤波窗口
+        median_filter_layout = QHBoxLayout()
+        median_filter_label = QLabel("中值滤波窗口:")
+        median_filter_label.setToolTip("中值滤波窗口大小，方向估计帧为10，信道探测帧为3")
+        median_filter_label.installEventFilter(ToolTipFilter(median_filter_label, 0, ToolTipPosition.TOP))
+        median_filter_layout.addWidget(median_filter_label)
+        self.breathing_median_filter_entry = QLineEdit("3")
+        self.breathing_median_filter_entry.setMaximumWidth(100)
+        self.breathing_median_filter_entry.setToolTip("输入大于0的整数")
+        self.breathing_median_filter_entry.installEventFilter(ToolTipFilter(self.breathing_median_filter_entry, 0, ToolTipPosition.TOP))
+        median_filter_layout.addWidget(self.breathing_median_filter_entry)
+        advanced_layout.addLayout(median_filter_layout)
+        
+        # 高通滤波器参数
+        highpass_cutoff_layout = QHBoxLayout()
+        highpass_cutoff_label = QLabel("高通截止频率 (Hz):")
+        highpass_cutoff_label.setToolTip("高通滤波器截止频率，用于去除直流和低频趋势")
+        highpass_cutoff_label.installEventFilter(ToolTipFilter(highpass_cutoff_label, 0, ToolTipPosition.TOP))
+        highpass_cutoff_layout.addWidget(highpass_cutoff_label)
+        self.breathing_highpass_cutoff_entry = QLineEdit("0.05")
+        self.breathing_highpass_cutoff_entry.setMaximumWidth(100)
+        self.breathing_highpass_cutoff_entry.setToolTip("输入大于0的值（Hz）")
+        self.breathing_highpass_cutoff_entry.installEventFilter(ToolTipFilter(self.breathing_highpass_cutoff_entry, 0, ToolTipPosition.TOP))
+        highpass_cutoff_layout.addWidget(self.breathing_highpass_cutoff_entry)
+        advanced_layout.addLayout(highpass_cutoff_layout)
+        
+        highpass_order_layout = QHBoxLayout()
+        highpass_order_label = QLabel("高通滤波器阶数:")
+        highpass_order_label.setToolTip("高通滤波器的阶数")
+        highpass_order_label.installEventFilter(ToolTipFilter(highpass_order_label, 0, ToolTipPosition.TOP))
+        highpass_order_layout.addWidget(highpass_order_label)
+        self.breathing_highpass_order_entry = QLineEdit("2")
+        self.breathing_highpass_order_entry.setMaximumWidth(100)
+        self.breathing_highpass_order_entry.setToolTip("输入大于0的整数")
+        self.breathing_highpass_order_entry.installEventFilter(ToolTipFilter(self.breathing_highpass_order_entry, 0, ToolTipPosition.TOP))
+        highpass_order_layout.addWidget(self.breathing_highpass_order_entry)
+        advanced_layout.addLayout(highpass_order_layout)
+        
+        # 带通滤波器参数
+        bandpass_lowcut_layout = QHBoxLayout()
+        bandpass_lowcut_label = QLabel("带通低截止频率 (Hz):")
+        bandpass_lowcut_label.setToolTip("带通滤波器的低截止频率")
+        bandpass_lowcut_label.installEventFilter(ToolTipFilter(bandpass_lowcut_label, 0, ToolTipPosition.TOP))
+        bandpass_lowcut_layout.addWidget(bandpass_lowcut_label)
+        self.breathing_bandpass_lowcut_entry = QLineEdit("0.1")
+        self.breathing_bandpass_lowcut_entry.setMaximumWidth(100)
+        self.breathing_bandpass_lowcut_entry.setToolTip("输入大于0的值（Hz）")
+        self.breathing_bandpass_lowcut_entry.installEventFilter(ToolTipFilter(self.breathing_bandpass_lowcut_entry, 0, ToolTipPosition.TOP))
+        bandpass_lowcut_layout.addWidget(self.breathing_bandpass_lowcut_entry)
+        advanced_layout.addLayout(bandpass_lowcut_layout)
+        
+        bandpass_highcut_layout = QHBoxLayout()
+        bandpass_highcut_label = QLabel("带通高截止频率 (Hz):")
+        bandpass_highcut_label.setToolTip("带通滤波器的高截止频率")
+        bandpass_highcut_label.installEventFilter(ToolTipFilter(bandpass_highcut_label, 0, ToolTipPosition.TOP))
+        bandpass_highcut_layout.addWidget(bandpass_highcut_label)
+        self.breathing_bandpass_highcut_entry = QLineEdit("0.35")
+        self.breathing_bandpass_highcut_entry.setMaximumWidth(100)
+        self.breathing_bandpass_highcut_entry.setToolTip("输入大于0的值（Hz），应大于低截止频率")
+        self.breathing_bandpass_highcut_entry.installEventFilter(ToolTipFilter(self.breathing_bandpass_highcut_entry, 0, ToolTipPosition.TOP))
+        bandpass_highcut_layout.addWidget(self.breathing_bandpass_highcut_entry)
+        advanced_layout.addLayout(bandpass_highcut_layout)
+        
+        bandpass_order_layout = QHBoxLayout()
+        bandpass_order_label = QLabel("带通滤波器阶数:")
+        bandpass_order_label.setToolTip("带通滤波器的阶数")
+        bandpass_order_label.installEventFilter(ToolTipFilter(bandpass_order_label, 0, ToolTipPosition.TOP))
+        bandpass_order_layout.addWidget(bandpass_order_label)
+        self.breathing_bandpass_order_entry = QLineEdit("2")
+        self.breathing_bandpass_order_entry.setMaximumWidth(100)
+        self.breathing_bandpass_order_entry.setToolTip("输入大于0的整数")
+        self.breathing_bandpass_order_entry.installEventFilter(ToolTipFilter(self.breathing_bandpass_order_entry, 0, ToolTipPosition.TOP))
+        bandpass_order_layout.addWidget(self.breathing_bandpass_order_entry)
+        advanced_layout.addLayout(bandpass_order_layout)
+        
+        advanced_layout.addStretch()
+        self.breathing_control_tabs.addTab(advanced_tab, "进阶设置")
+        
+        breathing_control_layout.addWidget(self.breathing_control_tabs)
+        
+        # Update按钮（控制所有参数，放在tab下面）
         update_layout = QHBoxLayout()
-        self.update_all_btn = QPushButton("更新参数")
+        self.update_all_btn = QPushButton("应用参数")
         self.update_all_btn.setStyleSheet(self._get_button_style("#2196F3"))
         self.update_all_btn.clicked.connect(self._on_update_all_breathing_params)
         update_layout.addWidget(self.update_all_btn)
@@ -1466,6 +1583,10 @@ class BLEHostGUI(QMainWindow):
         
         self.logger.info(f"帧类型已设置为: {self.frame_type}, 方向估计模式: {self.is_direction_estimation_mode}")
         
+        # 根据帧类型更新呼吸估计器的默认参数
+        if hasattr(self, 'breathing_estimator'):
+            self._update_breathing_params_from_frame_type()
+        
         # 如果切换到方向估计帧模式，需要更新tab的启用状态
         if old_is_direction_mode != self.is_direction_estimation_mode:
             self._update_plot_tabs_enabled_state()
@@ -2402,6 +2523,10 @@ class BLEHostGUI(QMainWindow):
                         self.display_max_frames_entry.setText(str(config.default_display_max_frames))
                     self.logger.info(f"根据文件内容自动设置为信道探测帧模式")
             
+            # 根据帧类型更新呼吸估计器的默认参数
+            if hasattr(self, 'breathing_estimator'):
+                self._update_breathing_params_from_frame_type()
+            
             # 更新文件信息显示（完整信息）
             self._update_load_file_info()
             
@@ -3060,9 +3185,32 @@ class BLEHostGUI(QMainWindow):
         # 移除自动更新，改为手动Update按钮控制
         pass
     
+    def _update_breathing_params_from_frame_type(self):
+        """根据帧类型更新呼吸估计器的默认参数，并更新UI显示"""
+        # 根据帧类型设置默认参数
+        self.breathing_estimator.set_default_params_for_frame_type(self.frame_type)
+        
+        # 更新UI中的参数显示
+        if hasattr(self, 'breathing_sampling_rate_entry'):
+            self.breathing_sampling_rate_entry.setText(str(self.breathing_estimator.sampling_rate))
+        if hasattr(self, 'breathing_median_filter_entry'):
+            self.breathing_median_filter_entry.setText(str(self.breathing_estimator.median_filter_window))
+        if hasattr(self, 'breathing_highpass_cutoff_entry'):
+            self.breathing_highpass_cutoff_entry.setText(str(self.breathing_estimator.highpass_cutoff))
+        if hasattr(self, 'breathing_highpass_order_entry'):
+            self.breathing_highpass_order_entry.setText(str(self.breathing_estimator.highpass_order))
+        if hasattr(self, 'breathing_bandpass_lowcut_entry'):
+            self.breathing_bandpass_lowcut_entry.setText(str(self.breathing_estimator.bandpass_lowcut))
+        if hasattr(self, 'breathing_bandpass_highcut_entry'):
+            self.breathing_bandpass_highcut_entry.setText(str(self.breathing_estimator.bandpass_highcut))
+        if hasattr(self, 'breathing_bandpass_order_entry'):
+            self.breathing_bandpass_order_entry.setText(str(self.breathing_estimator.bandpass_order))
+        
+        self.logger.info(f"已根据帧类型 '{self.frame_type}' 更新呼吸估计参数UI")
+    
     def _on_update_all_breathing_params(self):
-        """Update按钮：提交所有参数"""
-        # 更新更新间隔
+        """应用按钮：提交所有参数（包括基础设置和进阶设置）"""
+        # 1. 验证并更新更新间隔
         try:
             interval = float(self.breathing_update_interval_entry.text())
             if interval > 0:
@@ -3089,20 +3237,77 @@ class BLEHostGUI(QMainWindow):
             self.breathing_update_interval_entry.setText(str(self.breathing_update_interval))
             return
         
-        # 获取当前参数信息
+        # 2. 验证并更新进阶设置中的滤波器参数
+        try:
+            # 采样率
+            sampling_rate = float(self.breathing_sampling_rate_entry.text())
+            if sampling_rate <= 0:
+                raise ValueError("采样率必须大于0")
+            self.breathing_estimator.sampling_rate = sampling_rate
+            
+            # 中值滤波窗口
+            median_filter_window = int(float(self.breathing_median_filter_entry.text()))
+            if median_filter_window <= 0:
+                raise ValueError("中值滤波窗口必须大于0")
+            self.breathing_estimator.median_filter_window = median_filter_window
+            
+            # 高通滤波器参数
+            highpass_cutoff = float(self.breathing_highpass_cutoff_entry.text())
+            if highpass_cutoff <= 0:
+                raise ValueError("高通截止频率必须大于0")
+            self.breathing_estimator.highpass_cutoff = highpass_cutoff
+            
+            highpass_order = int(float(self.breathing_highpass_order_entry.text()))
+            if highpass_order <= 0:
+                raise ValueError("高通滤波器阶数必须大于0")
+            self.breathing_estimator.highpass_order = highpass_order
+            
+            # 带通滤波器参数
+            bandpass_lowcut = float(self.breathing_bandpass_lowcut_entry.text())
+            if bandpass_lowcut <= 0:
+                raise ValueError("带通低截止频率必须大于0")
+            self.breathing_estimator.bandpass_lowcut = bandpass_lowcut
+            
+            bandpass_highcut = float(self.breathing_bandpass_highcut_entry.text())
+            if bandpass_highcut <= 0:
+                raise ValueError("带通高截止频率必须大于0")
+            if bandpass_highcut <= bandpass_lowcut:
+                raise ValueError("带通高截止频率必须大于低截止频率")
+            self.breathing_estimator.bandpass_highcut = bandpass_highcut
+            
+            bandpass_order = int(float(self.breathing_bandpass_order_entry.text()))
+            if bandpass_order <= 0:
+                raise ValueError("带通滤波器阶数必须大于0")
+            self.breathing_estimator.bandpass_order = bandpass_order
+            
+        except ValueError as e:
+            InfoBarHelper.warning(
+                self,
+                title="参数错误",
+                content=f"滤波器参数错误: {str(e)}"
+            )
+            # 恢复为当前estimator的值
+            self._update_breathing_params_from_frame_type()
+            return
+        
+        # 3. 获取当前参数信息
         data_type = self.breathing_data_type_combo.currentText()
         channel = self.breathing_channel_combo.currentText()
         threshold = self.breathing_threshold_entry.text()
         
-        # 显示信息提示
-        params_info = f"数据类型: {data_type}, 信道: {channel}, 阈值: {threshold}, 更新间隔: {interval}秒"
-        InfoBarHelper.information(
+        # 4. 显示信息提示
+        params_info = (
+            f"数据类型: {data_type}, 信道: {channel}, 阈值: {threshold}, "
+            f"更新间隔: {interval}秒\n"
+            f"采样率: {sampling_rate}Hz, 中值滤波窗口: {median_filter_window}"
+        )
+        InfoBarHelper.success(
             self,
-            title="呼吸估计参数已更新",
+            title="参数已应用",
             content=params_info
         )
         
-        # 更新呼吸估计（根据当前模式）
+        # 5. 更新呼吸估计（根据当前模式）
         if self.is_loaded_mode:
             self._update_loaded_mode_plots()
         else:

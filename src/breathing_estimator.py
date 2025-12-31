@@ -28,7 +28,7 @@ class BreathingEstimator:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
-        # 默认参数
+        # 默认参数（信道探测帧）
         self.sampling_rate = 2.0  # Hz
         self.median_filter_window = 3
         self.highpass_cutoff = 0.05  # Hz
@@ -40,6 +40,29 @@ class BreathingEstimator:
         self.breath_freq_high = 0.35  # Hz
         self.total_freq_low = 0.05  # Hz
         self.total_freq_high = 0.8  # Hz
+    
+    def set_default_params_for_frame_type(self, frame_type: str):
+        """
+        根据帧类型设置默认参数
+        
+        Args:
+            frame_type: 帧类型字符串，如 "方向估计帧" 或 "信道探测帧"
+        """
+        if frame_type == "方向估计帧":
+            # 方向估计帧的默认参数
+            self.sampling_rate = 50.0  # Hz
+            self.median_filter_window = 10
+            # 其他参数保持不变
+        else:
+            # 信道探测帧的默认参数
+            self.sampling_rate = 2.0  # Hz
+            self.median_filter_window = 3
+            # 其他参数保持不变
+        
+        self.logger.info(
+            f"已根据帧类型 '{frame_type}' 设置默认参数: "
+            f"采样率={self.sampling_rate}Hz, 中值滤波窗口={self.median_filter_window}"
+        )
     
     def process_signal(self, signal: np.ndarray, data_type: str = 'amplitude') -> Dict:
         """
