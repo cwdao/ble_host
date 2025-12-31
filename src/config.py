@@ -71,6 +71,42 @@ class AppConfig:
     default_save_directory: str = "./saveData"  # 默认保存目录
     use_auto_save_path: bool = True  # 是否使用自动保存路径（不弹出对话框）
     
+    # 呼吸估计默认参数配置
+    # 基础设置默认值（所有帧类型共用）
+    breathing_default_threshold: float = 0.6  # 呼吸检测阈值
+    breathing_default_update_interval: float = 2.0  # 呼吸估计更新间隔（秒）
+    
+    # 可视化设置默认值
+    breathing_default_show_median: bool = True  # 默认显示中值滤波
+    breathing_default_show_highpass: bool = False  # 默认不显示中值+高通滤波
+    breathing_default_show_bandpass: bool = False  # 默认不显示中值+高通+带通滤波
+    
+    # 信道探测帧的默认参数
+    breathing_cs_sampling_rate: float = 2.0  # Hz
+    breathing_cs_median_filter_window: int = 3
+    breathing_cs_highpass_cutoff: float = 0.05  # Hz
+    breathing_cs_highpass_order: int = 2
+    breathing_cs_bandpass_lowcut: float = 0.1  # Hz
+    breathing_cs_bandpass_highcut: float = 0.35  # Hz
+    breathing_cs_bandpass_order: int = 2
+    breathing_cs_breath_freq_low: float = 0.1  # Hz
+    breathing_cs_breath_freq_high: float = 0.35  # Hz
+    breathing_cs_total_freq_low: float = 0.05  # Hz
+    breathing_cs_total_freq_high: float = 0.8  # Hz
+    
+    # 方向估计帧的默认参数
+    breathing_df_sampling_rate: float = 50.0  # Hz
+    breathing_df_median_filter_window: int = 10
+    breathing_df_highpass_cutoff: float = 0.05  # Hz
+    breathing_df_highpass_order: int = 2
+    breathing_df_bandpass_lowcut: float = 0.1  # Hz
+    breathing_df_bandpass_highcut: float = 0.35  # Hz
+    breathing_df_bandpass_order: int = 2
+    breathing_df_breath_freq_low: float = 0.1  # Hz
+    breathing_df_breath_freq_high: float = 0.35  # Hz
+    breathing_df_total_freq_low: float = 0.05  # Hz
+    breathing_df_total_freq_high: float = 0.8  # Hz
+    
     def __post_init__(self):
         """初始化后处理"""
         if self.baudrate_options is None:

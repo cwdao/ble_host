@@ -14,53 +14,67 @@ try:
         highpass_filter_zero_phase, 
         bandpass_filter_zero_phase
     )
+    from .config import config
 except ImportError:
     from utils.signal_algrithom import (
         median_filter_1d, 
         highpass_filter_zero_phase, 
         bandpass_filter_zero_phase
     )
+    from config import config
 
 
 class BreathingEstimator:
     """呼吸估计类"""
     
-    def __init__(self):
+    def __init__(self, frame_type: str = "信道探测帧"):
+        """
+        初始化呼吸估计器
+        
+        Args:
+            frame_type: 帧类型字符串，如 "方向估计帧" 或 "信道探测帧"
+        """
         self.logger = logging.getLogger(__name__)
         
-        # 默认参数（信道探测帧）
-        self.sampling_rate = 2.0  # Hz
-        self.median_filter_window = 3
-        self.highpass_cutoff = 0.05  # Hz
-        self.highpass_order = 2
-        self.bandpass_lowcut = 0.1  # Hz
-        self.bandpass_highcut = 0.35  # Hz
-        self.bandpass_order = 2
-        self.breath_freq_low = 0.1  # Hz
-        self.breath_freq_high = 0.35  # Hz
-        self.total_freq_low = 0.05  # Hz
-        self.total_freq_high = 0.8  # Hz
+        # 从config加载默认参数（根据帧类型）
+        self.set_default_params_for_frame_type(frame_type)
     
     def set_default_params_for_frame_type(self, frame_type: str):
         """
-        根据帧类型设置默认参数
+        根据帧类型从config加载默认参数
         
         Args:
             frame_type: 帧类型字符串，如 "方向估计帧" 或 "信道探测帧"
         """
         if frame_type == "方向估计帧":
-            # 方向估计帧的默认参数
-            self.sampling_rate = 50.0  # Hz
-            self.median_filter_window = 10
-            # 其他参数保持不变
+            # 从config加载方向估计帧的默认参数
+            self.sampling_rate = config.breathing_df_sampling_rate
+            self.median_filter_window = config.breathing_df_median_filter_window
+            self.highpass_cutoff = config.breathing_df_highpass_cutoff
+            self.highpass_order = config.breathing_df_highpass_order
+            self.bandpass_lowcut = config.breathing_df_bandpass_lowcut
+            self.bandpass_highcut = config.breathing_df_bandpass_highcut
+            self.bandpass_order = config.breathing_df_bandpass_order
+            self.breath_freq_low = config.breathing_df_breath_freq_low
+            self.breath_freq_high = config.breathing_df_breath_freq_high
+            self.total_freq_low = config.breathing_df_total_freq_low
+            self.total_freq_high = config.breathing_df_total_freq_high
         else:
-            # 信道探测帧的默认参数
-            self.sampling_rate = 2.0  # Hz
-            self.median_filter_window = 3
-            # 其他参数保持不变
+            # 从config加载信道探测帧的默认参数
+            self.sampling_rate = config.breathing_cs_sampling_rate
+            self.median_filter_window = config.breathing_cs_median_filter_window
+            self.highpass_cutoff = config.breathing_cs_highpass_cutoff
+            self.highpass_order = config.breathing_cs_highpass_order
+            self.bandpass_lowcut = config.breathing_cs_bandpass_lowcut
+            self.bandpass_highcut = config.breathing_cs_bandpass_highcut
+            self.bandpass_order = config.breathing_cs_bandpass_order
+            self.breath_freq_low = config.breathing_cs_breath_freq_low
+            self.breath_freq_high = config.breathing_cs_breath_freq_high
+            self.total_freq_low = config.breathing_cs_total_freq_low
+            self.total_freq_high = config.breathing_cs_total_freq_high
         
         self.logger.info(
-            f"已根据帧类型 '{frame_type}' 设置默认参数: "
+            f"已从config加载帧类型 '{frame_type}' 的默认参数: "
             f"采样率={self.sampling_rate}Hz, 中值滤波窗口={self.median_filter_window}"
         )
     
