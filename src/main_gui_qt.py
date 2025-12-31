@@ -420,7 +420,7 @@ class BLEHostGUI(QMainWindow):
         # 中值滤波窗口
         median_filter_layout = QHBoxLayout()
         median_filter_label = QLabel("中值滤波窗口:")
-        median_filter_label.setToolTip("中值滤波窗口大小，方向估计帧为10，信道探测帧为3")
+        median_filter_label.setToolTip("单位为帧数，方向估计帧为10，信道探测帧为3，通常不超过0.2s")
         median_filter_label.installEventFilter(ToolTipFilter(median_filter_label, 0, ToolTipPosition.TOP))
         median_filter_layout.addWidget(median_filter_label)
         self.breathing_median_filter_entry = QLineEdit("3")
@@ -494,6 +494,44 @@ class BLEHostGUI(QMainWindow):
         
         advanced_layout.addStretch()
         self.breathing_control_tabs.addTab(advanced_tab, "进阶设置")
+        
+        # Visualization Tab（可视化设置）
+        visualization_tab = QWidget()
+        visualization_tab_layout = QVBoxLayout(visualization_tab)
+        visualization_tab_layout.setContentsMargins(5, 5, 5, 5)
+        visualization_tab_layout.setSpacing(10)
+        
+        visualization_info_label = QLabel("选择在滤波波形tab中显示的滤波阶段：")
+        visualization_info_label.setToolTip("可以任意组合选择显示哪些滤波阶段的波形")
+        visualization_info_label.installEventFilter(ToolTipFilter(visualization_info_label, 0, ToolTipPosition.TOP))
+        visualization_tab_layout.addWidget(visualization_info_label)
+        
+        # 中值滤波复选框
+        self.breathing_show_median_checkbox = QCheckBox("显示中值滤波")
+        self.breathing_show_median_checkbox.setChecked(True)
+        self.breathing_show_median_checkbox.setToolTip("显示中值滤波后的信号波形")
+        self.breathing_show_median_checkbox.installEventFilter(ToolTipFilter(self.breathing_show_median_checkbox, 0, ToolTipPosition.TOP))
+        self.breathing_show_median_checkbox.stateChanged.connect(self._on_visualization_checkbox_changed)
+        visualization_tab_layout.addWidget(self.breathing_show_median_checkbox)
+        
+        # 高通滤波复选框
+        self.breathing_show_highpass_checkbox = QCheckBox("显示中值+高通滤波")
+        self.breathing_show_highpass_checkbox.setChecked(False)
+        self.breathing_show_highpass_checkbox.setToolTip("显示中值滤波+高通滤波后的信号波形")
+        self.breathing_show_highpass_checkbox.installEventFilter(ToolTipFilter(self.breathing_show_highpass_checkbox, 0, ToolTipPosition.TOP))
+        self.breathing_show_highpass_checkbox.stateChanged.connect(self._on_visualization_checkbox_changed)
+        visualization_tab_layout.addWidget(self.breathing_show_highpass_checkbox)
+        
+        # 带通滤波复选框
+        self.breathing_show_bandpass_checkbox = QCheckBox("显示中值+高通+带通滤波")
+        self.breathing_show_bandpass_checkbox.setChecked(False)
+        self.breathing_show_bandpass_checkbox.setToolTip("显示中值滤波+高通滤波+带通滤波后的信号波形")
+        self.breathing_show_bandpass_checkbox.installEventFilter(ToolTipFilter(self.breathing_show_bandpass_checkbox, 0, ToolTipPosition.TOP))
+        self.breathing_show_bandpass_checkbox.stateChanged.connect(self._on_visualization_checkbox_changed)
+        visualization_tab_layout.addWidget(self.breathing_show_bandpass_checkbox)
+        
+        visualization_tab_layout.addStretch()
+        self.breathing_control_tabs.addTab(visualization_tab, "可视化设置")
         
         breathing_control_layout.addWidget(self.breathing_control_tabs)
         
@@ -1414,6 +1452,20 @@ class BLEHostGUI(QMainWindow):
                 'data_type': data_type
             }
         
+        # 创建滤波波形选项卡（使用 PyQtGraph，用于显示滤波后的信号）
+        plotter = RealtimePlotter(
+            title='BLE Channel Sounding - 滤波波形',
+            x_label='Frame Index',
+            y_label='Filtered Signal'
+        )
+        plotter.plot_widget.sigRangeChanged.connect(self._on_plot_view_changed)
+        tab_index = self.plot_tabs.addTab(plotter.get_widget(), "滤波波形")
+        self.plot_tabs.setTabToolTip(tab_index, "显示中值滤波、高通滤波、带通滤波后的信号波形")
+        self.plotters['filtered_signal'] = {
+            'plotter': plotter,
+            'data_type': 'filtered_signal'  # 特殊类型，不直接从data_processor获取
+        }
+        
         # 创建呼吸估计选项卡（使用 Matplotlib）
         self._create_breathing_estimation_tab()
         
@@ -1796,6 +1848,9 @@ class BLEHostGUI(QMainWindow):
         # 批量处理完成后，统一更新绘图（避免每处理一条数据就更新一次）
         if has_new_frame:
             if self.frame_mode:
+                # 实时更新滤波波形（不需要等待时间窗）
+                self._update_realtime_filtered_signal()
+                
                 # 帧模式：累积帧数，达到阈值或队列积压较多时才更新绘图
                 self.frames_since_last_plot += frames_processed
                 queue_size = self.serial_reader.get_queue_size()
@@ -3320,6 +3375,61 @@ class BLEHostGUI(QMainWindow):
         self.breathing_update_timer.timeout.connect(self._update_realtime_breathing_estimation)
         self.breathing_update_timer.start(int(self.breathing_update_interval * 1000))
     
+    def _update_realtime_filtered_signal(self):
+        """实时更新滤波波形（使用时间窗大小限制显示帧数，与其他tab保持一致）"""
+        if not self.frame_mode or not self.is_running:
+            return
+        
+        # 检查是否有滤波波形tab
+        if 'filtered_signal' not in self.plotters:
+            return
+        
+        # 获取选择的信道和数据类型
+        try:
+            channel = int(self.breathing_channel_combo.currentText())
+        except:
+            # 如果没有选择，尝试获取第一个可用信道
+            all_channels = self.data_processor.get_all_frame_channels()
+            if not all_channels:
+                return
+            channel = all_channels[0]
+        
+        data_type = self.breathing_data_type_combo.currentText()
+        
+        # 获取最近N帧的数据（使用display_max_frames限制，与其他tab保持一致）
+        indices, values = self.data_processor.get_frame_data_range(
+            channel, max_frames=self.display_max_frames, data_type=data_type
+        )
+        
+        if len(values) == 0:
+            return
+        
+        # 检查是否有任何可视化选项被选中，如果没有则跳过滤波计算
+        has_any_checked = (
+            (hasattr(self, 'breathing_show_median_checkbox') and self.breathing_show_median_checkbox.isChecked()) or
+            (hasattr(self, 'breathing_show_highpass_checkbox') and self.breathing_show_highpass_checkbox.isChecked()) or
+            (hasattr(self, 'breathing_show_bandpass_checkbox') and self.breathing_show_bandpass_checkbox.isChecked())
+        )
+        
+        if not has_any_checked:
+            # 如果没有任何选项被选中，清空显示并返回，不执行滤波计算
+            if 'filtered_signal' in self.plotters:
+                plotter_info = self.plotters['filtered_signal']
+                plotter = plotter_info.get('plotter')
+                if plotter:
+                    plotter.clear_plot()
+            return
+        
+        # 进行滤波处理（只有至少有一个选项被选中时才执行）
+        signal = np.array(values)
+        try:
+            processed = self.breathing_estimator.process_signal(signal, data_type)
+            if processed:
+                # 更新滤波波形tab
+                self._update_filtered_signal_plot(indices, values, processed)
+        except Exception as e:
+            self.logger.warning(f"实时滤波处理出错: {e}")
+    
     def _update_realtime_breathing_estimation(self):
         """更新实时呼吸估计（使用最近X帧数据）"""
         if not self.frame_mode or not self.is_running:
@@ -3418,9 +3528,110 @@ class BLEHostGUI(QMainWindow):
             if window_frames:
                 self._update_breathing_estimation_plot(window_frames)
                 
+            # 更新滤波波形tab（如果存在）
+            if 'filtered_signal' in self.plotters:
+                self._update_filtered_signal_plot(indices, values, processed)
+                
         except Exception as e:
             self.logger.error(f"实时呼吸估计出错: {e}")
             self.breathing_result_text.setPlainText(f"分析出错: {str(e)}")
+    
+    def _update_filtered_signal_plot(self, indices: np.ndarray, values: np.ndarray, processed: Dict):
+        """
+        更新滤波波形tab的显示
+        
+        Args:
+            indices: 帧索引数组
+            values: 原始信号值数组
+            processed: process_signal返回的处理结果字典
+        """
+        if 'filtered_signal' not in self.plotters:
+            return
+        
+        plotter_info = self.plotters['filtered_signal']
+        plotter = plotter_info.get('plotter')
+        if plotter is None:
+            return
+        
+        # 定义不同滤波阶段的颜色和标签
+        filter_colors = {
+            'median': '#1f77b4',      # 蓝色 - 中值滤波
+            'highpass': '#ff7f0e',     # 橙色 - 高通滤波
+            'bandpass': '#2ca02c'      # 绿色 - 带通滤波
+        }
+        filter_labels = {
+            'median': '中值滤波',
+            'highpass': '中值+高通滤波',
+            'bandpass': '中值+高通+带通滤波'
+        }
+        
+        # 根据复选框状态显示/隐藏对应的线条
+        # 中值滤波
+        if hasattr(self, 'breathing_show_median_checkbox') and self.breathing_show_median_checkbox.isChecked():
+            if 'median_filtered' in processed:
+                if 'median' not in plotter.data_lines:
+                    plotter.add_line('median', color=filter_colors['median'], label=filter_labels['median'])
+                plotter.update_line('median', indices, processed['median_filtered'])
+            elif 'median' in plotter.data_lines:
+                plotter.remove_line('median')
+        else:
+            if 'median' in plotter.data_lines:
+                plotter.remove_line('median')
+        
+        # 高通滤波
+        if hasattr(self, 'breathing_show_highpass_checkbox') and self.breathing_show_highpass_checkbox.isChecked():
+            if 'highpass_filtered' in processed:
+                if 'highpass' not in plotter.data_lines:
+                    plotter.add_line('highpass', color=filter_colors['highpass'], label=filter_labels['highpass'])
+                plotter.update_line('highpass', indices, processed['highpass_filtered'])
+            elif 'highpass' in plotter.data_lines:
+                plotter.remove_line('highpass')
+        else:
+            if 'highpass' in plotter.data_lines:
+                plotter.remove_line('highpass')
+        
+        # 带通滤波（需要计算）
+        if hasattr(self, 'breathing_show_bandpass_checkbox') and self.breathing_show_bandpass_checkbox.isChecked():
+            if 'highpass_filtered' in processed and len(processed['highpass_filtered']) > 0:
+                try:
+                    analysis = self.breathing_estimator.analyze_window(
+                        processed['highpass_filtered'], 
+                        apply_hanning=True
+                    )
+                    if 'bandpass_filtered' in analysis:
+                        if 'bandpass' not in plotter.data_lines:
+                            plotter.add_line('bandpass', color=filter_colors['bandpass'], label=filter_labels['bandpass'])
+                        plotter.update_line('bandpass', indices, analysis['bandpass_filtered'])
+                    elif 'bandpass' in plotter.data_lines:
+                        plotter.remove_line('bandpass')
+                except Exception as e:
+                    self.logger.warning(f"计算带通滤波结果时出错: {e}")
+                    if 'bandpass' in plotter.data_lines:
+                        plotter.remove_line('bandpass')
+            elif 'bandpass' in plotter.data_lines:
+                plotter.remove_line('bandpass')
+        else:
+            if 'bandpass' in plotter.data_lines:
+                plotter.remove_line('bandpass')
+        
+        # 设置Y轴标签
+        plotter.plot_widget.setLabel('left', 'Filtered Signal')
+    
+    def _on_visualization_checkbox_changed(self):
+        """可视化设置复选框改变时的回调"""
+        # 如果当前有数据，立即更新滤波波形tab
+        if self.is_loaded_mode:
+            # 加载模式下，重新更新呼吸估计plot（会同时更新滤波波形）
+            if self.loaded_frames:
+                window_start = self.current_window_start
+                window_size = self.display_max_frames
+                window_end = min(window_start + window_size, len(self.loaded_frames))
+                if window_start < window_end:
+                    window_frames = self.loaded_frames[window_start:window_end]
+                    self._update_breathing_estimation_plot(window_frames)
+        elif self.is_running and self.frame_mode:
+            # 实时模式下，触发实时滤波波形更新
+            self._update_realtime_filtered_signal()
     
     def _update_loaded_mode_plots(self):
         """更新加载模式下的绘图"""
@@ -3624,6 +3835,10 @@ class BLEHostGUI(QMainWindow):
         ax2.set_xlabel('Frame Index')
         ax2.set_ylabel('Amplitude' if 'amplitude' in data_type else 'Phase')
         ax2.grid(True, alpha=0.3)
+        
+        # 更新滤波波形tab（如果存在）
+        if 'filtered_signal' in self.plotters:
+            self._update_filtered_signal_plot(indices, signal, processed)
         
         # 左下角：FFT频谱（带通前后对比）
         ax3 = axes['bottom_left']
