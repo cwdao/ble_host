@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 呼吸估计算法模块
-包含中值滤波、高通滤波、带通滤波、FFT分析等功能
+包含中值滤波、高通滤波、带通滤波、FFT分析、信道自适应等功能
 """
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Callable
 import logging
+import time
 
 try:
     from .utils.signal_algrithom import (
@@ -38,6 +39,20 @@ class BreathingEstimator:
         
         # 从config加载默认参数（根据帧类型）
         self.set_default_params_for_frame_type(frame_type)
+        
+        # 信道自适应相关状态（从config加载默认值）
+        self.adaptive_enabled = config.breathing_adaptive_enabled
+        self.adaptive_top_n = config.breathing_adaptive_top_n
+        self.adaptive_only_display_channels = config.breathing_adaptive_only_display_channels
+        self.adaptive_low_energy_threshold = config.breathing_adaptive_low_energy_threshold
+        
+        # 自适应状态
+        self.adaptive_selected_channel: Optional[int] = None  # 自适应选择的信道
+        self.current_best_channels: List[Tuple[int, float]] = []  # 当前时间窗口的最佳信道列表（按能量排序）
+        self.adaptive_low_energy_start_time: Optional[float] = None  # 低能量开始时间（用于超时检测）
+        
+        # 数据访问接口（由外部设置）
+        self.data_accessor: Optional[Callable] = None  # 数据访问回调函数
     
     def set_default_params_for_frame_type(self, frame_type: str):
         """
@@ -245,3 +260,246 @@ class BreathingEstimator:
         if np.isnan(breathing_freq) or breathing_freq <= 0:
             return np.nan
         return breathing_freq * 60.0
+    
+    def set_data_accessor(self, data_accessor: Callable):
+        """
+        设置数据访问接口
+        
+        Args:
+            data_accessor: 数据访问回调函数，需要提供以下接口：
+                - get_all_channels() -> List[int]: 获取所有可用信道
+                - get_channel_data(channel: int, max_frames: int, data_type: str) -> Tuple[np.ndarray, np.ndarray]: 
+                  获取指定信道的数据，返回 (indices, values)
+        """
+        self.data_accessor = data_accessor
+    
+    def set_adaptive_config(self, enabled: bool = None, top_n: int = None, 
+                           only_display_channels: bool = None, 
+                           low_energy_threshold: float = None):
+        """
+        设置信道自适应配置
+        
+        Args:
+            enabled: 是否启用最佳呼吸信道选取
+            top_n: 选择前N个最佳信道
+            only_display_channels: 是否只在显示信道范围内选取
+            low_energy_threshold: 低能量持续时间阈值（秒）
+        """
+        if enabled is not None:
+            self.adaptive_enabled = enabled
+        if top_n is not None:
+            self.adaptive_top_n = top_n
+        if only_display_channels is not None:
+            self.adaptive_only_display_channels = only_display_channels
+        if low_energy_threshold is not None:
+            self.adaptive_low_energy_threshold = low_energy_threshold
+    
+    def calculate_all_channels_energy_ratios(self, data_type: str, threshold: float, 
+                                            max_frames: int,
+                                            display_channels: Optional[List[int]] = None) -> List[Tuple[int, float]]:
+        """
+        计算所有可用信道的呼吸频段能量占比
+        
+        Args:
+            data_type: 数据类型
+            threshold: 能量占比阈值
+            max_frames: 最大帧数
+            display_channels: 显示的信道列表（如果启用"只在显示信道范围内选取"）
+            
+        Returns:
+            按能量占比降序排列的信道列表，格式为 [(channel, energy_ratio), ...]
+        """
+        if self.data_accessor is None:
+            self.logger.warning("数据访问接口未设置，无法计算信道能量占比")
+            return []
+        
+        # 获取所有可用信道
+        all_channels = self.data_accessor('get_all_channels')()
+        if not all_channels:
+            return []
+        
+        # 如果启用了"只在显示信道范围内选取"，则只计算显示的信道
+        channels_to_check = all_channels
+        if self.adaptive_only_display_channels and display_channels is not None:
+            channels_to_check = [ch for ch in all_channels if ch in display_channels]
+        
+        channel_energy_ratios = []
+        
+        for ch in channels_to_check:
+            # 获取该信道最近X帧的数据
+            indices, values = self.data_accessor('get_channel_data')(ch, max_frames, data_type)
+            
+            if len(values) < max_frames:
+                continue
+            
+            if len(values) == 0:
+                continue
+            
+            # 处理信号
+            signal = np.array(values)
+            processed = self.process_signal(signal, data_type)
+            
+            if 'highpass_filtered' not in processed:
+                continue
+            
+            # 检测呼吸并获取能量占比
+            detection = self.detect_breathing(
+                processed['highpass_filtered'], threshold=threshold
+            )
+            
+            channel_energy_ratios.append((ch, detection['energy_ratio']))
+        
+        # 按能量占比降序排序
+        channel_energy_ratios.sort(key=lambda x: x[1], reverse=True)
+        
+        return channel_energy_ratios
+    
+    def select_adaptive_channel(self, data_type: str, threshold: float, max_frames: int,
+                               display_channels: Optional[List[int]] = None,
+                               manual_channel: Optional[int] = None) -> Dict:
+        """
+        选择自适应信道（核心逻辑）
+        
+        Args:
+            data_type: 数据类型
+            threshold: 能量占比阈值
+            max_frames: 最大帧数
+            display_channels: 显示的信道列表
+            manual_channel: 手动选择的信道（作为fallback）
+            
+        Returns:
+            包含以下字段的字典：
+            - selected_channel: 选中的信道（int或None）
+            - best_channels: 最佳信道列表 [(channel, energy_ratio), ...]
+            - need_reselect: 是否需要重新选择（bool）
+        """
+        if not self.adaptive_enabled:
+            return {
+                'selected_channel': manual_channel,
+                'best_channels': [],
+                'need_reselect': False
+            }
+        
+        # 如果已经选出了最佳信道，检查是否需要重新选择
+        if self.adaptive_selected_channel is not None:
+            # 只检查当前信道的能量占比
+            if self.data_accessor is None:
+                return {
+                    'selected_channel': self.adaptive_selected_channel,
+                    'best_channels': self.current_best_channels,
+                    'need_reselect': False
+                }
+            
+            indices_check, values_check = self.data_accessor('get_channel_data')(
+                self.adaptive_selected_channel, max_frames, data_type
+            )
+            
+            # 只检查当前信道的能量占比
+            if len(values_check) >= max_frames and len(values_check) > 0:
+                signal_check = np.array(values_check)
+                processed_check = self.process_signal(signal_check, data_type)
+                
+                if 'highpass_filtered' in processed_check:
+                    detection_check = self.detect_breathing(
+                        processed_check['highpass_filtered'], threshold=threshold
+                    )
+                    current_ch_ratio = detection_check['energy_ratio']
+                    
+                    # 如果当前信道的能量占比低于阈值，开始计时
+                    if current_ch_ratio < threshold:
+                        if self.adaptive_low_energy_start_time is None:
+                            self.adaptive_low_energy_start_time = time.time()
+                        else:
+                            # 检查是否超过超时时长
+                            elapsed = time.time() - self.adaptive_low_energy_start_time
+                            if elapsed >= self.adaptive_low_energy_threshold:
+                                # 超过超时时长，需要重新选择
+                                self.adaptive_selected_channel = None
+                                self.adaptive_low_energy_start_time = None
+                                # 继续执行下面的逻辑，重新计算所有信道
+                            else:
+                                # 还在超时时间内，继续在当前信道上执行
+                                self.current_best_channels = [(self.adaptive_selected_channel, current_ch_ratio)]
+                                return {
+                                    'selected_channel': self.adaptive_selected_channel,
+                                    'best_channels': self.current_best_channels,
+                                    'need_reselect': False
+                                }
+                    else:
+                        # 能量占比高于阈值，重置计时，继续在当前信道上执行
+                        self.adaptive_low_energy_start_time = None
+                        self.current_best_channels = [(self.adaptive_selected_channel, current_ch_ratio)]
+                        return {
+                            'selected_channel': self.adaptive_selected_channel,
+                            'best_channels': self.current_best_channels,
+                            'need_reselect': False
+                        }
+            
+            # 数据不足或处理失败，继续在当前信道上执行
+            self.current_best_channels = [(self.adaptive_selected_channel, 0.0)]
+            return {
+                'selected_channel': self.adaptive_selected_channel,
+                'best_channels': self.current_best_channels,
+                'need_reselect': False
+            }
+        
+        # 如果还没有选择信道，或者需要重新选择（超时后）
+        # 计算所有信道的能量占比
+        channel_energy_ratios = self.calculate_all_channels_energy_ratios(
+            data_type, threshold, max_frames, display_channels
+        )
+        
+        if channel_energy_ratios:
+            # 选择前N个最佳信道
+            top_n = min(self.adaptive_top_n, len(channel_energy_ratios))
+            self.current_best_channels = channel_energy_ratios[:top_n]
+            
+            # 选择能量占比最高且高于阈值的信道
+            best_ch = None
+            for ch, ratio in self.current_best_channels:
+                if ratio >= threshold:
+                    best_ch = ch
+                    break
+            
+            if best_ch is not None:
+                # 选出了最佳信道，设置并停止计算所有信道
+                self.adaptive_selected_channel = best_ch
+                self.adaptive_low_energy_start_time = None
+                return {
+                    'selected_channel': best_ch,
+                    'best_channels': self.current_best_channels,
+                    'need_reselect': False
+                }
+            else:
+                # 没有找到能量占比高于阈值的信道
+                return {
+                    'selected_channel': manual_channel,
+                    'best_channels': self.current_best_channels,
+                    'need_reselect': False
+                }
+        else:
+            # 没有有效信道
+            return {
+                'selected_channel': manual_channel,
+                'best_channels': [],
+                'need_reselect': False
+            }
+    
+    def reset_adaptive_state(self):
+        """重置自适应状态"""
+        self.adaptive_selected_channel = None
+        self.adaptive_low_energy_start_time = None
+        self.current_best_channels = []
+    
+    def get_adaptive_state(self) -> Dict:
+        """
+        获取自适应状态
+        
+        Returns:
+            包含自适应状态的字典
+        """
+        return {
+            'selected_channel': self.adaptive_selected_channel,
+            'best_channels': self.current_best_channels,
+            'enabled': self.adaptive_enabled
+        }

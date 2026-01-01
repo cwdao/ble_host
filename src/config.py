@@ -16,7 +16,7 @@ class AppConfig:
     """应用程序配置"""
     # 版本信息
     version: str = "3.5.0"
-    version_date: str = "2025-12-31"
+    version_date: str = "2026-01-01"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     
     # 窗口配置
@@ -77,9 +77,17 @@ class AppConfig:
     breathing_default_update_interval: float = 2.0  # 呼吸估计更新间隔（秒）
     
     # 可视化设置默认值
-    breathing_default_show_median: bool = True  # 默认显示中值滤波
+    breathing_default_show_median: bool = False  # 默认显示中值滤波
     breathing_default_show_highpass: bool = False  # 默认不显示中值+高通滤波
     breathing_default_show_bandpass: bool = False  # 默认不显示中值+高通+带通滤波
+    
+    # 呼吸信道自适应默认参数
+    breathing_adaptive_enabled: bool = False  # 是否启用最佳呼吸信道选取
+    breathing_adaptive_top_n: int = 1  # 选择前N个最佳信道
+    breathing_adaptive_highlight: bool = False  # 是否高亮最佳信道波形
+    breathing_adaptive_auto_switch: bool = False  # 是否自动在最佳信道上执行呼吸检测
+    breathing_adaptive_only_display_channels: bool = False  # 是否只在显示信道范围内选取
+    breathing_adaptive_low_energy_threshold: float = 5.0  # 低能量持续时间阈值（秒）
     
     # 信道探测帧的默认参数
     breathing_cs_sampling_rate: float = 2.0  # Hz

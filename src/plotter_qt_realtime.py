@@ -194,6 +194,59 @@ class RealtimePlotter:
             # 即使用户手动操作过，也更新当前视图范围（用于重置功能）
             self.current_view_range = view_range
     
+    def highlight_best_channels(self, best_channels: List[int], highlight_enabled: bool = True):
+        """
+        高亮最佳信道波形
+        
+        Args:
+            best_channels: 最佳信道列表（如果启用了自动切换，只包含选中的信道）
+            highlight_enabled: 是否启用高亮
+        """
+        if not highlight_enabled or not best_channels:
+            # 清除所有高亮
+            for var_name, line_info in self.data_lines.items():
+                if var_name.startswith('ch') and var_name[2:].isdigit():
+                    ch = int(var_name[2:])
+                    if ch not in best_channels:
+                        # 恢复正常样式
+                        normal_pen = pg.mkPen(
+                            color=line_info['color'],
+                            width=self.normal_pen_width
+                        )
+                        line_info['curve'].setPen(normal_pen)
+            return
+        
+        # 高亮最佳信道，淡化其他信道
+        for var_name, line_info in self.data_lines.items():
+            if var_name.startswith('ch') and var_name[2:].isdigit():
+                ch = int(var_name[2:])
+                if ch in best_channels:
+                    # 高亮：更粗、更亮的线条
+                    highlight_pen = pg.mkPen(
+                        color=line_info['color'],
+                        width=self.normal_pen_width * 2.5,  # 更粗
+                        style=Qt.PenStyle.SolidLine
+                    )
+                    line_info['curve'].setPen(highlight_pen)
+                else:
+                    # 淡化：降低透明度，变细
+                    faded_color = line_info['color']
+                    # 将颜色转换为更淡的版本（降低亮度）
+                    faded_pen = pg.mkPen(
+                        color=faded_color,
+                        width=self.normal_pen_width * 0.5,  # 更细
+                        style=Qt.PenStyle.SolidLine
+                    )
+                    line_info['curve'].setPen(faded_pen)
+                    # 设置透明度（通过设置alpha）
+                    line_info['curve'].setOpacity(0.3)
+        
+        # 确保最佳信道不透明
+        for ch in best_channels:
+            var_name = f"ch{ch}"
+            if var_name in self.data_lines:
+                self.data_lines[var_name]['curve'].setOpacity(1.0)
+    
     def clear_plot(self, var_name: str = None):
         """
         清空绘图数据

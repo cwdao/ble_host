@@ -9,7 +9,7 @@ import threading
 import time
 import logging
 import numpy as np
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from datetime import datetime
 import platform
 
@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QCheckBox,
     QRadioButton, QSlider, QTabWidget, QSplitter, QGroupBox, QMessageBox,
     QFileDialog, QButtonGroup, QFrame, QMenuBar, QMenu, QDialog, QDialogButtonBox,
-    QSizePolicy
+    QSizePolicy, QSpinBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QMetaObject, QCoreApplication
 from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup, QFontDatabase, QPainter
@@ -167,6 +167,9 @@ class BLEHostGUI(QMainWindow):
         # 根据当前帧类型初始化呼吸估计器（从config加载默认参数）
         self.breathing_estimator = BreathingEstimator(frame_type=self.frame_type)
         
+        # 设置数据访问接口
+        self.breathing_estimator.set_data_accessor(self._breathing_data_accessor)
+        
         # 主题模式
         self.current_theme_mode = "light"  # auto, light, dark（默认浅色模式）
         
@@ -174,6 +177,17 @@ class BLEHostGUI(QMainWindow):
         self.breathing_update_interval = config.breathing_default_update_interval  # 从config加载默认值
         self.breathing_update_timer = None
         self.last_breathing_update_time = 0
+        
+        # 呼吸信道自适应相关（从config加载默认值）
+        self.breathing_adaptive_enabled = config.breathing_adaptive_enabled
+        self.breathing_adaptive_top_n = config.breathing_adaptive_top_n
+        self.breathing_adaptive_highlight = config.breathing_adaptive_highlight
+        self.breathing_adaptive_auto_switch = config.breathing_adaptive_auto_switch
+        self.breathing_adaptive_only_display_channels = config.breathing_adaptive_only_display_channels
+        self.breathing_adaptive_manual_control = False  # 是否启用自适应（在channel旁边）
+        # 注意：adaptive_selected_channel、current_best_channels、adaptive_low_energy_start_time
+        # 现在由BreathingEstimator管理，这里只保留引用以便GUI访问
+        self.adaptive_low_energy_threshold = config.breathing_adaptive_low_energy_threshold
         
         # 清除数据长按相关
         self.clear_data_hold_duration = 2.0  # 需要按住2秒
@@ -306,6 +320,7 @@ class BLEHostGUI(QMainWindow):
         self._create_channel_config_tab()
         self._create_data_and_save_tab()
         self._create_load_tab()
+        self._create_special_settings_tab()
         self._create_settings_tab()
         
         main_layout.addWidget(self.config_tabs)
@@ -368,6 +383,12 @@ class BLEHostGUI(QMainWindow):
         channel_layout.addWidget(channel_label)
         self.breathing_channel_combo = QComboBox()
         channel_layout.addWidget(self.breathing_channel_combo)
+        # 自适应checkbox
+        self.breathing_adaptive_manual_checkbox = QCheckBox("自适应")
+        self.breathing_adaptive_manual_checkbox.setToolTip("启用后，呼吸信道自适应功能将接管信道选择")
+        self.breathing_adaptive_manual_checkbox.setChecked(self.breathing_adaptive_manual_control)
+        self.breathing_adaptive_manual_checkbox.stateChanged.connect(self._on_adaptive_manual_changed)
+        channel_layout.addWidget(self.breathing_adaptive_manual_checkbox)
         basic_layout.addLayout(channel_layout)
         
         # 阈值输入
@@ -397,7 +418,7 @@ class BLEHostGUI(QMainWindow):
         basic_layout.addLayout(interval_layout)
         
         basic_layout.addStretch()
-        self.breathing_control_tabs.addTab(basic_tab, "基础设置")
+        self.breathing_control_tabs.addTab(basic_tab, "基本")
         
         # Advanced Tab
         advanced_tab = QWidget()
@@ -499,7 +520,7 @@ class BLEHostGUI(QMainWindow):
         advanced_layout.addLayout(bandpass_order_layout)
         
         advanced_layout.addStretch()
-        self.breathing_control_tabs.addTab(advanced_tab, "进阶设置")
+        self.breathing_control_tabs.addTab(advanced_tab, "进阶")
         
         # Visualization Tab（可视化设置）
         visualization_tab = QWidget()
@@ -537,7 +558,7 @@ class BLEHostGUI(QMainWindow):
         visualization_tab_layout.addWidget(self.breathing_show_bandpass_checkbox)
         
         visualization_tab_layout.addStretch()
-        self.breathing_control_tabs.addTab(visualization_tab, "可视化设置")
+        self.breathing_control_tabs.addTab(visualization_tab, "滤波可视化")
         
         breathing_control_layout.addWidget(self.breathing_control_tabs)
         
@@ -1354,6 +1375,165 @@ class BLEHostGUI(QMainWindow):
         layout.addStretch()  # 添加stretch让三个group靠左排列
         
         self.config_tabs.addTab(tab, "文件加载")
+    
+    def _create_special_settings_tab(self):
+        """创建特殊设置选项卡"""
+        tab = QWidget()
+        tab.setMinimumHeight(80)
+        layout = QHBoxLayout(tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 呼吸信道自适应按钮
+        breathing_adaptive_group = QGroupBox("呼吸估计")
+        breathing_adaptive_group.setFont(get_app_font(9))
+        breathing_adaptive_layout = QVBoxLayout(breathing_adaptive_group)
+        breathing_adaptive_group.setMaximumHeight(100)
+        breathing_adaptive_group.setMaximumWidth(250)
+        
+        self.breathing_adaptive_btn = QPushButton("呼吸信道自适应")
+        self.breathing_adaptive_btn.setToolTip("配置呼吸信道自适应功能")
+        self.breathing_adaptive_btn.clicked.connect(self._open_breathing_adaptive_dialog)
+        breathing_adaptive_layout.addWidget(self.breathing_adaptive_btn)
+        
+        layout.addWidget(breathing_adaptive_group)
+        layout.addStretch()
+        
+        self.config_tabs.addTab(tab, "特殊设置")
+    
+    def _open_breathing_adaptive_dialog(self):
+        """打开呼吸信道自适应设置对话框"""
+        # 在文件加载模式下禁用
+        if self.is_loaded_mode:
+            QMessageBox.information(
+                self,
+                "功能不可用",
+                "呼吸信道自适应功能在文件加载模式下暂时不可用。\n请切换到实时模式使用此功能。"
+            )
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("呼吸信道自适应设置")
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 启用最佳呼吸信道选取
+        enable_layout = QHBoxLayout()
+        self.breathing_adaptive_enable_checkbox = QCheckBox("启用最佳呼吸信道选取")
+        self.breathing_adaptive_enable_checkbox.setChecked(self.breathing_adaptive_enabled)
+        self.breathing_adaptive_enable_checkbox.stateChanged.connect(self._on_adaptive_enable_changed)
+        enable_layout.addWidget(self.breathing_adaptive_enable_checkbox)
+        layout.addLayout(enable_layout)
+        
+        # 选择前N个信道
+        top_n_layout = QHBoxLayout()
+        top_n_label = QLabel("选择前N个最佳信道:")
+        top_n_layout.addWidget(top_n_label)
+        self.breathing_adaptive_top_n_spinbox = QSpinBox()
+        self.breathing_adaptive_top_n_spinbox.setMinimum(1)
+        self.breathing_adaptive_top_n_spinbox.setMaximum(10)
+        self.breathing_adaptive_top_n_spinbox.setValue(self.breathing_adaptive_top_n)
+        self.breathing_adaptive_top_n_spinbox.setEnabled(self.breathing_adaptive_enabled)
+        top_n_layout.addWidget(self.breathing_adaptive_top_n_spinbox)
+        top_n_layout.addStretch()
+        layout.addLayout(top_n_layout)
+        
+        # 高亮最佳信道波形
+        highlight_layout = QHBoxLayout()
+        self.breathing_adaptive_highlight_checkbox = QCheckBox("高亮最佳信道波形")
+        self.breathing_adaptive_highlight_checkbox.setChecked(self.breathing_adaptive_highlight)
+        self.breathing_adaptive_highlight_checkbox.setEnabled(self.breathing_adaptive_enabled)
+        highlight_layout.addWidget(self.breathing_adaptive_highlight_checkbox)
+        layout.addLayout(highlight_layout)
+        
+        # 自动在最佳信道上执行呼吸检测
+        auto_switch_layout = QHBoxLayout()
+        self.breathing_adaptive_auto_switch_checkbox = QCheckBox("自动在最佳信道上执行呼吸检测")
+        self.breathing_adaptive_auto_switch_checkbox.setChecked(self.breathing_adaptive_auto_switch)
+        self.breathing_adaptive_auto_switch_checkbox.setEnabled(self.breathing_adaptive_enabled)
+        auto_switch_layout.addWidget(self.breathing_adaptive_auto_switch_checkbox)
+        layout.addLayout(auto_switch_layout)
+        
+        # 只在显示信道范围内选取
+        only_display_layout = QHBoxLayout()
+        self.breathing_adaptive_only_display_checkbox = QCheckBox("只在显示信道范围内选取")
+        self.breathing_adaptive_only_display_checkbox.setToolTip("勾选后，只在当前显示的信道中选取最佳信道；未勾选时，如果最佳信道不在显示范围内，会自动添加到显示中")
+        self.breathing_adaptive_only_display_checkbox.setChecked(self.breathing_adaptive_only_display_channels)
+        self.breathing_adaptive_only_display_checkbox.setEnabled(self.breathing_adaptive_enabled)
+        only_display_layout.addWidget(self.breathing_adaptive_only_display_checkbox)
+        layout.addLayout(only_display_layout)
+        
+        # 低能量超时时长
+        timeout_layout = QHBoxLayout()
+        timeout_label = QLabel("低能量超时时长(秒):")
+        timeout_label.setToolTip("当信道能量占比连续低于阈值达到此时长后，将重新选择最佳信道")
+        timeout_layout.addWidget(timeout_label)
+        self.breathing_adaptive_timeout_spinbox = QSpinBox()
+        self.breathing_adaptive_timeout_spinbox.setMinimum(1)
+        self.breathing_adaptive_timeout_spinbox.setMaximum(60)
+        self.breathing_adaptive_timeout_spinbox.setValue(int(self.adaptive_low_energy_threshold))
+        self.breathing_adaptive_timeout_spinbox.setEnabled(self.breathing_adaptive_enabled)
+        self.breathing_adaptive_timeout_spinbox.setSuffix(" 秒")
+        timeout_layout.addWidget(self.breathing_adaptive_timeout_spinbox)
+        timeout_layout.addStretch()
+        layout.addLayout(timeout_layout)
+        
+        # 提示信息（文件加载模式下不可用）
+        if self.is_loaded_mode:
+            info_label = QLabel("注意：此功能在文件加载模式下暂时不可用")
+            info_label.setStyleSheet("color: orange; font-weight: bold;")
+            layout.addWidget(info_label)
+        
+        layout.addStretch()
+        
+        # 按钮
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.breathing_adaptive_enabled = self.breathing_adaptive_enable_checkbox.isChecked()
+            self.breathing_adaptive_top_n = self.breathing_adaptive_top_n_spinbox.value()
+            self.breathing_adaptive_highlight = self.breathing_adaptive_highlight_checkbox.isChecked()
+            self.breathing_adaptive_auto_switch = self.breathing_adaptive_auto_switch_checkbox.isChecked()
+            self.breathing_adaptive_only_display_channels = self.breathing_adaptive_only_display_checkbox.isChecked()
+            self.adaptive_low_energy_threshold = float(self.breathing_adaptive_timeout_spinbox.value())
+            
+            # 更新BreathingEstimator的配置
+            self.breathing_estimator.set_adaptive_config(
+                enabled=self.breathing_adaptive_enabled,
+                top_n=self.breathing_adaptive_top_n,
+                only_display_channels=self.breathing_adaptive_only_display_channels,
+                low_energy_threshold=self.adaptive_low_energy_threshold
+            )
+            
+            # 如果禁用了自适应，重置相关状态
+            if not self.breathing_adaptive_enabled:
+                self.breathing_estimator.reset_adaptive_state()
+                # 清除高亮
+                self._clear_adaptive_highlight()
+            
+            # 更新channel combo的启用状态
+            self._update_channel_combo_enabled()
+    
+    def _on_adaptive_enable_changed(self, state):
+        """当启用最佳呼吸信道选取checkbox状态改变时"""
+        enabled = (state == Qt.CheckState.Checked.value)
+        self.breathing_adaptive_top_n_spinbox.setEnabled(enabled)
+        self.breathing_adaptive_highlight_checkbox.setEnabled(enabled)
+        self.breathing_adaptive_auto_switch_checkbox.setEnabled(enabled)
+        self.breathing_adaptive_only_display_checkbox.setEnabled(enabled)
+        if hasattr(self, 'breathing_adaptive_timeout_spinbox'):
+            self.breathing_adaptive_timeout_spinbox.setEnabled(enabled)
+    
+    def _clear_adaptive_highlight(self):
+        """清除自适应高亮"""
+        for tab_key, plotter_info in self.plotters.items():
+            plotter = plotter_info.get('plotter')
+            if plotter and hasattr(plotter, 'highlight_best_channels'):
+                plotter.highlight_best_channels([], False)
     
     def _create_settings_tab(self):
         """创建设置选项卡"""
@@ -2559,6 +2739,16 @@ class BLEHostGUI(QMainWindow):
             self.is_loaded_mode = True
             self.current_window_start = 0
             
+            # 在文件加载模式下禁用自适应功能
+            if hasattr(self, 'breathing_adaptive_btn'):
+                self.breathing_adaptive_btn.setEnabled(False)
+            if hasattr(self, 'breathing_adaptive_manual_checkbox'):
+                self.breathing_adaptive_manual_checkbox.setEnabled(False)
+            # 禁用自适应功能
+            self.breathing_adaptive_enabled = False
+            self.breathing_adaptive_manual_control = False
+            self._update_channel_combo_enabled()
+            
             # 根据文件中的frame_type自动设置模式
             file_frame_type = data.get('frame_type')
             if file_frame_type:
@@ -2732,6 +2922,12 @@ class BLEHostGUI(QMainWindow):
         self.loaded_frames = []
         self.loaded_file_info = None
         self.current_window_start = 0
+        
+        # 恢复自适应功能按钮的启用状态
+        if hasattr(self, 'breathing_adaptive_btn'):
+            self.breathing_adaptive_btn.setEnabled(True)
+        if hasattr(self, 'breathing_adaptive_manual_checkbox'):
+            self.breathing_adaptive_manual_checkbox.setEnabled(True)
         
         # 更新文件加载tab状态（取消加载后，启用文件选择，禁用时间窗控制）
         self._update_load_tab_state()
@@ -3004,6 +3200,45 @@ class BLEHostGUI(QMainWindow):
             # 更新绘图
             if channel_data:
                 plotter.update_frame_data(channel_data, max_channels=len(display_channels))
+                
+                # 如果启用了高亮最佳信道，应用高亮（只有当能量占比高于阈值时才高亮）
+                # 从BreathingEstimator获取最新状态
+                adaptive_state = self.breathing_estimator.get_adaptive_state()
+                current_best_channels = adaptive_state.get('best_channels', [])
+                adaptive_selected = adaptive_state.get('selected_channel')
+                
+                if (self.breathing_adaptive_highlight and 
+                    self.breathing_adaptive_enabled and 
+                    self.breathing_adaptive_manual_control and
+                    current_best_channels):
+                    # 获取阈值（用于判断是否高亮）
+                    try:
+                        highlight_threshold = float(self.breathing_threshold_entry.text())
+                    except:
+                        highlight_threshold = 0.6
+                    
+                    # 确定要高亮的信道（只高亮能量占比高于阈值的信道，且只高亮一个）
+                    best_channels_to_highlight = []
+                    if adaptive_selected is not None:
+                        # 如果已经选出了最佳信道，只高亮选中的信道（如果能量占比高于阈值）
+                        for ch, ratio in current_best_channels:
+                            if ch == adaptive_selected and ratio >= highlight_threshold:
+                                best_channels_to_highlight = [ch]
+                                break
+                    else:
+                        # 如果还没有选出最佳信道，只高亮第一个（能量占比最高的）且能量占比高于阈值的信道
+                        for ch, ratio in current_best_channels:
+                            if ratio >= highlight_threshold:
+                                best_channels_to_highlight = [ch]
+                                break
+                    
+                    # 应用高亮（如果plotter支持）
+                    if hasattr(plotter, 'highlight_best_channels'):
+                        plotter.highlight_best_channels(best_channels_to_highlight, True)
+                else:
+                    # 清除高亮
+                    if hasattr(plotter, 'highlight_best_channels'):
+                        plotter.highlight_best_channels([], False)
     
     def _refresh_plotters_throttled(self):
         """节流刷新绘图器"""
@@ -3472,6 +3707,49 @@ class BLEHostGUI(QMainWindow):
         except Exception as e:
             self.logger.warning(f"实时滤波处理出错: {e}")
     
+    def _breathing_data_accessor(self, method: str):
+        """
+        数据访问接口，供BreathingEstimator使用
+        
+        Args:
+            method: 方法名，支持：
+                - 'get_all_channels': 获取所有可用信道
+                - 'get_channel_data': 获取指定信道的数据
+        """
+        if method == 'get_all_channels':
+            def get_all_channels():
+                return self.data_processor.get_all_frame_channels()
+            return get_all_channels
+        elif method == 'get_channel_data':
+            def get_channel_data(channel: int, max_frames: int, data_type: str):
+                return self.data_processor.get_frame_data_range(
+                    channel, max_frames=max_frames, data_type=data_type
+                )
+            return get_channel_data
+        else:
+            raise ValueError(f"Unknown method: {method}")
+    
+    def _on_adaptive_manual_changed(self, state):
+        """当自适应checkbox状态改变时"""
+        self.breathing_adaptive_manual_control = (state == Qt.CheckState.Checked.value)
+        # 如果禁用自适应，重置相关状态
+        if not self.breathing_adaptive_manual_control:
+            self.breathing_estimator.reset_adaptive_state()
+            # 清除高亮
+            self._clear_adaptive_highlight()
+        # 更新channel combo的启用状态
+        self._update_channel_combo_enabled()
+    
+    def _update_channel_combo_enabled(self):
+        """更新channel combo的启用状态"""
+        # 如果启用了自适应且启用了自动切换，则禁用channel选择
+        if (self.breathing_adaptive_manual_control and 
+            self.breathing_adaptive_enabled and 
+            self.breathing_adaptive_auto_switch):
+            self.breathing_channel_combo.setEnabled(False)
+        else:
+            self.breathing_channel_combo.setEnabled(True)
+    
     def _update_realtime_breathing_estimation(self):
         """更新实时呼吸估计（使用最近X帧数据）"""
         if not self.frame_mode or not self.is_running:
@@ -3483,21 +3761,85 @@ class BLEHostGUI(QMainWindow):
             self.breathing_result_text.setPlainText("等待数据积累...")
             return
         
-        # 获取选择的信道和数据类型
-        try:
-            channel = int(self.breathing_channel_combo.currentText())
-        except:
-            # 如果没有选择，使用第一个可用信道
-            if all_channels:
-                channel = all_channels[0]
-                self.breathing_channel_combo.clear()
-                self.breathing_channel_combo.addItems([str(ch) for ch in sorted(all_channels)])
-                self.breathing_channel_combo.setCurrentText(str(channel))
-            else:
-                self.breathing_result_text.setPlainText("等待数据积累...")
-                return
-        
         data_type = self.breathing_data_type_combo.currentText()
+        
+        # 获取阈值
+        try:
+            threshold = float(self.breathing_threshold_entry.text())
+        except:
+            threshold = 0.6
+        
+        # 如果启用了自适应且启用了最佳信道选取
+        if (self.breathing_adaptive_enabled and 
+            self.breathing_adaptive_manual_control):
+            # 更新BreathingEstimator的配置
+            self.breathing_estimator.set_adaptive_config(
+                enabled=True,
+                top_n=self.breathing_adaptive_top_n,
+                only_display_channels=self.breathing_adaptive_only_display_channels,
+                low_energy_threshold=self.adaptive_low_energy_threshold
+            )
+            
+            # 获取手动选择的信道（作为fallback）
+            try:
+                manual_channel = int(self.breathing_channel_combo.currentText())
+            except:
+                manual_channel = all_channels[0] if all_channels else None
+            
+            # 调用BreathingEstimator的信道选择逻辑
+            adaptive_result = self.breathing_estimator.select_adaptive_channel(
+                data_type=data_type,
+                threshold=threshold,
+                max_frames=self.display_max_frames,
+                display_channels=self.display_channel_list if self.breathing_adaptive_only_display_channels else None,
+                manual_channel=manual_channel
+            )
+            
+            # 使用选中的信道（直接从BreathingEstimator获取状态，不保存本地副本）
+            channel = adaptive_result['selected_channel']
+            if channel is None:
+                # 如果没有选中信道，使用手动选择的信道
+                channel = manual_channel
+                if channel is None:
+                    self.breathing_result_text.setPlainText("等待数据积累...")
+                    return
+            
+            # 如果未勾选"只在显示信道范围内选取"，且最佳信道不在显示范围内，则添加到显示
+            if (not self.breathing_adaptive_only_display_channels and 
+                adaptive_result['best_channels']):
+                best_channels_to_add = []
+                top_n = min(self.breathing_adaptive_top_n, len(adaptive_result['best_channels']))
+                for ch, ratio in adaptive_result['best_channels'][:top_n]:
+                    if ch not in self.display_channel_list:
+                        best_channels_to_add.append(ch)
+                
+                if best_channels_to_add:
+                    # 添加最佳信道到显示列表
+                    self.display_channel_list.extend(best_channels_to_add)
+                    self.display_channel_list = sorted(list(set(self.display_channel_list)))  # 去重并排序
+                    # 更新显示信道输入框
+                    if hasattr(self, 'display_channels_entry'):
+                        self.display_channels_entry.setText(','.join(map(str, self.display_channel_list)))
+                    # 应用设置（不显示提示）
+                    self._apply_frame_settings(show_info=False)
+            
+            # 如果启用了自动切换，更新channel combo
+            if self.breathing_adaptive_auto_switch and channel is not None:
+                self.breathing_channel_combo.setCurrentText(str(channel))
+        else:
+            # 未启用自适应，使用手动选择的信道
+            try:
+                channel = int(self.breathing_channel_combo.currentText())
+            except:
+                # 如果没有选择，使用第一个可用信道
+                if all_channels:
+                    channel = all_channels[0]
+                    self.breathing_channel_combo.clear()
+                    self.breathing_channel_combo.addItems([str(ch) for ch in sorted(all_channels)])
+                    self.breathing_channel_combo.setCurrentText(str(channel))
+                else:
+                    self.breathing_result_text.setPlainText("等待数据积累...")
+                    return
         
         # 获取最近X帧的数据
         indices, values = self.data_processor.get_frame_data_range(
@@ -3527,29 +3869,57 @@ class BLEHostGUI(QMainWindow):
                 self.breathing_result_text.setPlainText("信号处理失败")
                 return
             
-            # 获取阈值
-            try:
-                threshold = float(self.breathing_threshold_entry.text())
-            except:
-                threshold = 0.6
-            
             # 检测呼吸
             detection = self.breathing_estimator.detect_breathing(
                 processed['highpass_filtered'], threshold=threshold
             )
             
             # 更新结果显示
-            result_text = f"Energy Ratio: {detection['energy_ratio']:.4f}\n"
-            result_text += f"Threshold: {threshold:.2f}\n"
-            result_text += f"Detection: {'Breathing Detected' if detection['has_breathing'] else 'No Breathing'}\n"
+            # 如果启用了自适应，只显示最佳信道的信息，不显示默认信道的能量占比
+            # 从BreathingEstimator获取最新状态
+            adaptive_state = self.breathing_estimator.get_adaptive_state()
+            current_best_channels = adaptive_state.get('best_channels', [])
             
-            if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
-                breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
-                result_text += f"Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
-                result_text += f"Breathing Rate: {breathing_rate:.1f} /min"
+            if (self.breathing_adaptive_enabled and 
+                self.breathing_adaptive_manual_control and 
+                current_best_channels):
+                # 只显示最佳信道信息
+                result_text = f"Threshold: {threshold:.2f}\n"
+                result_text += "最佳信道（按能量排序）:\n"
+                adaptive_selected = adaptive_state.get('selected_channel')
+                for i, (ch, ratio) in enumerate(current_best_channels[:self.breathing_adaptive_top_n]):
+                    marker = " ← 当前" if (self.breathing_adaptive_auto_switch and 
+                                         adaptive_selected == ch) else ""
+                    has_breathing_marker = " ✓" if ratio >= threshold else " ✗"
+                    result_text += f"  {i+1}. Channel {ch}: {ratio:.4f}{marker}{has_breathing_marker}\n"
+                
+                # 如果当前选中的信道有呼吸，显示详细信息
+                if (self.breathing_adaptive_auto_switch and 
+                    adaptive_selected is not None and
+                    adaptive_selected == channel):
+                    if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
+                        breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
+                        result_text += f"\n当前信道 (Channel {channel}):\n"
+                        result_text += f"  Energy Ratio: {detection['energy_ratio']:.4f}\n"
+                        result_text += f"  Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
+                        result_text += f"  Breathing Rate: {breathing_rate:.1f} /min"
+                    else:
+                        result_text += f"\n当前信道 (Channel {channel}):\n"
+                        result_text += f"  Energy Ratio: {detection['energy_ratio']:.4f}\n"
+                        result_text += "  No Breathing Detected"
             else:
-                result_text += "Breathing Freq: --\n"
-                result_text += "Breathing Rate: --"
+                # 未启用自适应，显示默认信道的完整信息
+                result_text = f"Energy Ratio: {detection['energy_ratio']:.4f}\n"
+                result_text += f"Threshold: {threshold:.2f}\n"
+                result_text += f"Detection: {'Breathing Detected' if detection['has_breathing'] else 'No Breathing'}\n"
+                
+                if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
+                    breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
+                    result_text += f"Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
+                    result_text += f"Breathing Rate: {breathing_rate:.1f} /min"
+                else:
+                    result_text += "Breathing Freq: --\n"
+                    result_text += "Breathing Rate: --"
             
             self.breathing_result_text.setPlainText(result_text)
             
@@ -3829,10 +4199,25 @@ class BLEHostGUI(QMainWindow):
         axes = plot_info['axes']
         
         # 获取选择的信道和数据类型
-        try:
-            channel = int(self.breathing_channel_combo.currentText())
-        except:
-            channel = 0
+        # 如果启用了自适应且自动切换，使用自适应选择的信道（仅在实时模式下）
+        if (not self.is_loaded_mode and
+            self.breathing_adaptive_enabled and 
+            self.breathing_adaptive_manual_control and
+            self.breathing_adaptive_auto_switch):
+            adaptive_state = self.breathing_estimator.get_adaptive_state()
+            adaptive_selected = adaptive_state.get('selected_channel')
+            if adaptive_selected is not None:
+                channel = adaptive_selected
+            else:
+                try:
+                    channel = int(self.breathing_channel_combo.currentText())
+                except:
+                    channel = 0
+        else:
+            try:
+                channel = int(self.breathing_channel_combo.currentText())
+            except:
+                channel = 0
         
         data_type = self.breathing_data_type_combo.currentText()
         
