@@ -1713,7 +1713,7 @@ class BLEHostGUI(QMainWindow):
     
     def _create_version_info(self, parent_layout):
         """创建版本信息"""
-        version_label = QLabel(f"v{__version__}\n{__version_date__}")
+        version_label = QLabel(f"v{__version__}\n build.{__version_date__}")
         version_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         version_label.setStyleSheet("color: gray; font-size: 8pt;")
         parent_layout.addWidget(version_label)
