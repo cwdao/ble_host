@@ -25,6 +25,9 @@ class DataProcessor:
         
         # 原始帧数据列表：用于保存功能，保存完整的帧数据
         self.raw_frames = []  # [frame_data, ...] 按接收顺序保存
+        
+        # 记录上一个帧的信道（用于检测信道变化）
+        self.last_frame_channels = set()  # 上一个帧的信道集合
     
     def add_data(self, timestamp: float, data: Dict[str, float]):
         """
@@ -39,7 +42,20 @@ class DataProcessor:
                 self.data_buffer[var_name] = []
             self.data_buffer[var_name].append((timestamp, value))
     
-    def add_frame_data(self, frame_data: Dict):
+    def clear_channel_data(self, channel: int):
+        """
+        清空指定信道的累积数据（用于信道切换时重新开始累积）
+        
+        Args:
+            channel: 信道号
+        """
+        if channel in self.frame_buffer:
+            # 清空该信道的所有数据类型
+            for data_type in self.frame_buffer[channel]:
+                self.frame_buffer[channel][data_type] = []
+            self.logger.info(f"[信道切换] 已清空信道 {channel} 的累积数据，重新开始累积")
+    
+    def add_frame_data(self, frame_data: Dict, detect_channel_change: bool = False) -> Optional[Tuple[List[int], List[int]]]:
         """
         添加帧数据
         
@@ -51,13 +67,50 @@ class DataProcessor:
                     'timestamp_ms': int,
                     'channels': {ch: {'amplitude': float, 'phase': float, ...}}
                 }
+            detect_channel_change: 是否检测信道变化（DF模式使用）
+        
+        Returns:
+            如果检测到信道变化并清空了数据，返回 (旧信道列表, 新信道列表) 元组；否则返回None
         """
         if not frame_data.get('frame'):
-            return
+            return None
         
         index = frame_data['index']
         timestamp_ms = frame_data['timestamp_ms']
         channels = frame_data.get('channels', {})
+        current_channels = set(channels.keys())
+        
+        # 检测信道变化（DF模式：每个帧只有一个信道）
+        channel_changed = False
+        old_channels = None
+        cleared_channels = None
+        
+        if detect_channel_change and self.last_frame_channels:
+            # 检查信道是否发生变化（当前帧的信道与上一个帧不同）
+            if current_channels != self.last_frame_channels:
+                # 信道发生变化，清空当前帧所有信道的累积数据（重新开始累积）
+                cleared_channels = []
+                old_channels = list(self.last_frame_channels)  # 保存旧信道用于返回
+                channel_changed = True
+                
+                for ch in current_channels:
+                    # 总是清空新信道的累积数据（无论是否有数据），确保重新开始累积
+                    if ch in self.frame_buffer:
+                        self.clear_channel_data(ch)
+                    cleared_channels.append(ch)
+                
+                if cleared_channels:
+                    self.logger.info(
+                        f"[信道切换] 检测到信道变化: {old_channels} -> {current_channels}，"
+                        f"已清空信道 {cleared_channels} 的累积数据，重新开始累积"
+                    )
+        
+        # 更新上一个帧的信道（无论是否变化都要更新，避免重复检测）
+        self.last_frame_channels = current_channels.copy()
+        
+        # 如果检测到信道变化，返回信息（在更新last_frame_channels之后）
+        if channel_changed and cleared_channels:
+            return (old_channels, cleared_channels)
         
         self.logger.debug(f"[数据存储] 添加帧 index={index}, 通道数={len(channels)}")
         
@@ -117,6 +170,9 @@ class DataProcessor:
                 f"amplitude={amplitude:.2f}, phase={phase:.4f}, "
                 f"local_amp={local_amplitude:.2f}, remote_amp={remote_amplitude:.2f}"
             )
+        
+        # 如果没有检测到信道变化，返回None
+        return None
     
     def get_data_range(self, var_name: str, duration: float) -> Tuple[np.ndarray, np.ndarray]:
         """

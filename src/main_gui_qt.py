@@ -149,6 +149,7 @@ class BLEHostGUI(QMainWindow):
         
         # 呼吸信道列表初始化标志
         self.breathing_channels_initialized = False  # 是否已初始化呼吸信道列表
+        self.last_breathing_channel = None  # 上一次呼吸估计使用的信道（用于检测信道变化）
         
         # 帧数据处理
         self.frame_type = config.default_frame_type
@@ -423,6 +424,7 @@ class BLEHostGUI(QMainWindow):
         data_type_label.installEventFilter(ToolTipFilter(data_type_label, 0, ToolTipPosition.TOP))
         data_type_layout.addWidget(data_type_label)
         self.breathing_data_type_combo = QComboBox()
+        # 初始添加所有选项，方向估计模式下会限制选项
         self.breathing_data_type_combo.addItems(["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"])
         data_type_layout.addWidget(self.breathing_data_type_combo)
         basic_layout.addLayout(data_type_layout)
@@ -430,14 +432,14 @@ class BLEHostGUI(QMainWindow):
         # 信道选择
         channel_layout = QHBoxLayout()
         channel_label = QLabel("Channel:")
-        channel_label.setToolTip("选择用于呼吸估计的信道")
+        channel_label.setToolTip("选择用于呼吸估计的信道（方向估计帧模式下自动使用当前帧的信道）")
         channel_label.installEventFilter(ToolTipFilter(channel_label, 0, ToolTipPosition.TOP))
         channel_layout.addWidget(channel_label)
         self.breathing_channel_combo = QComboBox()
         channel_layout.addWidget(self.breathing_channel_combo)
-        # 自适应checkbox
+        # 自适应checkbox（方向估计帧模式下禁用）
         self.breathing_adaptive_manual_checkbox = QCheckBox("自适应")
-        self.breathing_adaptive_manual_checkbox.setToolTip("启用后，呼吸信道自适应功能将接管信道选择")
+        self.breathing_adaptive_manual_checkbox.setToolTip("启用后，呼吸信道自适应功能将接管信道选择（方向估计帧模式下不可用）")
         self.breathing_adaptive_manual_checkbox.setChecked(self.breathing_adaptive_manual_control)
         self.breathing_adaptive_manual_checkbox.stateChanged.connect(self._on_adaptive_manual_changed)
         channel_layout.addWidget(self.breathing_adaptive_manual_checkbox)
@@ -2195,7 +2197,49 @@ class BLEHostGUI(QMainWindow):
                                     f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
                                 )
                         
-                        self.data_processor.add_frame_data(frame_data)
+                        # 添加帧数据，DF模式需要检测信道变化
+                        cleared_channels = self.data_processor.add_frame_data(
+                            frame_data, 
+                            detect_channel_change=self.is_direction_estimation_mode
+                        )
+                        
+                        # 如果检测到信道变化并清空了数据，需要重置呼吸估计状态
+                        if cleared_channels and self.is_direction_estimation_mode:
+                            # cleared_channels 是 (old_channels, new_channels) 元组
+                            if isinstance(cleared_channels, tuple) and len(cleared_channels) == 2:
+                                old_channels_list, new_channels_list = cleared_channels
+                                old_channel = old_channels_list[0] if old_channels_list else None
+                                new_channel = new_channels_list[0] if new_channels_list else None
+                            else:
+                                # 兼容旧格式（如果返回的是列表）
+                                new_channel = cleared_channels[0] if cleared_channels else None
+                                old_channel = self.last_breathing_channel
+                            
+                            # 如果新信道存在，更新状态
+                            if new_channel is not None:
+                                # 重置呼吸估计状态
+                                self.breathing_estimator.adaptive_selected_channel = None
+                                self.breathing_estimator.current_best_channels = []
+                                self.breathing_estimator.adaptive_low_energy_start_time = None
+                                
+                                # 在结果框中显示提示
+                                if hasattr(self, 'breathing_result_text'):
+                                    old_channel_display = old_channel if old_channel is not None else 'N/A'
+                                    self.breathing_result_text.setPlainText(
+                                        f"⚠️ 信道已切换: {old_channel_display} -> {new_channel}\n"
+                                        f"已清空累积数据，重新开始累积时间窗\n"
+                                        f"当前信道: {new_channel}\n"
+                                        f"等待数据积累..."
+                                    )
+                                
+                                # 更新上次使用的信道（设置为新信道）
+                                self.last_breathing_channel = new_channel
+                                
+                                self.logger.info(
+                                    f"[呼吸估计] 检测到信道变化: {old_channel_display} -> {new_channel}，"
+                                    f"已重置呼吸估计状态，等待新信道数据积累"
+                                )
+                        
                         frames_processed += 1
                         has_new_frame = True
                         
@@ -2208,9 +2252,19 @@ class BLEHostGUI(QMainWindow):
                                 if hasattr(self, 'display_channels_entry'):
                                     self.display_channels_entry.setText(','.join(str(ch) for ch in channels))
                                 self.logger.info(f"[方向估计帧] 自动更新显示信道列表: {channels}")
+                            
+                            # 方向估计帧模式下，更新呼吸估计的信道显示
+                            # 注意：这里只更新显示，不触发信道变化检测（已在上面处理）
+                            if channels and hasattr(self, 'breathing_channel_combo'):
+                                current_channel = channels[0]  # 方向估计帧只有一个信道
+                                current_text = self.breathing_channel_combo.currentText()
+                                if current_text != str(current_channel):
+                                    self.breathing_channel_combo.clear()
+                                    self.breathing_channel_combo.addItem(str(current_channel))
+                                    self.breathing_channel_combo.setCurrentText(str(current_channel))
                         
                         # 更新呼吸估计的信道列表（只在第一次收到帧数据时更新，避免频繁操作）
-                        # 方向估计帧模式下不启用呼吸估计
+                        # 方向估计帧模式下已在上面处理
                         if not self.is_direction_estimation_mode and not self.breathing_channels_initialized and hasattr(self, 'breathing_channel_combo'):
                             all_channels = self.data_processor.get_all_frame_channels()
                             if all_channels:
@@ -3706,6 +3760,38 @@ class BLEHostGUI(QMainWindow):
         if hasattr(self, 'breathing_bandpass_order_entry'):
             self.breathing_bandpass_order_entry.setText(str(self.breathing_estimator.bandpass_order))
         
+        # 方向估计帧模式下的特殊处理
+        if self.is_direction_estimation_mode:
+            # 限制data_type选项为amplitude和local_amplitude
+            if hasattr(self, 'breathing_data_type_combo'):
+                current_text = self.breathing_data_type_combo.currentText()
+                self.breathing_data_type_combo.clear()
+                self.breathing_data_type_combo.addItems(["amplitude", "local_amplitude"])
+                # 如果当前选项不在新列表中，使用amplitude
+                if current_text not in ["amplitude", "local_amplitude"]:
+                    self.breathing_data_type_combo.setCurrentText("amplitude")
+            
+            # 禁用信道选择和自适应功能
+            if hasattr(self, 'breathing_channel_combo'):
+                self.breathing_channel_combo.setEnabled(False)
+            if hasattr(self, 'breathing_adaptive_manual_checkbox'):
+                self.breathing_adaptive_manual_checkbox.setEnabled(False)
+        else:
+            # 信道探测帧模式：恢复所有选项和功能
+            if hasattr(self, 'breathing_data_type_combo'):
+                current_text = self.breathing_data_type_combo.currentText()
+                self.breathing_data_type_combo.clear()
+                self.breathing_data_type_combo.addItems(["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"])
+                # 如果当前选项不在新列表中，使用amplitude
+                if current_text not in ["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"]:
+                    self.breathing_data_type_combo.setCurrentText("amplitude")
+            
+            # 启用信道选择和自适应功能
+            if hasattr(self, 'breathing_channel_combo'):
+                self.breathing_channel_combo.setEnabled(True)
+            if hasattr(self, 'breathing_adaptive_manual_checkbox'):
+                self.breathing_adaptive_manual_checkbox.setEnabled(True)
+        
         self.logger.info(f"已根据帧类型 '{self.frame_type}' 更新呼吸估计参数UI")
     
     def _on_reset_breathing_defaults(self):
@@ -4420,7 +4506,13 @@ class BLEHostGUI(QMainWindow):
     
     def _update_channel_combo_enabled(self):
         """更新channel combo的启用状态"""
-        # 如果启用了自适应且启用了自动切换，则禁用channel选择
+        # 方向估计帧模式下，channel combo始终禁用（自动使用实际接收的信道）
+        if self.is_direction_estimation_mode:
+            if hasattr(self, 'breathing_channel_combo'):
+                self.breathing_channel_combo.setEnabled(False)
+            return
+        
+        # 信道探测帧模式：如果启用了自适应且启用了自动切换，则禁用channel选择
         if (self.breathing_adaptive_manual_control and 
             self.breathing_adaptive_enabled and 
             self.breathing_adaptive_auto_switch):
@@ -4447,8 +4539,51 @@ class BLEHostGUI(QMainWindow):
         except:
             threshold = 0.6
         
-        # 如果启用了自适应且启用了最佳信道选取
-        if (self.breathing_adaptive_enabled and 
+        # 方向估计帧模式：自动使用当前帧的实际信道
+        if self.is_direction_estimation_mode:
+            # 方向估计帧只有一个信道，自动使用该信道
+            if len(all_channels) > 0:
+                channel = all_channels[0]  # 方向估计帧只有一个信道
+                
+                # 检测信道是否发生变化
+                old_channel = self.last_breathing_channel
+                channel_changed = (old_channel is not None and old_channel != channel)
+                
+                # 更新channel combo显示当前信道
+                if hasattr(self, 'breathing_channel_combo'):
+                    current_text = self.breathing_channel_combo.currentText()
+                    if current_text != str(channel):
+                        self.breathing_channel_combo.clear()
+                        self.breathing_channel_combo.addItem(str(channel))
+                        self.breathing_channel_combo.setCurrentText(str(channel))
+                        # 如果显示的信道变化了，也视为信道变化
+                        if old_channel is not None and int(current_text) != channel:
+                            channel_changed = True
+                
+                # 如果信道变化，在结果框中显示提示并重置状态
+                if channel_changed:
+                    self.breathing_result_text.setPlainText(
+                        f"⚠️ 信道已切换: {old_channel} -> {channel}\n"
+                        f"已清空累积数据，重新开始累积时间窗\n"
+                        f"当前信道: {channel}\n"
+                        f"等待数据积累..."
+                    )
+                    # 重置呼吸估计状态
+                    self.breathing_estimator.adaptive_selected_channel = None
+                    self.breathing_estimator.current_best_channels = []
+                    self.breathing_estimator.adaptive_low_energy_start_time = None
+                    # 更新上次使用的信道
+                    self.last_breathing_channel = channel
+                    self.logger.info(f"[呼吸估计] 检测到信道变化: {old_channel} -> {channel}，已重置状态")
+                    return  # 信道变化时，直接返回，等待重新累积
+                
+                # 更新上次使用的信道
+                self.last_breathing_channel = channel
+            else:
+                self.breathing_result_text.setPlainText("等待数据积累...")
+                return
+        # 信道探测帧模式：支持自适应和手动选择
+        elif (self.breathing_adaptive_enabled and 
             self.breathing_adaptive_manual_control):
             # 更新BreathingEstimator的配置
             self.breathing_estimator.set_adaptive_config(
@@ -4524,12 +4659,43 @@ class BLEHostGUI(QMainWindow):
             channel, max_frames=self.display_max_frames, data_type=data_type
         )
         
+        # 检查信道是否发生变化（通过比较当前信道和上次使用的信道）
+        # 注意：方向估计帧模式下的信道变化已在上面处理，这里只处理信道探测帧模式
+        if not self.is_direction_estimation_mode:
+            if self.last_breathing_channel is not None and self.last_breathing_channel != channel:
+                # 信道变化，重置状态并显示提示
+                old_channel = self.last_breathing_channel
+                self.last_breathing_channel = channel
+                self.breathing_result_text.setPlainText(
+                    f"⚠️ 信道已切换: {old_channel} -> {channel}\n"
+                    f"已清空累积数据，重新开始累积时间窗\n"
+                    f"当前信道: {channel}\n"
+                    f"等待数据积累..."
+                )
+                # 重置呼吸估计状态
+                self.breathing_estimator.adaptive_selected_channel = None
+                self.breathing_estimator.current_best_channels = []
+                self.breathing_estimator.adaptive_low_energy_start_time = None
+                self.logger.info(f"[呼吸估计] 检测到信道变化: {old_channel} -> {channel}，已重置状态")
+                return
+            
+            # 更新上次使用的信道
+            if self.last_breathing_channel != channel:
+                self.last_breathing_channel = channel
+        
         if len(values) < self.display_max_frames:
             # 数据还未积累到X帧
-            self.breathing_result_text.setPlainText(
-                f"数据积累中: {len(values)}/{self.display_max_frames} 帧\n"
-                f"需要积累到 {self.display_max_frames} 帧后开始分析"
-            )
+            if self.is_direction_estimation_mode:
+                self.breathing_result_text.setPlainText(
+                    f"Current Channel: {channel}\n"
+                    f"数据积累中: {len(values)}/{self.display_max_frames} 帧\n"
+                    f"需要积累到 {self.display_max_frames} 帧后开始分析"
+                )
+            else:
+                self.breathing_result_text.setPlainText(
+                    f"数据积累中: {len(values)}/{self.display_max_frames} 帧\n"
+                    f"需要积累到 {self.display_max_frames} 帧后开始分析"
+                )
             return
         
         if len(values) == 0:
@@ -4587,7 +4753,13 @@ class BLEHostGUI(QMainWindow):
                         result_text += "  No Breathing Detected"
             else:
                 # 未启用自适应，显示默认信道的完整信息
-                result_text = f"Energy Ratio: {detection['energy_ratio']:.4f}\n"
+                # 方向估计帧模式下，显示当前信道
+                if self.is_direction_estimation_mode:
+                    result_text = f"Current Channel: {channel}\n"
+                else:
+                    result_text = f"Channel: {channel}\n"
+                
+                result_text += f"Energy Ratio: {detection['energy_ratio']:.4f}\n"
                 result_text += f"Threshold: {threshold:.2f}\n"
                 result_text += f"Detection: {'Breathing Detected' if detection['has_breathing'] else 'No Breathing'}\n"
                 
