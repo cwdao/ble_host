@@ -115,6 +115,12 @@ class AppConfig:
     breathing_df_total_freq_low: float = 0.05  # Hz
     breathing_df_total_freq_high: float = 0.8  # Hz
     
+    # 命令发送默认参数
+    command_default_cte_type: str = "aoa"  # 默认CTE类型
+    command_default_channels: str = "3"  # 默认信道列表
+    command_default_cte_len: str = "2"  # 默认CTE长度
+    command_default_interval_ms: str = "10"  # 默认连接间隔（毫秒）
+    
     def __post_init__(self):
         """初始化后处理"""
         if self.baudrate_options is None:

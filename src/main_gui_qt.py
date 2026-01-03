@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QCheckBox,
     QRadioButton, QSlider, QTabWidget, QSplitter, QGroupBox, QMessageBox,
     QFileDialog, QButtonGroup, QFrame, QMenuBar, QMenu, QDialog, QDialogButtonBox,
-    QSizePolicy, QSpinBox
+    QSizePolicy, QSpinBox, QDoubleSpinBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QMetaObject, QCoreApplication
 from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup, QFontDatabase, QPainter
@@ -67,6 +67,7 @@ try:
     from .plotter_qt_realtime import RealtimePlotter
     from .plotter_qt_matplotlib import MatplotlibPlotter
     from .gui.info_bar_helper import InfoBarHelper
+    from .command_sender import CommandSender
 except ImportError:
     # 直接运行时使用绝对导入
     from serial_reader import SerialReader
@@ -78,6 +79,7 @@ except ImportError:
     from plotter_qt_realtime import RealtimePlotter
     from plotter_qt_matplotlib import MatplotlibPlotter
     from gui.info_bar_helper import InfoBarHelper
+    from command_sender import CommandSender
 
 # 版本信息
 __version__ = config.version
@@ -119,6 +121,7 @@ class BLEHostGUI(QMainWindow):
         self.data_parser = DataParser()
         self.data_processor = DataProcessor()
         self.data_saver = DataSaver()
+        self.command_sender = CommandSender()
         
         # 多个绘图器（用于不同选项卡）
         self.plotters = {}
@@ -645,12 +648,59 @@ class BLEHostGUI(QMainWindow):
         send_command_layout.setContentsMargins(5, 5, 5, 5)
         send_command_layout.setSpacing(10)
         
-        # 指令输入区域
+        # 命令类型选择区域
+        type_label = QLabel("命令类型:")
+        send_command_layout.addWidget(type_label)
+        
+        self.command_type_combo = QComboBox()
+        # 添加所有命令类型
+        for cmd_type, cmd_def in self.command_sender.COMMAND_TYPES.items():
+            self.command_type_combo.addItem(f"{cmd_type} - {cmd_def['description']}", cmd_type)
+        self.command_type_combo.currentIndexChanged.connect(self._on_command_type_changed)
+        send_command_layout.addWidget(self.command_type_combo)
+        
+        # 参数输入区域（固定创建所有参数框）
+        self.param_widgets = {}  # 存储参数控件
+        self.param_container = QWidget()
+        self.param_layout = QVBoxLayout(self.param_container)
+        self.param_layout.setContentsMargins(0, 0, 0, 0)
+        self.param_layout.setSpacing(5)
+        send_command_layout.addWidget(self.param_container)
+        
+        # 固定创建所有可能的参数框（避免重复创建）
+        self._create_fixed_param_widgets()
+        
+        # 转义字符选项
+        escape_layout = QHBoxLayout()
+        self.escape_checkbox = QCheckBox("启用转义字符")
+        self.escape_checkbox.setChecked(True)  # 默认勾选
+        self.escape_checkbox.stateChanged.connect(self._on_escape_checkbox_changed)
+        escape_layout.addWidget(self.escape_checkbox)
+        escape_layout.addStretch()
+        send_command_layout.addLayout(escape_layout)
+        
+        # 命令生成和发送区域
+        generate_layout = QHBoxLayout()
+        self.generate_command_btn = QPushButton("生成命令")
+        self.generate_command_btn.setStyleSheet(self._get_button_style("#2196F3"))
+        self.generate_command_btn.clicked.connect(self._on_generate_command)
+        generate_layout.addWidget(self.generate_command_btn)
+        
+        # 恢复默认参数按钮
+        self.reset_params_btn = QPushButton("恢复默认")
+        self.reset_params_btn.setStyleSheet(self._get_button_style("#9E9E9E"))
+        self.reset_params_btn.clicked.connect(self._on_reset_command_params)
+        generate_layout.addWidget(self.reset_params_btn)
+        
+        generate_layout.addStretch()
+        send_command_layout.addLayout(generate_layout)
+        
+        # 指令输入区域（显示生成的命令，也可以手动编辑）
         input_label = QLabel("指令内容:")
         send_command_layout.addWidget(input_label)
         
         self.command_input = QLineEdit()
-        self.command_input.setPlaceholderText("输入要发送的指令...")
+        self.command_input.setPlaceholderText("输入要发送的指令或使用上方生成命令...")
         self.command_input.returnPressed.connect(self._on_send_command)  # 按回车发送
         send_command_layout.addWidget(self.command_input)
         
@@ -663,14 +713,14 @@ class BLEHostGUI(QMainWindow):
         send_btn_layout.addStretch()
         send_command_layout.addLayout(send_btn_layout)
         
-        # 历史记录区域
-        history_label = QLabel("发送历史:")
+        # 交互历史区域（显示发送和反馈）
+        history_label = QLabel("交互历史:")
         send_command_layout.addWidget(history_label)
         
         self.command_history = QTextEdit()
         self.command_history.setReadOnly(True)
         self.command_history.setFont(QFont("Consolas", 9))
-        self.command_history.setMaximumHeight(150)
+        self.command_history.setMaximumHeight(200)
         send_command_layout.addWidget(self.command_history)
         
         # 清空历史按钮
@@ -680,6 +730,9 @@ class BLEHostGUI(QMainWindow):
         send_command_layout.addWidget(clear_history_btn)
         
         send_command_layout.addStretch()
+        
+        # 初始化参数输入区域（根据当前命令类型启用/禁用参数框）
+        self._on_command_type_changed()
         
         # 将发送指令widget添加到工具栏tab
         self.toolbar_tabs.addTab(send_command_widget, "发送指令")
@@ -2105,6 +2158,16 @@ class BLEHostGUI(QMainWindow):
         
         # 批量处理数据
         for data in data_batch:
+            # 检查是否是命令反馈（$OK, $ERR, $EVT）
+            # 在帧数据解析之前检查，但反馈识别不影响帧数据处理
+            if data.get('text'):
+                response = self.command_sender.parse_response(data['text'])
+                if response:
+                    # 是命令反馈，添加到交互历史
+                    if hasattr(self, 'command_history'):
+                        self._add_response_to_history(response)
+                    # 反馈识别后继续处理其他数据（如帧数据）
+            
             # 如果是帧模式，优先处理帧数据
             if self.frame_mode:
                 # 解析数据（会更新内部状态，累积IQ数据）
@@ -3676,6 +3739,283 @@ class BLEHostGUI(QMainWindow):
         
         self.logger.info("已从config恢复呼吸估计的默认配置")
     
+    def _create_fixed_param_widgets(self):
+        """固定创建所有可能的参数输入框（一直显示，通过启用/禁用控制）"""
+        # 定义所有可能的参数
+        all_params = [
+            {'key': 'action', 'label': '操作', 'type': 'select', 'options': ['start', 'stop', 'disconnect'], 
+             'tooltip': '操作类型:\nstart: 开始扫描\nstop: 停止扫描\ndisconnect: 断开连接'},
+            {'key': 'channels', 'label': '信道列表', 'type': 'text',
+             'tooltip': '自定义数据信道列表，用|分隔，每个信道0..36\n例如: 3|10|25'},
+            {'key': 'interval_ms', 'label': '连接间隔(ms)', 'type': 'number',
+             'tooltip': '连接间隔（毫秒），必须可换算成1.25ms units\n范围: 7.5ms..4s\n例如: 25'},
+            {'key': 'cte_len', 'label': 'CTE长度', 'type': 'number',
+             'tooltip': 'CTE长度（单位8us），范围0..255\n例如: 2'},
+            {'key': 'cte_type', 'label': 'CTE类型', 'type': 'select', 'options': ['aod1', 'aod2', 'aoa'],
+             'tooltip': 'CTE类型:\naod1: AOD类型1\naod2: AOD类型2\naoa: AOA类型（需编译启用）'},
+        ]
+        
+        # 为每个参数创建输入控件
+        for param_def in all_params:
+            param_key = param_def['key']
+            param_label = param_def['label']
+            param_type = param_def.get('type', 'text')
+            param_tooltip = param_def.get('tooltip', '')
+            
+            # 创建行容器widget（一直显示）
+            row_widget = QWidget()
+            param_row = QHBoxLayout(row_widget)
+            param_row.setContentsMargins(0, 0, 0, 0)
+            
+            label = QLabel(f"{param_label}:")
+            if param_tooltip:
+                label.setToolTip(param_tooltip)
+                label.installEventFilter(ToolTipFilter(label, 0, ToolTipPosition.TOP))
+            param_row.addWidget(label)
+            
+            if param_type == 'select':
+                # 下拉选择框
+                combo = QComboBox()
+                # 根据参数key设置选项
+                if param_key == 'action':
+                    # action参数需要根据命令类型动态设置选项，初始为空
+                    pass  # 选项会在命令类型改变时设置
+                else:
+                    combo.addItems(param_def.get('options', []))
+                param_row.addWidget(combo)
+                widget = combo
+            elif param_type == 'number':
+                # 数字输入框（使用QLineEdit以支持小数）
+                line_edit = QLineEdit()
+                line_edit.setPlaceholderText(f"输入{param_label}（数字）...")
+                param_row.addWidget(line_edit)
+                widget = line_edit
+            else:
+                # 文本输入框
+                line_edit = QLineEdit()
+                line_edit.setPlaceholderText(f"输入{param_label}...")
+                param_row.addWidget(line_edit)
+                widget = line_edit
+            
+            if param_tooltip and hasattr(widget, 'setToolTip'):
+                widget.setToolTip(param_tooltip)
+                if hasattr(widget, 'installEventFilter'):
+                    widget.installEventFilter(ToolTipFilter(widget, 0, ToolTipPosition.TOP))
+            
+            param_row.addStretch()
+            self.param_layout.addWidget(row_widget)
+            
+            # 保存控件引用（包含整个行widget和label，用于启用/禁用）
+            self.param_widgets[param_key] = {
+                'widget': widget,
+                'label': label,
+                'row_widget': row_widget,
+                'type': param_type,
+                'def': param_def
+            }
+        
+        # 创建"无需参数"提示标签（初始隐藏）
+        self.no_params_label = QLabel("此命令无需参数")
+        self.no_params_label.setStyleSheet("color: gray;")
+        self.no_params_label.hide()
+        self.param_layout.addWidget(self.no_params_label)
+    
+    def _on_command_type_changed(self):
+        """命令类型改变时的回调"""
+        # 获取当前选中的命令类型
+        current_index = self.command_type_combo.currentIndex()
+        if current_index < 0:
+            return
+        
+        cmd_type = self.command_type_combo.itemData(current_index)
+        if not cmd_type:
+            return
+        
+        cmd_def = self.command_sender.COMMAND_TYPES.get(cmd_type)
+        if not cmd_def:
+            return
+        
+        # 获取当前命令需要的参数key列表
+        required_param_keys = {param['key'] for param in cmd_def['params']}
+        
+        # 更新action下拉框的选项（根据命令类型）
+        if 'action' in self.param_widgets:
+            action_widget = self.param_widgets['action']['widget']
+            if isinstance(action_widget, QComboBox):
+                action_widget.clear()
+                if cmd_type == 'BLE_SCAN':
+                    action_widget.addItems(['start', 'stop'])
+                elif cmd_type == 'BLE_CONN':
+                    action_widget.addItems(['disconnect'])
+                else:
+                    # 其他命令类型不需要action参数
+                    pass
+        
+        # 启用/禁用参数框（所有框都显示，但根据命令类型启用/禁用）
+        for param_key, param_info in self.param_widgets.items():
+            widget = param_info['widget']
+            label = param_info['label']
+            
+            if param_key in required_param_keys:
+                # 启用该参数框
+                widget.setEnabled(True)
+                label.setEnabled(True)
+                # 设置标签样式为正常
+                label.setStyleSheet("")
+                
+                # 如果是action参数且当前命令不需要，清空并重置
+                if param_key == 'action' and cmd_type not in ['BLE_SCAN', 'BLE_CONN']:
+                    if isinstance(widget, QComboBox):
+                        widget.clear()
+                # 如果不是action参数，清空输入框（切换命令时清空旧值）
+                elif param_key != 'action':
+                    if isinstance(widget, QLineEdit):
+                        widget.clear()
+                    elif isinstance(widget, QComboBox):
+                        widget.setCurrentIndex(0)
+            else:
+                # 禁用该参数框
+                widget.setEnabled(False)
+                label.setEnabled(False)
+                # 设置标签样式为灰色（表示禁用）
+                label.setStyleSheet("color: gray;")
+                # 清空输入框
+                if isinstance(widget, QLineEdit):
+                    widget.clear()
+                elif isinstance(widget, QComboBox):
+                    widget.clear()
+        
+        # 显示/隐藏"无需参数"提示
+        if not cmd_def['params']:
+            self.no_params_label.show()
+        else:
+            self.no_params_label.hide()
+    
+    def _on_escape_checkbox_changed(self, state):
+        """转义字符checkbox改变时的回调"""
+        if state != Qt.CheckState.Checked.value:
+            # 取消勾选时显示警告
+            InfoBarHelper.warning(
+                self,
+                title="转义字符已禁用",
+                content="发送命令时\\n将按字符发送，而不是<LF>，请注意",
+                duration=3000
+            )
+    
+    def _on_reset_command_params(self):
+        """恢复默认参数按钮的回调"""
+        # 恢复默认参数值
+        if 'cte_type' in self.param_widgets:
+            widget = self.param_widgets['cte_type']['widget']
+            if isinstance(widget, QComboBox):
+                index = widget.findText(config.command_default_cte_type)
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+        
+        if 'channels' in self.param_widgets:
+            widget = self.param_widgets['channels']['widget']
+            if isinstance(widget, QLineEdit):
+                widget.setText(config.command_default_channels)
+        
+        if 'cte_len' in self.param_widgets:
+            widget = self.param_widgets['cte_len']['widget']
+            if isinstance(widget, QLineEdit):
+                widget.setText(config.command_default_cte_len)
+        
+        if 'interval_ms' in self.param_widgets:
+            widget = self.param_widgets['interval_ms']['widget']
+            if isinstance(widget, QLineEdit):
+                widget.setText(config.command_default_interval_ms)
+        
+        InfoBarHelper.success(
+            self,
+            title="已恢复默认参数",
+            content="命令参数已恢复为默认值"
+        )
+        
+        self.logger.info("已恢复命令发送的默认参数")
+    
+    def _on_generate_command(self):
+        """生成命令按钮的回调"""
+        # 获取当前选中的命令类型
+        current_index = self.command_type_combo.currentIndex()
+        if current_index < 0:
+            InfoBarHelper.warning(
+                self,
+                title="无法生成",
+                content="请选择命令类型"
+            )
+            return
+        
+        cmd_type = self.command_type_combo.itemData(current_index)
+        if not cmd_type:
+            return
+        
+        # 收集参数值（只收集启用的参数）
+        params = {}
+        for param_key, param_info in self.param_widgets.items():
+            widget = param_info['widget']
+            
+            # 只收集启用的参数
+            if not widget.isEnabled():
+                continue
+            
+            param_type = param_info['type']
+            
+            if param_type == 'select':
+                # 下拉框
+                if isinstance(widget, QComboBox):
+                    value = widget.currentText()
+                    if value:
+                        params[param_key] = value
+            elif param_type == 'number':
+                # 数字输入框（QLineEdit）
+                if isinstance(widget, QLineEdit):
+                    value = widget.text().strip()
+                    if value:
+                        params[param_key] = value
+            else:
+                # 文本输入框
+                if isinstance(widget, QLineEdit):
+                    value = widget.text().strip()
+                    if value:
+                        params[param_key] = value
+        
+        # 验证参数
+        enable_escape = self.escape_checkbox.isChecked()
+        is_valid, error_msg = self.command_sender.validate_params(cmd_type, params)
+        
+        if not is_valid:
+            InfoBarHelper.error(
+                self,
+                title="参数验证失败",
+                content=error_msg or "参数格式不正确"
+            )
+            return
+        
+        # 生成命令（总是包含\n作为字符串，用于显示）
+        try:
+            # 生成命令（不包含换行符）
+            command = self.command_sender.generate_command(cmd_type, params, always_include_newline=False)
+            
+            # 在命令末尾添加\n作为字符串（用于显示）
+            command_with_newline = command + '\\n'
+            
+            # 显示在输入框中（用户可以看到完整命令，包括\n）
+            self.command_input.setText(command_with_newline)
+            
+            InfoBarHelper.success(
+                self,
+                title="命令已生成",
+                content="命令已生成并填入输入框，可以编辑或直接发送"
+            )
+        except Exception as e:
+            InfoBarHelper.error(
+                self,
+                title="生成失败",
+                content=f"生成命令时出错: {str(e)}"
+            )
+    
     def _on_send_command(self):
         """发送指令按钮的回调"""
         if not self.is_running or not self.serial_reader:
@@ -3686,8 +4026,8 @@ class BLEHostGUI(QMainWindow):
             )
             return
         
-        command = self.command_input.text().strip()
-        if not command:
+        command_text = self.command_input.text()
+        if not command_text.strip():
             InfoBarHelper.warning(
                 self,
                 title="指令为空",
@@ -3695,19 +4035,32 @@ class BLEHostGUI(QMainWindow):
             )
             return
         
+        # 处理转义字符
+        enable_escape = self.escape_checkbox.isChecked()
+        if enable_escape:
+            # 启用转义：处理转义字符（将\n等转换为实际字符）
+            # 例如：输入框中的\n会被转换为实际的换行符<LF>
+            command = self.command_sender.process_escape_chars(command_text)
+        else:
+            # 不启用转义：\n按正常字符发送（两个字符：反斜杠和n）
+            # 输入框中的\n已经是字符串形式，直接发送即可
+            command = command_text
+        
         # 发送指令
         success = self.serial_reader.write(command)
         
         if success:
-            # 添加到历史记录
+            # 添加到交互历史（显示发送的命令）
             timestamp = datetime.now().strftime("%H:%M:%S")
-            history_text = f"[{timestamp}] {command}\n"
+            # 显示时转义换行符以便阅读
+            display_cmd = command.replace('\n', '\\n').replace('\r', '\\r')
+            history_text = f"[{timestamp}] 发送: {display_cmd}\n"
             self.command_history.append(history_text.rstrip())
             
             # 清空输入框
             self.command_input.clear()
             
-            self.logger.info(f"已发送指令: {command}")
+            self.logger.info(f"已发送指令: {display_cmd}")
         else:
             InfoBarHelper.error(
                 self,
@@ -3718,7 +4071,29 @@ class BLEHostGUI(QMainWindow):
     def _on_clear_command_history(self):
         """清空指令历史"""
         self.command_history.clear()
-        self.logger.info("已清空指令历史")
+        self.logger.info("已清空交互历史")
+    
+    def _add_response_to_history(self, response_data: Dict):
+        """添加反馈到交互历史"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        resp_type = response_data.get('type', 'UNKNOWN')
+        
+        if resp_type == 'OK':
+            cmd = response_data.get('cmd', '')
+            msg = response_data.get('msg', '')
+            history_text = f"[{timestamp}] 反馈: $OK,{cmd}" + (f",{msg}" if msg else "") + "\n"
+            self.command_history.append(history_text.rstrip())
+        elif resp_type == 'ERR':
+            cmd = response_data.get('cmd', '')
+            code = response_data.get('code', 0)
+            msg = response_data.get('msg', '')
+            history_text = f"[{timestamp}] 错误: $ERR,{cmd},{code}" + (f",{msg}" if msg else "") + "\n"
+            self.command_history.append(history_text.rstrip())
+        elif resp_type == 'EVT':
+            topic = response_data.get('topic', '')
+            msg = response_data.get('msg', '')
+            history_text = f"[{timestamp}] 事件: $EVT,{topic}" + (f",{msg}" if msg else "") + "\n"
+            self.command_history.append(history_text.rstrip())
     
     def _on_show_log_changed(self, state):
         """日志显示控制改变"""
