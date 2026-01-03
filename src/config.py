@@ -16,7 +16,7 @@ class AppConfig:
     """应用程序配置"""
     # 版本信息
     version: str = "3.5.0"
-    version_date: str = "2026-01-01"
+    version_date: str = "2026-01-03"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     
     # 窗口配置
