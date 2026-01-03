@@ -192,4 +192,34 @@ class SerialReader:
                 self.data_queue.get_nowait()
             except:
                 break
+    
+    def write(self, data):
+        """
+        向串口发送数据
+        
+        Args:
+            data: 要发送的数据，可以是字符串或字节
+        
+        Returns:
+            bool: 发送是否成功
+        """
+        if not self.serial or not self.serial.is_open:
+            self.logger.warning("串口未连接，无法发送数据")
+            return False
+        
+        try:
+            if isinstance(data, str):
+                # 如果是字符串，编码为字节
+                data = data.encode('utf-8')
+            
+            # 发送数据
+            bytes_written = self.serial.write(data)
+            self.serial.flush()  # 确保数据立即发送
+            
+            self.logger.info(f"已发送 {bytes_written} 字节数据: {data}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"发送数据失败: {e}")
+            return False
 

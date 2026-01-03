@@ -195,6 +195,13 @@ class BLEHostGUI(QMainWindow):
         self.clear_data_progress_value = 0
         self.is_holding_clear_btn = False
         
+        # 显示控制相关（默认都显示）
+        self.show_log = True
+        self.show_version_info = True
+        self.show_toolbar = True
+        self.show_breathing_control = True
+        self.show_send_command = True
+        
         # 时间窗滑动条按钮长按相关
         self.slider_button_timer = None
         self.is_holding_slider_btn = False
@@ -326,7 +333,7 @@ class BLEHostGUI(QMainWindow):
         main_layout.addWidget(self.config_tabs)
         
         # 3. 左右分栏（绘图区域 + 右侧面板）
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         
         # 左侧：绘图区域
         left_widget = QWidget()
@@ -341,19 +348,61 @@ class BLEHostGUI(QMainWindow):
         self._create_plot_tabs()
         left_layout.addWidget(self.plot_tabs)
         
-        splitter.addWidget(left_widget)
-        splitter.setStretchFactor(0, 2)  # 左侧占 2/3
+        self.main_splitter.addWidget(left_widget)
+        self.main_splitter.setStretchFactor(0, 2)  # 左侧占 2/3
         
-        # 右侧：信息面板
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(5, 5, 5, 5)
+        # 右侧：信息面板（使用垂直QSplitter以便调整大小）
+        self.right_widget = QWidget()
+        self.right_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.right_splitter.setChildrenCollapsible(False)  # 防止完全折叠
         
-        # 呼吸估计控制区域（改为Tab Widget）
-        self.breathing_control_group = QGroupBox("Breathing Estimation Control")
-        breathing_control_layout = QVBoxLayout(self.breathing_control_group)
+        # 工具栏（包含呼吸控制和发送指令）
+        self.toolbar_group = QGroupBox("工具栏")
+        toolbar_layout = QVBoxLayout(self.toolbar_group)
         
-        # 创建Tab Widget
+        # 创建工具栏Tab Widget
+        self.toolbar_tabs = QTabWidget()
+        tab_font = get_app_font(10)
+        self.toolbar_tabs.setFont(tab_font)
+        
+        # 创建呼吸控制tab（包含原有的三个子tab）
+        self._create_breathing_control_tab(toolbar_layout)
+        
+        # 创建发送指令tab
+        self._create_send_command_tab(toolbar_layout)
+        
+        toolbar_layout.addWidget(self.toolbar_tabs)
+        self.right_splitter.addWidget(self.toolbar_group)
+        
+        # 数据处理区域（暂时隐藏）
+        self.process_group = QGroupBox("数据处理")
+        process_layout = QVBoxLayout(self.process_group)
+        self._create_process_panel(process_layout)
+        self.process_group.setVisible(False)  # 暂时隐藏
+        self.right_splitter.addWidget(self.process_group)
+        
+        # 日志区域
+        self._create_log_panel(self.right_splitter)
+        
+        # 版本信息（不添加到splitter，直接添加到right_widget的底部）
+        self.right_widget_layout = QVBoxLayout(self.right_widget)
+        self.right_widget_layout.setContentsMargins(5, 5, 5, 5)
+        self.right_widget_layout.addWidget(self.right_splitter, stretch=1)
+        self._create_version_info(self.right_widget_layout)
+        
+        self.main_splitter.addWidget(self.right_widget)
+        self.main_splitter.setStretchFactor(1, 1)  # 右侧占 1/3
+        self.main_splitter.setChildrenCollapsible(False)  # 防止完全折叠
+        
+        main_layout.addWidget(self.main_splitter, stretch=1)
+    
+    def _create_breathing_control_tab(self, parent_layout):
+        """创建呼吸控制tab（包含基本、进阶、可视化三个子tab）"""
+        breathing_control_widget = QWidget()
+        breathing_control_layout = QVBoxLayout(breathing_control_widget)
+        breathing_control_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 创建Tab Widget（原有的三个tab）
         self.breathing_control_tabs = QTabWidget()
         tab_font = get_app_font(10)
         self.breathing_control_tabs.setFont(tab_font)
@@ -586,25 +635,54 @@ class BLEHostGUI(QMainWindow):
         self.breathing_result_text.setPlainText("等待数据积累...")
         breathing_control_layout.addWidget(self.breathing_result_text)
         
-        right_layout.addWidget(self.breathing_control_group)
+        # 将呼吸控制widget添加到工具栏tab
+        self.toolbar_tabs.addTab(breathing_control_widget, "呼吸控制")
+    
+    def _create_send_command_tab(self, parent_layout):
+        """创建发送指令tab"""
+        send_command_widget = QWidget()
+        send_command_layout = QVBoxLayout(send_command_widget)
+        send_command_layout.setContentsMargins(5, 5, 5, 5)
+        send_command_layout.setSpacing(10)
         
-        # 数据处理区域（暂时隐藏）
-        self.process_group = QGroupBox("数据处理")
-        process_layout = QVBoxLayout(self.process_group)
-        self._create_process_panel(process_layout)
-        self.process_group.setVisible(False)  # 暂时隐藏
-        right_layout.addWidget(self.process_group)
+        # 指令输入区域
+        input_label = QLabel("指令内容:")
+        send_command_layout.addWidget(input_label)
         
-        # 日志区域
-        self._create_log_panel(right_layout)
+        self.command_input = QLineEdit()
+        self.command_input.setPlaceholderText("输入要发送的指令...")
+        self.command_input.returnPressed.connect(self._on_send_command)  # 按回车发送
+        send_command_layout.addWidget(self.command_input)
         
-        # 版本信息
-        self._create_version_info(right_layout)
+        # 发送按钮
+        send_btn_layout = QHBoxLayout()
+        self.send_command_btn = QPushButton("发送指令")
+        self.send_command_btn.setStyleSheet(self._get_button_style("#4CAF50"))
+        self.send_command_btn.clicked.connect(self._on_send_command)
+        send_btn_layout.addWidget(self.send_command_btn)
+        send_btn_layout.addStretch()
+        send_command_layout.addLayout(send_btn_layout)
         
-        splitter.addWidget(right_widget)
-        splitter.setStretchFactor(1, 1)  # 右侧占 1/3
+        # 历史记录区域
+        history_label = QLabel("发送历史:")
+        send_command_layout.addWidget(history_label)
         
-        main_layout.addWidget(splitter, stretch=1)
+        self.command_history = QTextEdit()
+        self.command_history.setReadOnly(True)
+        self.command_history.setFont(QFont("Consolas", 9))
+        self.command_history.setMaximumHeight(150)
+        send_command_layout.addWidget(self.command_history)
+        
+        # 清空历史按钮
+        clear_history_btn = QPushButton("清空历史")
+        clear_history_btn.setStyleSheet(self._get_button_style("#9E9E9E"))
+        clear_history_btn.clicked.connect(self._on_clear_command_history)
+        send_command_layout.addWidget(clear_history_btn)
+        
+        send_command_layout.addStretch()
+        
+        # 将发送指令widget添加到工具栏tab
+        self.toolbar_tabs.addTab(send_command_widget, "发送指令")
     
     def _create_menu_bar(self):
         """创建菜单栏（已移除，设置改为tab）"""
@@ -1570,6 +1648,64 @@ class BLEHostGUI(QMainWindow):
         
         layout.addWidget(theme_group)
         
+        # 中列：显示控制（分成两列）
+        display_group = QGroupBox("显示控制")
+        display_group.setFont(get_app_font(9))
+        display_group.setMaximumHeight(120)
+        display_group.setMaximumWidth(500)  # 增加宽度以容纳两列
+        
+        display_main_layout = QHBoxLayout(display_group)  # 主布局为水平布局
+        display_main_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 左列
+        display_left_layout = QVBoxLayout()
+        
+        # 日志显示控制
+        self.show_log_checkbox = QCheckBox("日志")
+        self.show_log_checkbox.setChecked(self.show_log)
+        self.show_log_checkbox.stateChanged.connect(self._on_show_log_changed)
+        display_left_layout.addWidget(self.show_log_checkbox)
+        
+        # 版本信息显示控制
+        self.show_version_info_checkbox = QCheckBox("版本信息")
+        self.show_version_info_checkbox.setChecked(self.show_version_info)
+        self.show_version_info_checkbox.stateChanged.connect(self._on_show_version_info_changed)
+        display_left_layout.addWidget(self.show_version_info_checkbox)
+        
+        display_left_layout.addStretch()
+        display_main_layout.addLayout(display_left_layout)
+        
+        # 右列：工具栏显示控制
+        display_right_layout = QVBoxLayout()
+        
+        # 工具栏显示控制
+        self.show_toolbar_checkbox = QCheckBox("工具栏")
+        self.show_toolbar_checkbox.setChecked(self.show_toolbar)
+        self.show_toolbar_checkbox.stateChanged.connect(self._on_show_toolbar_changed)
+        display_right_layout.addWidget(self.show_toolbar_checkbox)
+        
+        # 工具栏子项控制（嵌套在工具栏控制下）
+        toolbar_sub_layout = QVBoxLayout()
+        toolbar_sub_layout.setContentsMargins(20, 0, 0, 0)  # 缩进显示
+        
+        self.show_breathing_control_checkbox = QCheckBox("呼吸控制")
+        self.show_breathing_control_checkbox.setChecked(self.show_breathing_control)
+        self.show_breathing_control_checkbox.stateChanged.connect(self._on_show_breathing_control_changed)
+        self.show_breathing_control_checkbox.setEnabled(self.show_toolbar)  # 只有工具栏显示时才启用
+        toolbar_sub_layout.addWidget(self.show_breathing_control_checkbox)
+        
+        self.show_send_command_checkbox = QCheckBox("发送指令")
+        self.show_send_command_checkbox.setChecked(self.show_send_command)
+        self.show_send_command_checkbox.stateChanged.connect(self._on_show_send_command_changed)
+        self.show_send_command_checkbox.setEnabled(self.show_toolbar)  # 只有工具栏显示时才启用
+        toolbar_sub_layout.addWidget(self.show_send_command_checkbox)
+        
+        display_right_layout.addLayout(toolbar_sub_layout)
+        display_right_layout.addStretch()
+        display_main_layout.addLayout(display_right_layout)
+        
+        layout.addWidget(display_group)
+        
         # 右列：关于信息
         about_group = QGroupBox("关于")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
@@ -1587,7 +1723,7 @@ class BLEHostGUI(QMainWindow):
         <p>基于 PySide6 开发</p>
         """)
         about_group.setMaximumHeight(120)  # 限制高度，内容可滚动
-        about_group.setMaximumWidth(500)
+        about_group.setMaximumWidth(350)  # 减小宽度以容纳显示控制
         about_layout.addWidget(about_text)
         layout.addWidget(about_group)
         
@@ -1694,10 +1830,10 @@ class BLEHostGUI(QMainWindow):
         stats_layout.addWidget(self.stats_text)
         parent_layout.addWidget(stats_group)
     
-    def _create_log_panel(self, parent_layout):
+    def _create_log_panel(self, parent_splitter):
         """创建日志面板"""
-        group = QGroupBox("日志")
-        layout = QVBoxLayout(group)
+        self.log_group = QGroupBox("日志")
+        layout = QVBoxLayout(self.log_group)
         
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -1709,14 +1845,14 @@ class BLEHostGUI(QMainWindow):
         text_handler.setLevel(logging.INFO)
         logging.getLogger().addHandler(text_handler)
         
-        parent_layout.addWidget(group, stretch=1)
+        parent_splitter.addWidget(self.log_group)
     
     def _create_version_info(self, parent_layout):
         """创建版本信息"""
-        version_label = QLabel(f"v{__version__}\n build.{__version_date__}")
-        version_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        version_label.setStyleSheet("color: gray; font-size: 8pt;")
-        parent_layout.addWidget(version_label)
+        self.version_label = QLabel(f"v{__version__}\n build.{__version_date__}")
+        self.version_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.version_label.setStyleSheet("color: gray; font-size: 8pt;")
+        parent_layout.addWidget(self.version_label)
     
     def _refresh_ports(self):
         """刷新串口列表"""
@@ -3539,6 +3675,173 @@ class BLEHostGUI(QMainWindow):
         )
         
         self.logger.info("已从config恢复呼吸估计的默认配置")
+    
+    def _on_send_command(self):
+        """发送指令按钮的回调"""
+        if not self.is_running or not self.serial_reader:
+            InfoBarHelper.warning(
+                self,
+                title="无法发送",
+                content="请先连接串口"
+            )
+            return
+        
+        command = self.command_input.text().strip()
+        if not command:
+            InfoBarHelper.warning(
+                self,
+                title="指令为空",
+                content="请输入要发送的指令"
+            )
+            return
+        
+        # 发送指令
+        success = self.serial_reader.write(command)
+        
+        if success:
+            # 添加到历史记录
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            history_text = f"[{timestamp}] {command}\n"
+            self.command_history.append(history_text.rstrip())
+            
+            # 清空输入框
+            self.command_input.clear()
+            
+            self.logger.info(f"已发送指令: {command}")
+        else:
+            InfoBarHelper.error(
+                self,
+                title="发送失败",
+                content="指令发送失败，请检查串口连接"
+            )
+    
+    def _on_clear_command_history(self):
+        """清空指令历史"""
+        self.command_history.clear()
+        self.logger.info("已清空指令历史")
+    
+    def _on_show_log_changed(self, state):
+        """日志显示控制改变"""
+        self.show_log = (state == Qt.CheckState.Checked.value)
+        if hasattr(self, 'log_group'):
+            self.log_group.setVisible(self.show_log)
+        self._update_right_panel_layout()
+    
+    def _on_show_version_info_changed(self, state):
+        """版本信息显示控制改变"""
+        self.show_version_info = (state == Qt.CheckState.Checked.value)
+        if hasattr(self, 'version_label'):
+            self.version_label.setVisible(self.show_version_info)
+        self._update_right_panel_layout()
+    
+    def _on_show_toolbar_changed(self, state):
+        """工具栏显示控制改变"""
+        self.show_toolbar = (state == Qt.CheckState.Checked.value)
+        if hasattr(self, 'toolbar_group'):
+            self.toolbar_group.setVisible(self.show_toolbar)
+        
+        # 更新子项checkbox的启用状态
+        if hasattr(self, 'show_breathing_control_checkbox'):
+            self.show_breathing_control_checkbox.setEnabled(self.show_toolbar)
+        if hasattr(self, 'show_send_command_checkbox'):
+            self.show_send_command_checkbox.setEnabled(self.show_toolbar)
+        
+        # 如果工具栏隐藏，也隐藏所有子项
+        if not self.show_toolbar:
+            self.show_breathing_control = False
+            self.show_send_command = False
+            if hasattr(self, 'show_breathing_control_checkbox'):
+                self.show_breathing_control_checkbox.setChecked(False)
+            if hasattr(self, 'show_send_command_checkbox'):
+                self.show_send_command_checkbox.setChecked(False)
+        
+        self._update_toolbar_tabs_visibility()
+        self._update_right_panel_layout()
+    
+    def _on_show_breathing_control_changed(self, state):
+        """呼吸控制显示控制改变"""
+        self.show_breathing_control = (state == Qt.CheckState.Checked.value)
+        self._update_toolbar_tabs_visibility()
+    
+    def _on_show_send_command_changed(self, state):
+        """发送指令显示控制改变"""
+        self.show_send_command = (state == Qt.CheckState.Checked.value)
+        self._update_toolbar_tabs_visibility()
+    
+    def _update_toolbar_tabs_visibility(self):
+        """更新工具栏tab的显示/隐藏"""
+        if not hasattr(self, 'toolbar_tabs'):
+            return
+        
+        # 如果工具栏本身不显示，直接返回
+        if not self.show_toolbar:
+            return
+        
+        # 控制各个tab的显示
+        for i in range(self.toolbar_tabs.count()):
+            tab_text = self.toolbar_tabs.tabText(i)
+            if tab_text == "呼吸控制":
+                self.toolbar_tabs.setTabVisible(i, self.show_breathing_control)
+            elif tab_text == "发送指令":
+                self.toolbar_tabs.setTabVisible(i, self.show_send_command)
+        
+        # 如果两个tab都不显示，隐藏整个工具栏
+        if not self.show_breathing_control and not self.show_send_command:
+            if hasattr(self, 'toolbar_group'):
+                self.toolbar_group.setVisible(False)
+        else:
+            if hasattr(self, 'toolbar_group'):
+                self.toolbar_group.setVisible(True)
+                
+            # 如果当前显示的tab被隐藏了，切换到第一个可见的tab
+            current_index = self.toolbar_tabs.currentIndex()
+            if current_index >= 0 and not self.toolbar_tabs.isTabVisible(current_index):
+                # 找到第一个可见的tab
+                for i in range(self.toolbar_tabs.count()):
+                    if self.toolbar_tabs.isTabVisible(i):
+                        self.toolbar_tabs.setCurrentIndex(i)
+                        break
+    
+    def _update_right_panel_layout(self):
+        """更新右侧面板布局（当显示项改变时）"""
+        # 使用QTimer延迟更新，确保窗口完全渲染后再调整
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(50, self._do_update_right_panel_layout)
+    
+    def _do_update_right_panel_layout(self):
+        """实际执行右侧面板布局更新"""
+        # 检查是否所有右侧面板都不显示
+        all_hidden = (not self.show_toolbar and not self.show_log and not self.show_version_info)
+        
+        if all_hidden:
+            # 隐藏整个右侧面板，让plot tab占据全部空间
+            if hasattr(self, 'right_widget'):
+                self.right_widget.setVisible(False)
+            # 设置splitter让左侧占据全部空间
+            if hasattr(self, 'main_splitter'):
+                # 获取splitter的总宽度
+                total_width = self.main_splitter.width()
+                if total_width > 0:
+                    # 设置左侧占据全部宽度
+                    self.main_splitter.setSizes([total_width, 0])
+                else:
+                    # 如果宽度为0，使用一个很大的值
+                    self.main_splitter.setSizes([999999, 0])
+        else:
+            # 显示右侧面板
+            if hasattr(self, 'right_widget'):
+                self.right_widget.setVisible(True)
+            # 恢复默认比例（2:1）
+            if hasattr(self, 'main_splitter'):
+                total_width = self.main_splitter.width()
+                if total_width > 0:
+                    # 计算合适的比例
+                    left_width = int(total_width * 2 / 3)
+                    right_width = total_width - left_width
+                    self.main_splitter.setSizes([left_width, right_width])
+                else:
+                    # 如果宽度为0，使用默认比例
+                    self.main_splitter.setSizes([2, 1])
     
     def _on_update_all_breathing_params(self):
         """应用按钮：提交所有参数（包括基础设置和进阶设置）"""
