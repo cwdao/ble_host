@@ -3602,6 +3602,10 @@ class BLEHostGUI(QMainWindow):
         ax4.axis('off')
         ax4.set_title('Breathing Detection Result', fontsize=10, pad=20)
         
+        # 调整子图间距，避免上下重叠
+        # hspace: 上下间距（相对于子图高度），wspace: 左右间距（相对于子图宽度）
+        figure.subplots_adjust(hspace=0.4, wspace=0.3)
+        
         # 附加到界面
         canvas = FigureCanvasQTAgg(figure)
         layout.addWidget(canvas)
@@ -5388,6 +5392,10 @@ class BLEHostGUI(QMainWindow):
                         fontsize=11, family='monospace',
                         bbox=dict(boxstyle='round', facecolor=bg_color, alpha=0.5),
                         transform=ax4.transAxes)
+        
+        # 调整子图间距，避免上下重叠（在更新后重新调整）
+        figure = plot_info['figure']
+        figure.subplots_adjust(hspace=0.4, wspace=0.3)
         
         # 刷新画布
         plot_info['canvas'].draw_idle()
