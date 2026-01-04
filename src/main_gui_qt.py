@@ -327,6 +327,8 @@ class BLEHostGUI(QMainWindow):
         # 设置tab字体更大
         tab_font = get_app_font(11)
         self.config_tabs.setFont(tab_font)
+        # 设置最小高度，防止被挤压
+        self.config_tabs.setMinimumHeight(120)
         self._create_connection_tab()
         self._create_channel_config_tab()
         self._create_data_and_save_tab()
@@ -353,20 +355,30 @@ class BLEHostGUI(QMainWindow):
         left_layout.addWidget(self.plot_tabs)
         
         self.main_splitter.addWidget(left_widget)
-        self.main_splitter.setStretchFactor(0, 2)  # 左侧占 2/3
+        # 左侧绘图区域设置为可扩展，当右侧工具栏未占满宽度时会扩充
+        self.main_splitter.setStretchFactor(0, 1)  # 左侧可扩展
         
         # 右侧：信息面板（使用垂直QSplitter以便调整大小）
         self.right_widget = QWidget()
+        # 设置右侧面板的大小策略为Maximum，使其只占据实际需要的空间
+        self.right_widget.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         self.right_splitter = QSplitter(Qt.Orientation.Vertical)
         self.right_splitter.setChildrenCollapsible(False)  # 防止完全折叠
+        # 设置右侧分割器的最大宽度，确保它不会占据过多空间
+        # 工具栏最大宽度300 + 边距，设置为稍大一点以容纳所有内容
+        self.right_splitter.setMaximumWidth(320)
         
         # 工具栏（包含呼吸控制和发送指令）
         self.toolbar_group = QGroupBox("工具栏")
         toolbar_layout = QVBoxLayout(self.toolbar_group)
+        # 设置工具栏最大宽度，确保靠右排列
+        self.toolbar_group.setMaximumWidth(300)
+        # 设置大小策略，确保工具栏不会扩展，保持靠右
+        self.toolbar_group.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         
         # 创建工具栏Tab Widget
         self.toolbar_tabs = QTabWidget()
-        tab_font = get_app_font(10)
+        tab_font = get_app_font(9)
         self.toolbar_tabs.setFont(tab_font)
         
         # 创建呼吸控制tab（包含原有的三个子tab）
@@ -391,11 +403,22 @@ class BLEHostGUI(QMainWindow):
         # 版本信息（不添加到splitter，直接添加到right_widget的底部）
         self.right_widget_layout = QVBoxLayout(self.right_widget)
         self.right_widget_layout.setContentsMargins(5, 5, 5, 5)
-        self.right_widget_layout.addWidget(self.right_splitter, stretch=1)
-        self._create_version_info(self.right_widget_layout)
+        # 右侧面板布局：使用水平布局，让右侧内容靠右对齐
+        right_horizontal_layout = QHBoxLayout()
+        right_horizontal_layout.setContentsMargins(0, 0, 0, 0)
+        right_horizontal_layout.addStretch()  # 左侧添加弹性空间，推动右侧内容靠右
+        right_horizontal_layout.addWidget(self.right_splitter)
+        # 将水平布局添加到垂直布局
+        self.right_widget_layout.addLayout(right_horizontal_layout, stretch=1)
+        # 版本信息也靠右对齐
+        version_horizontal_layout = QHBoxLayout()
+        version_horizontal_layout.addStretch()
+        self._create_version_info(version_horizontal_layout)
+        self.right_widget_layout.addLayout(version_horizontal_layout)
         
         self.main_splitter.addWidget(self.right_widget)
-        self.main_splitter.setStretchFactor(1, 1)  # 右侧占 1/3
+        # 右侧设置为不扩展（Maximum策略），这样当工具栏宽度小于最大值时，左侧绘图区域会自动扩充
+        self.main_splitter.setStretchFactor(1, 0)  # 右侧不扩展
         self.main_splitter.setChildrenCollapsible(False)  # 防止完全折叠
         
         main_layout.addWidget(self.main_splitter, stretch=1)
@@ -406,10 +429,10 @@ class BLEHostGUI(QMainWindow):
         breathing_control_layout = QVBoxLayout(breathing_control_widget)
         breathing_control_layout.setContentsMargins(0, 0, 0, 0)
         
-        # 创建Tab Widget（原有的三个tab）
+        # 创建Tab Widget
         self.breathing_control_tabs = QTabWidget()
-        tab_font = get_app_font(10)
-        self.breathing_control_tabs.setFont(tab_font)
+        # tab_font = get_app_font(10)
+        # self.breathing_control_tabs.setFont(tab_font)
         
         # Basic Tab
         basic_tab = QWidget()
@@ -721,7 +744,7 @@ class BLEHostGUI(QMainWindow):
         
         self.command_history = QTextEdit()
         self.command_history.setReadOnly(True)
-        self.command_history.setFont(QFont("Consolas", 9))
+        # self.command_history.setFont(QFont("Consolas", 9))
         self.command_history.setMaximumHeight(200)
         send_command_layout.addWidget(self.command_history)
         
@@ -1744,12 +1767,14 @@ class BLEHostGUI(QMainWindow):
         toolbar_sub_layout.setContentsMargins(20, 0, 0, 0)  # 缩进显示
         
         self.show_breathing_control_checkbox = QCheckBox("呼吸控制")
+        self.show_breathing_control_checkbox.setFont(get_app_font(8))
         self.show_breathing_control_checkbox.setChecked(self.show_breathing_control)
         self.show_breathing_control_checkbox.stateChanged.connect(self._on_show_breathing_control_changed)
         self.show_breathing_control_checkbox.setEnabled(self.show_toolbar)  # 只有工具栏显示时才启用
         toolbar_sub_layout.addWidget(self.show_breathing_control_checkbox)
         
         self.show_send_command_checkbox = QCheckBox("发送指令")
+        self.show_send_command_checkbox.setFont(get_app_font(8))
         self.show_send_command_checkbox.setChecked(self.show_send_command)
         self.show_send_command_checkbox.stateChanged.connect(self._on_show_send_command_changed)
         self.show_send_command_checkbox.setEnabled(self.show_toolbar)  # 只有工具栏显示时才启用
@@ -3840,11 +3865,11 @@ class BLEHostGUI(QMainWindow):
             {'key': 'channels', 'label': '信道列表', 'type': 'text',
              'tooltip': '自定义数据信道列表，用|分隔，每个信道0..36\n例如: 3|10|25'},
             {'key': 'interval_ms', 'label': '连接间隔(ms)', 'type': 'number',
-             'tooltip': '连接间隔（毫秒），必须可换算成1.25ms units\n范围: 7.5ms..4s\n例如: 25'},
+             'tooltip': '必须可被1.25ms整除\n范围: 7.5ms..4s\n默认:10ms(8units)'},
             {'key': 'cte_len', 'label': 'CTE长度', 'type': 'number',
-             'tooltip': 'CTE长度（单位8us），范围0..255\n例如: 2'},
+             'tooltip': '1unit=8us,范围2-20units(16-160us)'},
             {'key': 'cte_type', 'label': 'CTE类型', 'type': 'select', 'options': ['aod1', 'aod2', 'aoa'],
-             'tooltip': 'CTE类型:\naod1: AOD类型1\naod2: AOD类型2\naoa: AOA类型（需编译启用）'},
+             'tooltip': 'CTE类型:\nAOA类型(默认):aoa\nAOD类型:aod1,aod2'},
         ]
         
         # 为每个参数创建输入控件
@@ -3865,6 +3890,9 @@ class BLEHostGUI(QMainWindow):
                 label.installEventFilter(ToolTipFilter(label, 0, ToolTipPosition.TOP))
             param_row.addWidget(label)
             
+            # 添加弹性空间，使输入框靠右对齐
+            param_row.addStretch()
+            
             if param_type == 'select':
                 # 下拉选择框
                 combo = QComboBox()
@@ -3874,18 +3902,24 @@ class BLEHostGUI(QMainWindow):
                     pass  # 选项会在命令类型改变时设置
                 else:
                     combo.addItems(param_def.get('options', []))
+                # 设置固定宽度，与呼吸控制进阶tab一致
+                combo.setMaximumWidth(100)
                 param_row.addWidget(combo)
                 widget = combo
             elif param_type == 'number':
                 # 数字输入框（使用QLineEdit以支持小数）
                 line_edit = QLineEdit()
-                line_edit.setPlaceholderText(f"输入{param_label}（数字）...")
+                line_edit.setPlaceholderText(f"输入{param_label}")
+                # 设置固定宽度，与呼吸控制进阶tab一致
+                line_edit.setMaximumWidth(100)
                 param_row.addWidget(line_edit)
                 widget = line_edit
             else:
                 # 文本输入框
                 line_edit = QLineEdit()
-                line_edit.setPlaceholderText(f"输入{param_label}...")
+                line_edit.setPlaceholderText(f"输入{param_label}")
+                # 设置固定宽度，与呼吸控制进阶tab一致
+                line_edit.setMaximumWidth(100)
                 param_row.addWidget(line_edit)
                 widget = line_edit
             
@@ -3894,7 +3928,6 @@ class BLEHostGUI(QMainWindow):
                 if hasattr(widget, 'installEventFilter'):
                     widget.installEventFilter(ToolTipFilter(widget, 0, ToolTipPosition.TOP))
             
-            param_row.addStretch()
             self.param_layout.addWidget(row_widget)
             
             # 保存控件引用（包含整个行widget和label，用于启用/禁用）
@@ -3908,7 +3941,7 @@ class BLEHostGUI(QMainWindow):
         
         # 创建"无需参数"提示标签（初始隐藏）
         self.no_params_label = QLabel("此命令无需参数")
-        self.no_params_label.setStyleSheet("color: gray;")
+        self.no_params_label.setStyleSheet("color: green;font-size: 8px;")
         self.no_params_label.hide()
         self.param_layout.addWidget(self.no_params_label)
     
@@ -3956,15 +3989,15 @@ class BLEHostGUI(QMainWindow):
                 label.setStyleSheet("")
                 
                 # 如果是action参数且当前命令不需要，清空并重置
-                if param_key == 'action' and cmd_type not in ['BLE_SCAN', 'BLE_CONN']:
-                    if isinstance(widget, QComboBox):
-                        widget.clear()
+                # if param_key == 'action' and cmd_type not in ['BLE_SCAN', 'BLE_CONN']:
+                #     if isinstance(widget, QComboBox):
+                #         widget.clear()
                 # 如果不是action参数，清空输入框（切换命令时清空旧值）
-                elif param_key != 'action':
-                    if isinstance(widget, QLineEdit):
-                        widget.clear()
-                    elif isinstance(widget, QComboBox):
-                        widget.setCurrentIndex(0)
+                # elif param_key != 'action':
+                #     if isinstance(widget, QLineEdit):
+                #         widget.clear()
+                #     elif isinstance(widget, QComboBox):
+                #         widget.setCurrentIndex(0)
             else:
                 # 禁用该参数框
                 widget.setEnabled(False)
@@ -3972,10 +4005,10 @@ class BLEHostGUI(QMainWindow):
                 # 设置标签样式为灰色（表示禁用）
                 label.setStyleSheet("color: gray;")
                 # 清空输入框
-                if isinstance(widget, QLineEdit):
-                    widget.clear()
-                elif isinstance(widget, QComboBox):
-                    widget.clear()
+                # if isinstance(widget, QLineEdit):
+                #     widget.clear()
+                # elif isinstance(widget, QComboBox):
+                #     widget.clear()
         
         # 显示/隐藏"无需参数"提示
         if not cmd_def['params']:
@@ -4298,13 +4331,27 @@ class BLEHostGUI(QMainWindow):
             # 显示右侧面板
             if hasattr(self, 'right_widget'):
                 self.right_widget.setVisible(True)
-            # 恢复默认比例（2:1）
+            # 不设置固定比例，让右侧面板根据内容自动调整大小（Maximum策略）
+            # 由于right_splitter已设置最大宽度320，右侧面板只会占据实际需要的空间
+            # 这样绘图区域会自动占满剩余空间
             if hasattr(self, 'main_splitter'):
                 total_width = self.main_splitter.width()
                 if total_width > 0:
-                    # 计算合适的比例
-                    left_width = int(total_width * 2 / 3)
-                    right_width = total_width - left_width
+                    # 根据实际显示的组件计算右侧面板需要的宽度
+                    # right_splitter的最大宽度已设置为320，所以右侧面板最多占据320像素
+                    right_width = 0
+                    if self.show_toolbar and hasattr(self, 'toolbar_group') and self.toolbar_group.isVisible():
+                        # 工具栏最大宽度300 + 边距
+                        right_width = max(right_width, 320)
+                    if self.show_log and hasattr(self, 'log_text') and self.log_text.isVisible():
+                        # 日志区域也需要一些宽度（通常和工具栏差不多）
+                        right_width = max(right_width, 320)
+                    # 如果没有任何内容显示，右侧宽度为0
+                    if right_width == 0:
+                        right_width = 0
+                    
+                    # 让左侧占据剩余的所有空间
+                    left_width = max(0, total_width - right_width)
                     self.main_splitter.setSizes([left_width, right_width])
                 else:
                     # 如果宽度为0，使用默认比例
