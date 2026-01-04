@@ -333,7 +333,7 @@ class BLEHostGUI(QMainWindow):
         self._create_channel_config_tab()
         self._create_data_and_save_tab()
         self._create_load_tab()
-        self._create_special_settings_tab()
+        self._create_special_features_tab()
         self._create_settings_tab()
         
         main_layout.addWidget(self.config_tabs)
@@ -373,6 +373,8 @@ class BLEHostGUI(QMainWindow):
         toolbar_layout = QVBoxLayout(self.toolbar_group)
         # 设置工具栏最大宽度，确保靠右排列
         self.toolbar_group.setMaximumWidth(300)
+        self.toolbar_group.setMinimumHeight(600)
+        self.toolbar_group.setMaximumHeight(800)
         # 设置大小策略，确保工具栏不会扩展，保持靠右
         self.toolbar_group.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         
@@ -449,6 +451,9 @@ class BLEHostGUI(QMainWindow):
         self.breathing_data_type_combo = QComboBox()
         # 初始添加所有选项，方向估计模式下会限制选项
         self.breathing_data_type_combo.addItems(["amplitude", "local_amplitude", "remote_amplitude", "phase", "local_phase", "remote_phase"])
+        # 设置字体和最大宽度，使其与文本框一样可以变小
+        self.breathing_data_type_combo.setFont(get_app_font(9))
+        self.breathing_data_type_combo.setMaximumWidth(150)
         data_type_layout.addWidget(self.breathing_data_type_combo)
         basic_layout.addLayout(data_type_layout)
         
@@ -459,6 +464,9 @@ class BLEHostGUI(QMainWindow):
         channel_label.installEventFilter(ToolTipFilter(channel_label, 0, ToolTipPosition.TOP))
         channel_layout.addWidget(channel_label)
         self.breathing_channel_combo = QComboBox()
+        # 设置字体和最大宽度，使其与文本框一样可以变小
+        self.breathing_channel_combo.setFont(get_app_font(9))
+        self.breathing_channel_combo.setMaximumWidth(80)
         channel_layout.addWidget(self.breathing_channel_combo)
         # 自适应checkbox（方向估计帧模式下禁用）
         self.breathing_adaptive_manual_checkbox = QCheckBox("自适应")
@@ -690,6 +698,7 @@ class BLEHostGUI(QMainWindow):
         self.param_layout = QVBoxLayout(self.param_container)
         self.param_layout.setContentsMargins(0, 0, 0, 0)
         self.param_layout.setSpacing(5)
+        # self.param_layout.addStretch()
         send_command_layout.addWidget(self.param_container)
         
         # 固定创建所有可能的参数框（避免重复创建）
@@ -701,9 +710,10 @@ class BLEHostGUI(QMainWindow):
         self.escape_checkbox.setChecked(True)  # 默认勾选
         self.escape_checkbox.stateChanged.connect(self._on_escape_checkbox_changed)
         escape_layout.addWidget(self.escape_checkbox)
-        escape_layout.addStretch()
+        # escape_layout.addStretch()
         send_command_layout.addLayout(escape_layout)
         
+        send_command_layout.addStretch()
         # 命令生成和发送区域
         generate_layout = QHBoxLayout()
         self.generate_command_btn = QPushButton("生成命令")
@@ -719,6 +729,8 @@ class BLEHostGUI(QMainWindow):
         
         generate_layout.addStretch()
         send_command_layout.addLayout(generate_layout)
+
+        # send_command_layout.addStretch()
         
         # 指令输入区域（显示生成的命令，也可以手动编辑）
         input_label = QLabel("指令内容:")
@@ -728,6 +740,8 @@ class BLEHostGUI(QMainWindow):
         self.command_input.setPlaceholderText("输入要发送的指令或使用上方生成命令...")
         self.command_input.returnPressed.connect(self._on_send_command)  # 按回车发送
         send_command_layout.addWidget(self.command_input)
+
+        # send_command_layout.addStretch()
         
         # 发送按钮
         send_btn_layout = QHBoxLayout()
@@ -735,7 +749,7 @@ class BLEHostGUI(QMainWindow):
         self.send_command_btn.setStyleSheet(self._get_button_style("#4CAF50"))
         self.send_command_btn.clicked.connect(self._on_send_command)
         send_btn_layout.addWidget(self.send_command_btn)
-        send_btn_layout.addStretch()
+        # send_btn_layout.addStretch()
         send_command_layout.addLayout(send_btn_layout)
         
         # 交互历史区域（显示发送和反馈）
@@ -745,8 +759,10 @@ class BLEHostGUI(QMainWindow):
         self.command_history = QTextEdit()
         self.command_history.setReadOnly(True)
         # self.command_history.setFont(QFont("Consolas", 9))
-        self.command_history.setMaximumHeight(200)
+        self.command_history.setMaximumHeight(150)
         send_command_layout.addWidget(self.command_history)
+
+        # send_command_layout.addStretch()
         
         # 清空历史按钮
         clear_history_btn = QPushButton("清空历史")
@@ -754,7 +770,7 @@ class BLEHostGUI(QMainWindow):
         clear_history_btn.clicked.connect(self._on_clear_command_history)
         send_command_layout.addWidget(clear_history_btn)
         
-        send_command_layout.addStretch()
+        # send_command_layout.addStretch()
         
         # 初始化参数输入区域（根据当前命令类型启用/禁用参数框）
         self._on_command_type_changed()
@@ -1532,8 +1548,8 @@ class BLEHostGUI(QMainWindow):
         
         self.config_tabs.addTab(tab, "文件加载")
     
-    def _create_special_settings_tab(self):
-        """创建特殊设置选项卡"""
+    def _create_special_features_tab(self):
+        """创建特殊功能选项卡"""
         tab = QWidget()
         tab.setMinimumHeight(80)
         layout = QHBoxLayout(tab)
@@ -1554,7 +1570,7 @@ class BLEHostGUI(QMainWindow):
         layout.addWidget(breathing_adaptive_group)
         layout.addStretch()
         
-        self.config_tabs.addTab(tab, "特殊设置")
+        self.config_tabs.addTab(tab, "特殊功能")
     
     def _open_breathing_adaptive_dialog(self):
         """打开呼吸信道自适应设置对话框"""
@@ -1756,8 +1772,9 @@ class BLEHostGUI(QMainWindow):
         # 右列：工具栏显示控制
         display_right_layout = QVBoxLayout()
         
-        # 工具栏显示控制
+        # 工具栏显示控制（三态checkbox，可以显示部分选中状态）
         self.show_toolbar_checkbox = QCheckBox("工具栏")
+        self.show_toolbar_checkbox.setTristate(True)  # 启用三态模式
         self.show_toolbar_checkbox.setChecked(self.show_toolbar)
         self.show_toolbar_checkbox.stateChanged.connect(self._on_show_toolbar_changed)
         display_right_layout.addWidget(self.show_toolbar_checkbox)
@@ -1768,15 +1785,27 @@ class BLEHostGUI(QMainWindow):
         
         self.show_breathing_control_checkbox = QCheckBox("呼吸控制")
         self.show_breathing_control_checkbox.setFont(get_app_font(8))
+        # 使用样式表缩小checkbox框的尺寸，使其与字体大小匹配
+        self.show_breathing_control_checkbox.setStyleSheet(
+            "QCheckBox::indicator { width: 12px; height: 12px; }"
+        )
         self.show_breathing_control_checkbox.setChecked(self.show_breathing_control)
         self.show_breathing_control_checkbox.stateChanged.connect(self._on_show_breathing_control_changed)
+        # 子项状态改变时，更新父checkbox的状态
+        self.show_breathing_control_checkbox.stateChanged.connect(self._update_toolbar_checkbox_state)
         self.show_breathing_control_checkbox.setEnabled(self.show_toolbar)  # 只有工具栏显示时才启用
         toolbar_sub_layout.addWidget(self.show_breathing_control_checkbox)
         
         self.show_send_command_checkbox = QCheckBox("发送指令")
         self.show_send_command_checkbox.setFont(get_app_font(8))
+        # 使用样式表缩小checkbox框的尺寸，使其与字体大小匹配
+        self.show_send_command_checkbox.setStyleSheet(
+            "QCheckBox::indicator { width: 12px; height: 12px; }"
+        )
         self.show_send_command_checkbox.setChecked(self.show_send_command)
         self.show_send_command_checkbox.stateChanged.connect(self._on_show_send_command_changed)
+        # 子项状态改变时，更新父checkbox的状态
+        self.show_send_command_checkbox.stateChanged.connect(self._update_toolbar_checkbox_state)
         self.show_send_command_checkbox.setEnabled(self.show_toolbar)  # 只有工具栏显示时才启用
         toolbar_sub_layout.addWidget(self.show_send_command_checkbox)
         
@@ -1808,6 +1837,10 @@ class BLEHostGUI(QMainWindow):
         layout.addWidget(about_group)
         
         layout.addStretch()  # 添加stretch让内容靠左
+        
+        # 初始化工具栏checkbox的状态（根据子项的初始状态）
+        if hasattr(self, 'show_toolbar_checkbox'):
+            self._update_toolbar_checkbox_state()
         
         self.config_tabs.addTab(tab, "设置")
         
@@ -1929,7 +1962,7 @@ class BLEHostGUI(QMainWindow):
     
     def _create_version_info(self, parent_layout):
         """创建版本信息"""
-        self.version_label = QLabel(f"v{__version__}\n build.{__version_date__}")
+        self.version_label = QLabel(f"v{__version__} build.{__version_date__}")
         self.version_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.version_label.setStyleSheet("color: gray; font-size: 8pt;")
         parent_layout.addWidget(self.version_label)
@@ -4235,8 +4268,35 @@ class BLEHostGUI(QMainWindow):
         self._update_right_panel_layout()
     
     def _on_show_toolbar_changed(self, state):
-        """工具栏显示控制改变"""
-        self.show_toolbar = (state == Qt.CheckState.Checked.value)
+        """工具栏显示控制改变（支持三态）"""
+        # 处理三态checkbox的逻辑
+        # 注意：PartiallyChecked状态通常由系统根据子项状态自动设置，
+        # 但当用户点击PartiallyChecked时，应该选中所有子项
+        if state == Qt.CheckState.Checked.value:
+            # 选中状态：选中所有子项
+            self.show_toolbar = True
+            if hasattr(self, 'show_breathing_control_checkbox'):
+                self.show_breathing_control_checkbox.setChecked(True)
+            if hasattr(self, 'show_send_command_checkbox'):
+                self.show_send_command_checkbox.setChecked(True)
+        elif state == Qt.CheckState.Unchecked.value:
+            # 未选中状态：取消所有子项并隐藏工具栏
+            self.show_toolbar = False
+            if hasattr(self, 'show_breathing_control_checkbox'):
+                self.show_breathing_control_checkbox.setChecked(False)
+            if hasattr(self, 'show_send_command_checkbox'):
+                self.show_send_command_checkbox.setChecked(False)
+        elif state == Qt.CheckState.PartiallyChecked.value:
+            # 部分选中状态：用户点击时，选中所有子项（常见行为）
+            # 这样用户可以通过点击来快速选中所有子项
+            self.show_toolbar = True
+            if hasattr(self, 'show_breathing_control_checkbox'):
+                self.show_breathing_control_checkbox.setChecked(True)
+            if hasattr(self, 'show_send_command_checkbox'):
+                self.show_send_command_checkbox.setChecked(True)
+            # 注意：子项状态改变后会触发_update_toolbar_checkbox_state，
+            # 它会将父checkbox状态更新为Checked
+        
         if hasattr(self, 'toolbar_group'):
             self.toolbar_group.setVisible(self.show_toolbar)
         
@@ -4246,14 +4306,53 @@ class BLEHostGUI(QMainWindow):
         if hasattr(self, 'show_send_command_checkbox'):
             self.show_send_command_checkbox.setEnabled(self.show_toolbar)
         
-        # 如果工具栏隐藏，也隐藏所有子项
-        if not self.show_toolbar:
-            self.show_breathing_control = False
-            self.show_send_command = False
-            if hasattr(self, 'show_breathing_control_checkbox'):
-                self.show_breathing_control_checkbox.setChecked(False)
-            if hasattr(self, 'show_send_command_checkbox'):
-                self.show_send_command_checkbox.setChecked(False)
+        self._update_toolbar_tabs_visibility()
+        self._update_right_panel_layout()
+    
+    def _update_toolbar_checkbox_state(self):
+        """根据子项的选中状态更新工具栏checkbox的状态"""
+        if not hasattr(self, 'show_toolbar_checkbox'):
+            return
+        
+        # 临时断开信号，避免触发循环更新
+        self.show_toolbar_checkbox.blockSignals(True)
+        
+        # 检查子项的选中状态
+        breathing_checked = False
+        send_command_checked = False
+        
+        if hasattr(self, 'show_breathing_control_checkbox'):
+            breathing_checked = self.show_breathing_control_checkbox.isChecked()
+        if hasattr(self, 'show_send_command_checkbox'):
+            send_command_checked = self.show_send_command_checkbox.isChecked()
+        
+        # 根据子项状态设置父checkbox状态
+        if breathing_checked and send_command_checked:
+            # 所有子项都选中
+            self.show_toolbar_checkbox.setCheckState(Qt.CheckState.Checked)
+            self.show_toolbar = True
+        elif not breathing_checked and not send_command_checked:
+            # 所有子项都未选中
+            self.show_toolbar_checkbox.setCheckState(Qt.CheckState.Unchecked)
+            self.show_toolbar = False
+        else:
+            # 部分子项选中
+            self.show_toolbar_checkbox.setCheckState(Qt.CheckState.PartiallyChecked)
+            # 如果至少有一个子项被选中，工具栏应该显示
+            self.show_toolbar = True
+        
+        # 更新工具栏的可见性
+        if hasattr(self, 'toolbar_group'):
+            self.toolbar_group.setVisible(self.show_toolbar)
+        
+        # 恢复信号连接
+        self.show_toolbar_checkbox.blockSignals(False)
+        
+        # 更新子项的启用状态
+        if hasattr(self, 'show_breathing_control_checkbox'):
+            self.show_breathing_control_checkbox.setEnabled(self.show_toolbar)
+        if hasattr(self, 'show_send_command_checkbox'):
+            self.show_send_command_checkbox.setEnabled(self.show_toolbar)
         
         self._update_toolbar_tabs_visibility()
         self._update_right_panel_layout()
