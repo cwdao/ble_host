@@ -67,7 +67,7 @@ try:
     from .plotter_qt_realtime import RealtimePlotter
     from .plotter_qt_matplotlib import MatplotlibPlotter
     from .gui.info_bar_helper import InfoBarHelper
-    from .command_sender import CommandSender
+    from .command_interface import CommandSender
 except ImportError:
     # 直接运行时使用绝对导入
     from serial_reader import SerialReader
@@ -79,7 +79,7 @@ except ImportError:
     from plotter_qt_realtime import RealtimePlotter
     from plotter_qt_matplotlib import MatplotlibPlotter
     from gui.info_bar_helper import InfoBarHelper
-    from command_sender import CommandSender
+    from command_interface import CommandSender
 
 # 版本信息
 __version__ = config.version
@@ -3896,7 +3896,7 @@ class BLEHostGUI(QMainWindow):
             {'key': 'action', 'label': '操作', 'type': 'select', 'options': ['start', 'stop', 'disconnect'], 
              'tooltip': '操作类型:\nstart: 开始扫描\nstop: 停止扫描\ndisconnect: 断开连接'},
             {'key': 'channels', 'label': '信道列表', 'type': 'text',
-             'tooltip': '自定义数据信道列表，用|分隔，每个信道0..36\n例如: 3|10|25'},
+             'tooltip': '自定义数据信道列表，支持多种格式：\n• 逗号分隔: 3,4,10\n• 范围格式: 5-7 (表示5,6,7)\n• 混合格式: 3,5-7,10\n• 管道分隔: 3|10|25 (旧格式，仍支持)\n每个信道范围: 0..36'},
             {'key': 'interval_ms', 'label': '连接间隔(ms)', 'type': 'number',
              'tooltip': '必须可被1.25ms整除\n范围: 7.5ms..4s\n默认:10ms(8units)'},
             {'key': 'cte_len', 'label': 'CTE长度', 'type': 'number',
@@ -3972,11 +3972,13 @@ class BLEHostGUI(QMainWindow):
                 'def': param_def
             }
         
-        # 创建"无需参数"提示标签（初始隐藏）
-        self.no_params_label = QLabel("此命令无需参数")
-        self.no_params_label.setStyleSheet("color: green;font-size: 8px;")
-        self.no_params_label.hide()
+        # 创建"无需参数"提示标签（始终显示，但内容根据情况变化）
+        self.no_params_label = QLabel(" ")  # 初始显示空格，保持布局稳定
+        self.no_params_label.setStyleSheet("color: green;font-size: 9px;font-style: italic;")
         self.param_layout.addWidget(self.no_params_label)
+        
+        # 初始化参数默认值（使用config.py中的默认值）
+        self._init_command_params_defaults()
     
     def _on_command_type_changed(self):
         """命令类型改变时的回调"""
@@ -4043,11 +4045,11 @@ class BLEHostGUI(QMainWindow):
                 # elif isinstance(widget, QComboBox):
                 #     widget.clear()
         
-        # 显示/隐藏"无需参数"提示
+        # 显示/隐藏"无需参数"提示（通过改变文本内容，而不是显示/隐藏）
         if not cmd_def['params']:
-            self.no_params_label.show()
+            self.no_params_label.setText("此命令无需参数")
         else:
-            self.no_params_label.hide()
+            self.no_params_label.setText(" ")  # 显示空格，保持布局稳定
     
     def _on_escape_checkbox_changed(self, state):
         """转义字符checkbox改变时的回调"""
@@ -4062,28 +4064,30 @@ class BLEHostGUI(QMainWindow):
     
     def _on_reset_command_params(self):
         """恢复默认参数按钮的回调"""
-        # 恢复默认参数值
-        if 'cte_type' in self.param_widgets:
+        # 恢复默认参数值（使用CommandSender中的默认值）
+        default_params = self.command_sender.get_default_params()
+        
+        if 'cte_type' in self.param_widgets and 'cte_type' in default_params:
             widget = self.param_widgets['cte_type']['widget']
             if isinstance(widget, QComboBox):
-                index = widget.findText(config.command_default_cte_type)
+                index = widget.findText(default_params['cte_type'])
                 if index >= 0:
                     widget.setCurrentIndex(index)
         
-        if 'channels' in self.param_widgets:
+        if 'channels' in self.param_widgets and 'channels' in default_params:
             widget = self.param_widgets['channels']['widget']
             if isinstance(widget, QLineEdit):
-                widget.setText(config.command_default_channels)
+                widget.setText(default_params['channels'])
         
-        if 'cte_len' in self.param_widgets:
+        if 'cte_len' in self.param_widgets and 'cte_len' in default_params:
             widget = self.param_widgets['cte_len']['widget']
             if isinstance(widget, QLineEdit):
-                widget.setText(config.command_default_cte_len)
+                widget.setText(default_params['cte_len'])
         
-        if 'interval_ms' in self.param_widgets:
+        if 'interval_ms' in self.param_widgets and 'interval_ms' in default_params:
             widget = self.param_widgets['interval_ms']['widget']
             if isinstance(widget, QLineEdit):
-                widget.setText(config.command_default_interval_ms)
+                widget.setText(default_params['interval_ms'])
         
         InfoBarHelper.success(
             self,
@@ -4092,6 +4096,37 @@ class BLEHostGUI(QMainWindow):
         )
         
         self.logger.info("已恢复命令发送的默认参数")
+    
+    def _init_command_params_defaults(self):
+        """初始化命令参数的默认值（使用CommandSender中的默认值）"""
+        default_params = self.command_sender.get_default_params()
+        
+        # 设置CTE类型默认值
+        if 'cte_type' in self.param_widgets and 'cte_type' in default_params:
+            widget = self.param_widgets['cte_type']['widget']
+            if isinstance(widget, QComboBox):
+                index = widget.findText(default_params['cte_type'])
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+        
+        # 设置信道列表默认值
+        if 'channels' in self.param_widgets and 'channels' in default_params:
+            widget = self.param_widgets['channels']['widget']
+            if isinstance(widget, QLineEdit):
+                widget.setText(default_params['channels'])
+        
+        # 设置CTE长度默认值
+        if 'cte_len' in self.param_widgets and 'cte_len' in default_params:
+            widget = self.param_widgets['cte_len']['widget']
+            if isinstance(widget, QLineEdit):
+                widget.setText(default_params['cte_len'])
+        
+        # 设置连接间隔默认值
+        if 'interval_ms' in self.param_widgets and 'interval_ms' in default_params:
+            widget = self.param_widgets['interval_ms']['widget']
+            if isinstance(widget, QLineEdit):
+                widget.setText(default_params['interval_ms'])
+    
     
     def _on_generate_command(self):
         """生成命令按钮的回调"""
@@ -4137,6 +4172,9 @@ class BLEHostGUI(QMainWindow):
                 if isinstance(widget, QLineEdit):
                     value = widget.text().strip()
                     if value:
+                        # 如果是channels参数，需要转换格式
+                        if param_key == 'channels':
+                            value = self.command_sender.parse_channels_input(value)
                         params[param_key] = value
         
         # 验证参数

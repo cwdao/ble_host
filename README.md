@@ -140,7 +140,7 @@ ble_host/
 │   ├── data_processor.py    # 数据处理模块（支持信道切换检测）
 │   ├── data_saver.py         # 数据保存/加载模块（支持帧类型识别）
 │   ├── breathing_estimator.py # 呼吸估计模块（支持CS/DF双模式）
-│   ├── command_sender.py     # 命令发送模块
+│   ├── command_interface.py  # 命令接口模块（命令定义、生成、验证、解析）
 │   ├── config.py             # 配置管理模块
 │   ├── plotter_qt_realtime.py # Qt实时绘图（PyQtGraph）
 │   ├── plotter_qt_matplotlib.py # Qt分析绘图（Matplotlib）
@@ -223,6 +223,15 @@ ble_host/
   - **DF_STOP**: 停止/禁用CTE
 - 命令格式验证和参数校验
 - 自动解析响应（OK/ERR/EVT）
+
+#### 8. 特殊功能
+- 在"特殊功能"选项卡中访问高级功能
+- **呼吸信道自适应**：配置呼吸信道自适应功能，自动选择最佳信道进行呼吸估计
+
+#### 9. 设置
+- 在"设置"选项卡中配置应用程序选项
+- **主题设置**：选择浅色/深色模式或跟随系统
+- **显示控制**：控制日志、版本信息、工具栏等显示选项
 
 ### Tkinter版本（旧版）
 

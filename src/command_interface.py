@@ -329,11 +329,11 @@ class CommandSender:
         Returns:
             默认参数字典，键为参数名，值为默认值
         """
-        # 延迟导入config，避免循环依赖
+        # 延迟导入config实例，避免循环依赖
         try:
-            from . import config
+            from .config import config
         except ImportError:
-            import config
+            from config import config
         
         return {
             'cte_type': config.command_default_cte_type,
