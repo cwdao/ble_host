@@ -138,6 +138,11 @@ class DataProcessor:
             'timestamp_ms': frame_data.get('timestamp_ms'),
             'channels': {ch: ch_data.copy() for ch, ch_data in channels.items()}
         }
+        # 复制帧类型和版本信息（如果存在）
+        if 'frame_type' in frame_data:
+            frame_copy['frame_type'] = frame_data['frame_type']
+        if 'frame_version' in frame_data:
+            frame_copy['frame_version'] = frame_data['frame_version']
         self.raw_frames.append(frame_copy)
         
         # 保存元数据

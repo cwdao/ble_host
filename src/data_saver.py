@@ -549,10 +549,25 @@ class DataSaver:
                 # 恢复channels数据
                 if 'ch' in record and 'amp' in record:
                     # 单信道（方向估计帧）
+                    amp = record['amp']
+                    # DF帧只保存p_avg和amplitude，其他字段物理上不存在，设为默认值
+                    ch_data = {
+                        'amplitude': amp,
+                        'p_avg': record.get('p_avg', amp * amp if amp > 0 else 0.0),  # 如果存在则使用，否则从amplitude计算
+                        'phase': 0.0,  # DF帧没有相位信息
+                        'local_amplitude': amp,  # 与amplitude相同
+                        'local_phase': 0.0,
+                        'remote_amplitude': 0.0,
+                        'remote_phase': 0.0,
+                        'I': 0.0,
+                        'Q': 0.0,
+                        'il': 0.0,
+                        'ql': 0.0,
+                        'ir': 0.0,
+                        'qr': 0.0
+                    }
                     frame['channels'] = {
-                        record['ch']: {
-                            'amplitude': record['amp']
-                        }
+                        record['ch']: ch_data
                     }
                 elif 'channels' in record:
                     # 多信道（信道探测帧）
@@ -564,9 +579,17 @@ class DataSaver:
                             ch = ch_str
                         channels[ch] = {
                             'amplitude': ch_data.get('amp', 0.0),
-                            'phase': ch_data.get('phase'),
-                            'I': ch_data.get('I'),
-                            'Q': ch_data.get('Q')
+                            'phase': ch_data.get('phase', 0.0),
+                            'I': ch_data.get('I', 0.0),
+                            'Q': ch_data.get('Q', 0.0),
+                            'local_amplitude': ch_data.get('local_amp', ch_data.get('amp', 0.0)),  # 如果不存在，使用amplitude
+                            'local_phase': ch_data.get('local_phase', 0.0),
+                            'remote_amplitude': ch_data.get('remote_amp', 0.0),
+                            'remote_phase': ch_data.get('remote_phase', 0.0),
+                            'il': ch_data.get('il', 0.0),
+                            'ql': ch_data.get('ql', 0.0),
+                            'ir': ch_data.get('ir', 0.0),
+                            'qr': ch_data.get('qr', 0.0)
                         }
                     frame['channels'] = channels
                 
@@ -779,17 +802,37 @@ class DataSaver:
                     ch_data = channels[ch]
                     record['ch'] = ch
                     record['amp'] = ch_data.get('amplitude', 0.0)
+                    # DF帧只保存p_avg和amplitude，其他字段物理上不存在
+                    if 'p_avg' in ch_data:
+                        record['p_avg'] = ch_data['p_avg']
                 else:
-                    # 多个信道，保存为字典
-                    record['channels'] = {
-                        str(ch): {
+                    # 多个信道（信道探测帧），保存为字典
+                    record['channels'] = {}
+                    for ch, ch_data in channels.items():
+                        ch_record = {
                             'amp': ch_data.get('amplitude', 0.0),
                             'phase': ch_data.get('phase'),
                             'I': ch_data.get('I'),
                             'Q': ch_data.get('Q')
                         }
-                        for ch, ch_data in channels.items()
-                    }
+                        # 保存CS帧的其他字段（如果存在）
+                        if 'local_amplitude' in ch_data:
+                            ch_record['local_amp'] = ch_data['local_amplitude']
+                        if 'local_phase' in ch_data:
+                            ch_record['local_phase'] = ch_data['local_phase']
+                        if 'remote_amplitude' in ch_data:
+                            ch_record['remote_amp'] = ch_data['remote_amplitude']
+                        if 'remote_phase' in ch_data:
+                            ch_record['remote_phase'] = ch_data['remote_phase']
+                        if 'il' in ch_data:
+                            ch_record['il'] = ch_data['il']
+                        if 'ql' in ch_data:
+                            ch_record['ql'] = ch_data['ql']
+                        if 'ir' in ch_data:
+                            ch_record['ir'] = ch_data['ir']
+                        if 'qr' in ch_data:
+                            ch_record['qr'] = ch_data['qr']
+                        record['channels'][str(ch)] = ch_record
             
             return self.log_writer.append_record(record)
             
@@ -968,10 +1011,25 @@ class DataSaver:
                 # 恢复channels数据
                 if 'ch' in record and 'amp' in record:
                     # 单信道（方向估计帧）
+                    amp = record['amp']
+                    # DF帧只保存p_avg和amplitude，其他字段物理上不存在，设为默认值
+                    ch_data = {
+                        'amplitude': amp,
+                        'p_avg': record.get('p_avg', amp * amp if amp > 0 else 0.0),  # 如果存在则使用，否则从amplitude计算
+                        'phase': 0.0,  # DF帧没有相位信息
+                        'local_amplitude': amp,  # 与amplitude相同
+                        'local_phase': 0.0,
+                        'remote_amplitude': 0.0,
+                        'remote_phase': 0.0,
+                        'I': 0.0,
+                        'Q': 0.0,
+                        'il': 0.0,
+                        'ql': 0.0,
+                        'ir': 0.0,
+                        'qr': 0.0
+                    }
                     frame['channels'] = {
-                        record['ch']: {
-                            'amplitude': record['amp']
-                        }
+                        record['ch']: ch_data
                     }
                 elif 'channels' in record:
                     # 多信道（信道探测帧）
@@ -980,9 +1038,17 @@ class DataSaver:
                         ch = int(ch_str)
                         channels[ch] = {
                             'amplitude': ch_data.get('amp', 0.0),
-                            'phase': ch_data.get('phase'),
-                            'I': ch_data.get('I'),
-                            'Q': ch_data.get('Q')
+                            'phase': ch_data.get('phase', 0.0),
+                            'I': ch_data.get('I', 0.0),
+                            'Q': ch_data.get('Q', 0.0),
+                            'local_amplitude': ch_data.get('local_amp', ch_data.get('amp', 0.0)),  # 如果不存在，使用amplitude
+                            'local_phase': ch_data.get('local_phase', 0.0),
+                            'remote_amplitude': ch_data.get('remote_amp', 0.0),
+                            'remote_phase': ch_data.get('remote_phase', 0.0),
+                            'il': ch_data.get('il', 0.0),
+                            'ql': ch_data.get('ql', 0.0),
+                            'ir': ch_data.get('ir', 0.0),
+                            'qr': ch_data.get('qr', 0.0)
                         }
                     frame['channels'] = channels
                 
