@@ -337,7 +337,7 @@ class DataSaver:
                 file_version = config.version_data_save  # 最低兼容的APP版本
             elif frame_type == 'channel_sounding':
                 # 信道探测帧
-                file_version = '1.0.0'  # 信道探测帧保持1.0.0版本
+                file_version = config.version_data_save  # 最低兼容的APP版本
             else:
                 # 默认情况（向后兼容）
                 file_version = '1.0.0'
