@@ -15,9 +15,11 @@ from typing import List, Optional
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "3.5.1"
-    version_date: str = "2026-01-04"
+    version: str = "3.6.0"
+    version_date: str = "2026-01-10"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
+    # 所保存的文件最低兼容版本，类似minimum API
+    version_data_save:str = "3.6.0"
     
     # 窗口配置
     base_window_width: int = 1200
@@ -70,6 +72,7 @@ class AppConfig:
     # 数据保存配置
     default_save_directory: str = "./saveData"  # 默认保存目录
     use_auto_save_path: bool = True  # 是否使用自动保存路径（不弹出对话框）
+    auto_start_recording: bool = False  # 是否自动开始记录（连接后自动开始JSONL记录）
     
     # 呼吸估计默认参数配置
     # 基础设置默认值（所有帧类型共用）
@@ -143,7 +146,8 @@ class UserSettings:
         self.config_file = config_file
         self.settings = {
             'save_directory': config.default_save_directory,
-            'use_auto_save_path': config.use_auto_save_path
+            'use_auto_save_path': config.use_auto_save_path,
+            'auto_start_recording': config.auto_start_recording
         }
         self.load()
     
@@ -197,6 +201,15 @@ class UserSettings:
     def set_use_auto_save_path(self, use_auto: bool):
         """设置是否使用自动保存路径"""
         self.settings['use_auto_save_path'] = use_auto
+        self.save()
+    
+    def get_auto_start_recording(self) -> bool:
+        """获取是否自动开始记录"""
+        return self.settings.get('auto_start_recording', config.auto_start_recording)
+    
+    def set_auto_start_recording(self, auto_start: bool):
+        """设置是否自动开始记录"""
+        self.settings['auto_start_recording'] = auto_start
         self.save()
 
 

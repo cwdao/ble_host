@@ -3,11 +3,15 @@
 """
 数据保存和加载模块
 支持将帧数据保存为JSON格式，便于后续分析和加载
+支持增量JSONL格式保存，解决大量数据保存时的内存问题
 """
 import json
 import os
+import time
+import threading
+import queue
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterator, Generator
 import logging
 
 try:
@@ -16,11 +20,219 @@ except ImportError:
     from config import user_settings, config
 
 
+class LogWriter:
+    """
+    日志写入器：支持后台线程+队列的增量JSONL写入
+    解决大量数据保存时的内存和UI卡顿问题
+    """
+    
+    def __init__(self, flush_interval: int = 100, queue_maxsize: int = 10000):
+        """
+        初始化日志写入器
+        
+        Args:
+            flush_interval: 每写入N条记录后flush一次（默认100）
+            queue_maxsize: 队列最大大小，超过后丢弃并计数（默认10000）
+        """
+        self.logger = logging.getLogger(__name__)
+        self.flush_interval = flush_interval
+        self.queue_maxsize = queue_maxsize
+        
+        # 写入状态
+        self.file_handle = None
+        self.file_path = None
+        self.write_thread = None
+        self.stop_event = threading.Event()
+        self.record_queue = queue.Queue(maxsize=queue_maxsize)
+        self.write_count = 0
+        self.dropped_count = 0
+        self.is_running = False
+        
+    def start_session(self, log_path: str, meta: Dict) -> bool:
+        """
+        开始新的会话，写入meta记录
+        
+        Args:
+            log_path: 日志文件路径（.jsonl）
+            meta: 元数据字典，必须包含record_type="meta"
+        
+        Returns:
+            True if success, False otherwise
+        """
+        if self.is_running:
+            self.logger.warning("日志写入器已在运行，先停止当前会话")
+            self.stop_session()
+        
+        try:
+            # 确保目录存在
+            os.makedirs(os.path.dirname(log_path) if os.path.dirname(log_path) else '.', exist_ok=True)
+            
+            # 打开文件（追加模式，如果文件不存在则创建）
+            self.file_handle = open(log_path, 'a', encoding='utf-8')
+            self.file_path = log_path
+            
+            # 写入meta记录（第一行）
+            meta['record_type'] = 'meta'
+            json_line = json.dumps(meta, ensure_ascii=False, separators=(',', ':'))
+            self.file_handle.write(json_line + '\n')
+            self.file_handle.flush()
+            self.write_count = 1
+            
+            # 启动后台写入线程
+            self.stop_event.clear()
+            self.is_running = True
+            self.write_thread = threading.Thread(target=self._write_worker, daemon=True, name="LogWriterThread")
+            self.write_thread.start()
+            
+            self.logger.info(f"日志写入器已启动: {log_path}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"启动日志会话失败: {e}", exc_info=True)
+            if self.file_handle:
+                try:
+                    self.file_handle.close()
+                except:
+                    pass
+                self.file_handle = None
+            return False
+    
+    def append_record(self, record: Dict) -> bool:
+        """
+        追加记录到队列（非阻塞）
+        
+        Args:
+            record: 记录字典，必须包含record_type字段
+        
+        Returns:
+            True if queued, False if queue full (dropped)
+        """
+        if not self.is_running:
+            self.logger.warning("日志写入器未运行，无法追加记录")
+            return False
+        
+        try:
+            # 确保record_type存在
+            if 'record_type' not in record:
+                self.logger.warning("记录缺少record_type字段，已添加默认值'frame'")
+                record['record_type'] = 'frame'
+            
+            # 尝试添加到队列（非阻塞）
+            try:
+                self.record_queue.put_nowait(record)
+                return True
+            except queue.Full:
+                # 队列满，丢弃并计数
+                self.dropped_count += 1
+                if self.dropped_count % 1000 == 0:
+                    self.logger.warning(f"队列已满，已丢弃 {self.dropped_count} 条记录")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"追加记录失败: {e}", exc_info=True)
+            return False
+    
+    def _write_worker(self):
+        """后台写入工作线程"""
+        try:
+            while not self.stop_event.is_set() or not self.record_queue.empty():
+                try:
+                    # 从队列获取记录（带超时，避免无限阻塞）
+                    try:
+                        record = self.record_queue.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    
+                    # 写入文件
+                    if self.file_handle:
+                        json_line = json.dumps(record, ensure_ascii=False, separators=(',', ':'))
+                        self.file_handle.write(json_line + '\n')
+                        self.write_count += 1
+                        
+                        # 定期flush
+                        if self.write_count % self.flush_interval == 0:
+                            self.file_handle.flush()
+                    
+                    self.record_queue.task_done()
+                    
+                except Exception as e:
+                    self.logger.error(f"写入记录时出错: {e}", exc_info=True)
+                    continue
+                    
+        except Exception as e:
+            self.logger.error(f"写入工作线程异常: {e}", exc_info=True)
+        finally:
+            # 最后flush一次
+            if self.file_handle:
+                try:
+                    self.file_handle.flush()
+                except:
+                    pass
+    
+    def stop_session(self) -> Dict:
+        """
+        停止会话，写入end记录（可选），关闭文件
+        
+        Returns:
+            统计信息字典：{written_records, dropped_records}
+        """
+        if not self.is_running:
+            return {'written_records': 0, 'dropped_records': 0}
+        
+        # 等待队列处理完成
+        self.stop_event.set()
+        if self.write_thread and self.write_thread.is_alive():
+            # 等待最多5秒
+            self.write_thread.join(timeout=5.0)
+            if self.write_thread.is_alive():
+                self.logger.warning("写入工作线程未在超时时间内完成")
+        
+        # 写入end记录（可选）
+        if self.file_handle:
+            try:
+                end_record = {
+                    'record_type': 'end',
+                    'ended_at_utc_ns': int(time.time_ns()),
+                    'written_records': self.write_count,
+                    'dropped_records': self.dropped_count
+                }
+                json_line = json.dumps(end_record, ensure_ascii=False, separators=(',', ':'))
+                self.file_handle.write(json_line + '\n')
+                self.file_handle.flush()
+            except Exception as e:
+                self.logger.error(f"写入end记录失败: {e}", exc_info=True)
+            
+            # 关闭文件
+            try:
+                self.file_handle.close()
+            except Exception as e:
+                self.logger.error(f"关闭文件失败: {e}", exc_info=True)
+            finally:
+                self.file_handle = None
+        
+        stats = {
+            'written_records': self.write_count,
+            'dropped_records': self.dropped_count
+        }
+        
+        self.logger.info(f"日志会话已停止: 写入 {self.write_count} 条记录，丢弃 {self.dropped_count} 条")
+        
+        # 重置状态
+        self.is_running = False
+        self.write_count = 0
+        self.dropped_count = 0
+        self.file_path = None
+        
+        return stats
+
+
 class DataSaver:
     """数据保存和加载类"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+        # 日志写入器实例（用于增量保存）
+        self.log_writer = None
     
     def save_frames(self, frames: List[Dict], filepath: str, 
                    max_frames: Optional[int] = None,
@@ -122,7 +334,7 @@ class DataSaver:
                 # 方向估计帧
                 if frames_to_save:
                     frame_version = frames_to_save[0].get('frame_version', 1)
-                file_version = config.version  # 使用APP版本号 3.4.0
+                file_version = config.version_data_save  # 最低兼容的APP版本
             elif frame_type == 'channel_sounding':
                 # 信道探测帧
                 file_version = '1.0.0'  # 信道探测帧保持1.0.0版本
@@ -201,7 +413,7 @@ class DataSaver:
     
     def load_frames(self, filepath: str) -> Optional[Dict]:
         """
-        从JSON文件加载帧数据
+        从JSON或JSONL文件加载帧数据（自动检测格式）
         
         Args:
             filepath: 文件路径
@@ -221,6 +433,47 @@ class DataSaver:
             如果加载失败返回None
         """
         try:
+            # 根据文件扩展名判断格式
+            is_jsonl_by_ext = filepath.lower().endswith('.jsonl') or filepath.lower().endswith('.ndjson')
+            
+            if is_jsonl_by_ext:
+                # JSONL格式加载
+                return self._load_frames_from_jsonl(filepath)
+            else:
+                # 尝试检测文件格式：先尝试读取第一行判断是否为JSONL
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        first_line = f.readline().strip()
+                        if first_line:
+                            try:
+                                first_record = json.loads(first_line)
+                                # 如果第一行是有效的JSON且包含record_type字段，认为是JSONL格式
+                                if isinstance(first_record, dict) and 'record_type' in first_record:
+                                    self.logger.info(f"检测到JSONL格式（通过内容判断）: {filepath}")
+                                    return self._load_frames_from_jsonl(filepath)
+                            except json.JSONDecodeError:
+                                pass  # 不是JSONL，继续尝试JSON格式
+                except Exception as e:
+                    self.logger.debug(f"检测文件格式时出错: {e}，继续尝试JSON格式")
+                
+                # JSON格式加载（向后兼容）
+                return self._load_frames_from_json(filepath)
+            
+        except Exception as e:
+            self.logger.error(f"加载帧数据失败: {e}", exc_info=True)
+            return None
+    
+    def _load_frames_from_json(self, filepath: str) -> Optional[Dict]:
+        """
+        从JSON文件加载帧数据（旧格式，向后兼容）
+        
+        Args:
+            filepath: 文件路径
+        
+        Returns:
+            包含帧数据的字典
+        """
+        try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
@@ -238,11 +491,120 @@ class DataSaver:
                     'message': f'文件版本 {file_version} 高于APP版本 {app_version}，请升级APP'
                 }
             
-            self.logger.info(f"成功加载 {data.get('saved_frames', 0)} 帧数据从: {filepath}, 文件版本: {file_version}")
+            self.logger.info(f"成功加载 {data.get('saved_frames', 0)} 帧数据从JSON: {filepath}, 文件版本: {file_version}")
             return data
             
         except Exception as e:
-            self.logger.error(f"加载帧数据失败: {e}")
+            self.logger.error(f"加载JSON文件失败: {e}", exc_info=True)
+            return None
+    
+    def _load_frames_from_jsonl(self, filepath: str) -> Optional[Dict]:
+        """
+        从JSONL文件加载帧数据（新格式）
+        
+        Args:
+            filepath: 文件路径
+        
+        Returns:
+            包含帧数据的字典，格式与JSON格式兼容
+        """
+        try:
+            # 读取meta记录
+            meta = self.read_meta(filepath)
+            if not meta:
+                self.logger.error("无法读取JSONL文件的meta记录")
+                return None
+            
+            # 检查版本兼容性
+            file_version = meta.get('file_version', meta.get('app_version', '1.0'))
+            app_version = config.version
+            
+            # 如果文件版本高于APP版本，返回错误信息
+            if self._compare_versions(file_version, app_version) > 0:
+                self.logger.error(f"文件版本 {file_version} 高于APP版本 {app_version}，无法加载")
+                return {
+                    'error': 'version_incompatible',
+                    'file_version': file_version,
+                    'app_version': app_version,
+                    'message': f'文件版本 {file_version} 高于APP版本 {app_version}，请升级APP'
+                }
+            
+            # 收集所有frame记录并转换为原始格式
+            frames = []
+            frame_count = 0
+            
+            for record in self.iter_frames(filepath):
+                # 将记录转换回原始帧格式
+                frame = {
+                    'index': record.get('seq', 0),
+                    'timestamp_ms': record.get('t_dev_ms', 0),
+                }
+                
+                # 添加帧类型和版本
+                if 'frame_type' in record:
+                    frame['frame_type'] = record['frame_type']
+                if 'frame_version' in record:
+                    frame['frame_version'] = record['frame_version']
+                
+                # 恢复channels数据
+                if 'ch' in record and 'amp' in record:
+                    # 单信道（方向估计帧）
+                    frame['channels'] = {
+                        record['ch']: {
+                            'amplitude': record['amp']
+                        }
+                    }
+                elif 'channels' in record:
+                    # 多信道（信道探测帧）
+                    channels = {}
+                    for ch_str, ch_data in record['channels'].items():
+                        try:
+                            ch = int(ch_str)
+                        except:
+                            ch = ch_str
+                        channels[ch] = {
+                            'amplitude': ch_data.get('amp', 0.0),
+                            'phase': ch_data.get('phase'),
+                            'I': ch_data.get('I'),
+                            'Q': ch_data.get('Q')
+                        }
+                    frame['channels'] = channels
+                
+                frames.append(frame)
+                frame_count += 1
+            
+            # 读取end记录（如果有）获取统计信息
+            end_record = None
+            for record in self.iter_records(filepath):
+                if record.get('record_type') == 'end':
+                    end_record = record
+                    break
+            
+            # 构建返回数据结构（与JSON格式兼容）
+            result = {
+                'version': file_version,
+                'saved_at': meta.get('started_at_iso', meta.get('started_at_utc_ns', '')),
+                'total_frames': frame_count,
+                'saved_frames': frame_count,
+                'max_frames_param': None,  # JSONL格式不限制帧数
+                'frame_type': meta.get('frame_type'),
+                'frames': frames
+            }
+            
+            # 添加frame_version（从第一帧获取）
+            if frames and 'frame_version' in frames[0]:
+                result['frame_version'] = frames[0]['frame_version']
+            
+            # 如果有end记录，更新统计信息
+            if end_record:
+                result['total_frames'] = end_record.get('written_records', frame_count)
+                result['saved_frames'] = end_record.get('written_records', frame_count)
+            
+            self.logger.info(f"成功加载 {frame_count} 帧数据从JSONL: {filepath}, 文件版本: {file_version}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"加载JSONL文件失败: {e}", exc_info=True)
             return None
     
     def _compare_versions(self, version1: str, version2: str) -> int:
@@ -310,7 +672,8 @@ class DataSaver:
     def get_auto_save_path(self, prefix: str = "frames",
                            save_all: bool = True,
                            max_frames: Optional[int] = None,
-                           frame_type: Optional[str] = None) -> str:
+                           frame_type: Optional[str] = None,
+                           use_jsonl: bool = True) -> str:
         """
         获取自动保存路径（基于用户设置的保存目录）
         
@@ -319,6 +682,7 @@ class DataSaver:
             save_all: 是否保存全部帧
             max_frames: 如果保存最近N帧，指定N
             frame_type: 帧类型，用于添加DF/CS前缀
+            use_jsonl: 是否使用.jsonl扩展名（默认True，新格式）
         
         Returns:
             完整的保存路径
@@ -327,6 +691,381 @@ class DataSaver:
         # 确保目录存在
         os.makedirs(save_dir, exist_ok=True)
         
-        filename = self.get_default_filename(prefix, save_all, max_frames, frame_type)
+        filename = self.get_default_filename(prefix, save_all, max_frames, frame_type, use_jsonl)
         return os.path.join(save_dir, filename)
+    
+    # ========== JSONL格式保存和加载方法 ==========
+    
+    def start_log_session(self, log_path: str, frame_type: Optional[str] = None, 
+                         serial_port: Optional[str] = None, 
+                         serial_baud: Optional[str] = None) -> bool:
+        """
+        开始新的日志会话（JSONL格式）
+        
+        Args:
+            log_path: 日志文件路径（.jsonl）
+            frame_type: 帧类型，'direction_estimation' 或 'channel_sounding'
+            serial_port: 串口端口（可选）
+            serial_baud: 串口波特率（可选）
+        
+        Returns:
+            True if success, False otherwise
+        """
+        try:
+            # 确定文件版本
+            if frame_type == 'direction_estimation':
+                file_version = config.version_data_save
+            else:
+                file_version = '1.0.0'
+            
+            # 构建meta记录
+            meta = {
+                'app_version': config.version,
+                'log_version': '1.0',
+                'frame_type': frame_type or 'channel_sounding',
+                'started_at_utc_ns': int(time.time_ns()),
+                'started_at_iso': datetime.now().isoformat(),
+                'file_version': file_version
+            }
+            
+            if serial_port:
+                meta['serial_port'] = serial_port
+            if serial_baud:
+                meta['serial_baud'] = serial_baud
+            
+            # 创建日志写入器并启动会话
+            self.log_writer = LogWriter(flush_interval=100, queue_maxsize=10000)
+            return self.log_writer.start_session(log_path, meta)
+            
+        except Exception as e:
+            self.logger.error(f"启动日志会话失败: {e}", exc_info=True)
+            return False
+    
+    def append_frame_to_log(self, frame: Dict) -> bool:
+        """
+        追加帧记录到日志（非阻塞）
+        
+        Args:
+            frame: 帧数据字典
+        
+        Returns:
+            True if queued, False if failed
+        """
+        if not self.log_writer or not self.log_writer.is_running:
+            self.logger.warning("日志写入器未运行，无法追加帧")
+            return False
+        
+        try:
+            # 构建frame记录
+            record = {
+                'record_type': 'frame',
+                'seq': frame.get('index', 0),
+                't_dev_ms': frame.get('timestamp_ms', 0),
+                't_host_utc_ns': int(time.time_ns()),
+            }
+            
+            # 添加帧类型和版本
+            if 'frame_type' in frame:
+                record['frame_type'] = frame['frame_type']
+            if 'frame_version' in frame:
+                record['frame_version'] = frame['frame_version']
+            
+            # 添加信道数据
+            channels = frame.get('channels', {})
+            if channels:
+                # 对于方向估计帧，通常只有一个信道
+                if len(channels) == 1:
+                    ch = list(channels.keys())[0]
+                    ch_data = channels[ch]
+                    record['ch'] = ch
+                    record['amp'] = ch_data.get('amplitude', 0.0)
+                else:
+                    # 多个信道，保存为字典
+                    record['channels'] = {
+                        str(ch): {
+                            'amp': ch_data.get('amplitude', 0.0),
+                            'phase': ch_data.get('phase'),
+                            'I': ch_data.get('I'),
+                            'Q': ch_data.get('Q')
+                        }
+                        for ch, ch_data in channels.items()
+                    }
+            
+            return self.log_writer.append_record(record)
+            
+        except Exception as e:
+            self.logger.error(f"追加帧记录失败: {e}", exc_info=True)
+            return False
+    
+    def append_event_to_log(self, label: str, note: Optional[str] = None,
+                           nearest_seq: Optional[int] = None,
+                           nearest_t_dev_ms: Optional[int] = None) -> bool:
+        """
+        追加事件记录到日志（用于手工标记）
+        
+        Args:
+            label: 事件标签/名称
+            note: 用户备注（可选）
+            nearest_seq: 最近帧序号（可选）
+            nearest_t_dev_ms: 最近帧设备时间戳（可选）
+        
+        Returns:
+            True if queued, False if failed
+        """
+        if not self.log_writer or not self.log_writer.is_running:
+            self.logger.warning("日志写入器未运行，无法追加事件")
+            return False
+        
+        try:
+            record = {
+                'record_type': 'event',
+                'label': label,
+                't_host_utc_ns': int(time.time_ns()),
+            }
+            
+            if note:
+                record['note'] = note
+            if nearest_seq is not None:
+                record['nearest_seq'] = nearest_seq
+            if nearest_t_dev_ms is not None:
+                record['nearest_t_dev_ms'] = nearest_t_dev_ms
+            
+            return self.log_writer.append_record(record)
+            
+        except Exception as e:
+            self.logger.error(f"追加事件记录失败: {e}", exc_info=True)
+            return False
+    
+    def stop_log_session(self) -> Dict:
+        """
+        停止日志会话
+        
+        Returns:
+            统计信息字典
+        """
+        if self.log_writer:
+            stats = self.log_writer.stop_session()
+            self.log_writer = None
+            return stats
+        return {'written_records': 0, 'dropped_records': 0}
+    
+    # ========== JSONL格式加载方法 ==========
+    
+    def read_meta(self, log_path: str) -> Optional[Dict]:
+        """
+        读取日志文件的meta记录（第一行）
+        
+        Args:
+            log_path: 日志文件路径
+        
+        Returns:
+            meta字典，如果失败返回None
+        """
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                first_line = f.readline()
+                if first_line:
+                    meta = json.loads(first_line.strip())
+                    if meta.get('record_type') == 'meta':
+                        return meta
+            return None
+        except Exception as e:
+            self.logger.error(f"读取meta记录失败: {e}", exc_info=True)
+            return None
+    
+    def iter_records(self, log_path: str) -> Generator[Dict, None, None]:
+        """
+        迭代读取日志文件中的所有记录（流式）
+        
+        Args:
+            log_path: 日志文件路径
+        
+        Yields:
+            记录字典（容错：坏行跳过）
+        """
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        if 'record_type' in record:
+                            yield record
+                    except json.JSONDecodeError as e:
+                        self.logger.warning(f"跳过第 {line_num} 行（JSON解析失败）: {e}")
+                        continue
+                    except Exception as e:
+                        self.logger.warning(f"跳过第 {line_num} 行（处理失败）: {e}")
+                        continue
+        except Exception as e:
+            self.logger.error(f"读取日志文件失败: {e}", exc_info=True)
+    
+    def iter_frames(self, log_path: str) -> Generator[Dict, None, None]:
+        """
+        迭代读取日志文件中的frame记录
+        
+        Args:
+            log_path: 日志文件路径
+        
+        Yields:
+            frame记录字典
+        """
+        for record in self.iter_records(log_path):
+            if record.get('record_type') == 'frame':
+                yield record
+    
+    def iter_events(self, log_path: str) -> Generator[Dict, None, None]:
+        """
+        迭代读取日志文件中的event记录
+        
+        Args:
+            log_path: 日志文件路径
+        
+        Yields:
+            event记录字典
+        """
+        for record in self.iter_records(log_path):
+            if record.get('record_type') == 'event':
+                yield record
+    
+    def export_log_to_json(self, log_path: str, out_json_path: str, 
+                          max_frames: Optional[int] = None) -> bool:
+        """
+        将JSONL日志文件导出为旧格式JSON（兼容性）
+        
+        Args:
+            log_path: 输入的JSONL文件路径
+            out_json_path: 输出的JSON文件路径
+            max_frames: 最多导出多少帧（None表示全部）
+        
+        Returns:
+            True if success, False otherwise
+        """
+        try:
+            # 读取meta
+            meta = self.read_meta(log_path)
+            if not meta:
+                self.logger.error("无法读取meta记录")
+                return False
+            
+            # 收集所有frame记录
+            frames = []
+            frame_count = 0
+            for record in self.iter_frames(log_path):
+                # 将记录转换回原始帧格式
+                frame = {
+                    'index': record.get('seq', 0),
+                    'timestamp_ms': record.get('t_dev_ms', 0),
+                }
+                
+                if 'frame_type' in record:
+                    frame['frame_type'] = record['frame_type']
+                if 'frame_version' in record:
+                    frame['frame_version'] = record['frame_version']
+                
+                # 恢复channels数据
+                if 'ch' in record and 'amp' in record:
+                    # 单信道（方向估计帧）
+                    frame['channels'] = {
+                        record['ch']: {
+                            'amplitude': record['amp']
+                        }
+                    }
+                elif 'channels' in record:
+                    # 多信道（信道探测帧）
+                    channels = {}
+                    for ch_str, ch_data in record['channels'].items():
+                        ch = int(ch_str)
+                        channels[ch] = {
+                            'amplitude': ch_data.get('amp', 0.0),
+                            'phase': ch_data.get('phase'),
+                            'I': ch_data.get('I'),
+                            'Q': ch_data.get('Q')
+                        }
+                    frame['channels'] = channels
+                
+                frames.append(frame)
+                frame_count += 1
+                
+                if max_frames and frame_count >= max_frames:
+                    break
+            
+            # 构建导出数据结构
+            export_data = {
+                'version': meta.get('file_version', '1.0.0'),
+                'saved_at': datetime.now().isoformat(),
+                'total_frames': frame_count,
+                'saved_frames': frame_count,
+                'max_frames_param': max_frames,
+                'frame_type': meta.get('frame_type'),
+                'frames': frames
+            }
+            
+            if 'frame_version' in frames[0] if frames else {}:
+                export_data['frame_version'] = frames[0]['frame_version']
+            
+            # 使用临时文件+原子替换
+            temp_path = out_json_path + '.tmp'
+            try:
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(export_data, f, indent=2, ensure_ascii=False)
+                
+                # 原子替换
+                if os.path.exists(out_json_path):
+                    os.replace(temp_path, out_json_path)
+                else:
+                    os.rename(temp_path, out_json_path)
+                
+                self.logger.info(f"成功导出 {frame_count} 帧到: {out_json_path}")
+                return True
+                
+            except Exception as e:
+                # 清理临时文件
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except:
+                        pass
+                raise
+                
+        except Exception as e:
+            self.logger.error(f"导出JSONL到JSON失败: {e}", exc_info=True)
+            return False
+    
+    def get_default_filename(self, prefix: str = "frames", 
+                            save_all: bool = True, 
+                            max_frames: Optional[int] = None,
+                            frame_type: Optional[str] = None,
+                            use_jsonl: bool = True) -> str:
+        """
+        生成默认文件名
+        
+        Args:
+            prefix: 文件名前缀
+            save_all: 是否保存全部帧
+            max_frames: 如果保存最近N帧，指定N
+            frame_type: 帧类型，'direction_estimation' 或 'channel_sounding'，用于添加DF/CS前缀
+            use_jsonl: 是否使用.jsonl扩展名（默认True，新格式）
+        
+        Returns:
+            默认文件名（不含路径）
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # 根据帧类型添加前缀
+        type_prefix = ""
+        if frame_type == 'direction_estimation':
+            type_prefix = "DF_"
+        elif frame_type == 'channel_sounding':
+            type_prefix = "CS_"
+        
+        # 扩展名
+        ext = ".jsonl" if use_jsonl else ".json"
+        
+        if save_all:
+            return f"{type_prefix}{prefix}_all_{timestamp}{ext}"
+        else:
+            return f"{type_prefix}{prefix}_recent{max_frames}_{timestamp}{ext}"
 

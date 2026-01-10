@@ -133,6 +133,11 @@ class BLEHostGUI(QMainWindow):
         self.is_saving = False
         self.use_auto_save = user_settings.get_use_auto_save_path()
         
+        # 记录相关变量
+        self.is_recording = False  # 是否正在记录JSONL
+        self.current_log_path = None  # 当前日志文件路径
+        self.auto_start_recording_enabled = user_settings.get_auto_start_recording()
+        
         # 绘图刷新节流控制
         self.last_plot_refresh_time = 0
         self.plot_refresh_interval = 0.2  # 最多每200ms刷新一次
@@ -1213,27 +1218,42 @@ class BLEHostGUI(QMainWindow):
         path_layout.addStretch()
         top_row.addWidget(path_group)
         
-        # 第二组：保存数据+全部保存/最近N帧
-        save_group = QGroupBox("保存数据")
+        # 第二组：保存与导出
+        save_group = QGroupBox("保存与导出")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
         save_group.setFont(get_app_font(9))
-        save_group.setMaximumHeight(120)
+        save_group.setMaximumHeight(180)
         save_layout = QVBoxLayout(save_group)
         
-        self.save_btn = QPushButton("保存数据")
-        self.save_btn.setStyleSheet(self._get_button_style("#4CAF50"))
-        self.save_btn.clicked.connect(self._save_data)
-        save_layout.addWidget(self.save_btn)
+        # 自动开始记录复选框
+        self.auto_start_recording_checkbox = QCheckBox("自动开始记录")
+        self.auto_start_recording_checkbox.setToolTip("勾选后，连接串口且有数据后自动开始记录JSONL")
+        self.auto_start_recording_checkbox.setChecked(user_settings.get_auto_start_recording())
+        self.auto_start_recording_checkbox.stateChanged.connect(self._on_auto_start_recording_changed)
+        save_layout.addWidget(self.auto_start_recording_checkbox)
         
-        # 保存选项（全部保存或最近N帧）
-        self.save_option_group = QButtonGroup()
-        self.save_all_radio = QRadioButton("全部保存")
-        self.save_all_radio.setChecked(True)
-        self.save_recent_radio = QRadioButton("最近N帧")
-        self.save_option_group.addButton(self.save_all_radio, 0)
-        self.save_option_group.addButton(self.save_recent_radio, 1)
-        save_layout.addWidget(self.save_all_radio)
-        save_layout.addWidget(self.save_recent_radio)
+        # 开始记录按钮
+        self.start_recording_btn = QPushButton("开始记录")
+        self.start_recording_btn.setStyleSheet(self._get_button_style("#4CAF50"))
+        self.start_recording_btn.setToolTip("开始记录JSONL日志文件")
+        self.start_recording_btn.clicked.connect(self._start_recording)
+        save_layout.addWidget(self.start_recording_btn)
+        
+        # 停止记录/导出按钮
+        self.stop_recording_btn = QPushButton("停止记录/导出")
+        self.stop_recording_btn.setStyleSheet(self._get_button_style("#F44336"))
+        self.stop_recording_btn.setToolTip("停止记录并可选导出为JSON格式")
+        self.stop_recording_btn.clicked.connect(self._stop_recording)
+        self.stop_recording_btn.setEnabled(False)  # 初始状态禁用
+        save_layout.addWidget(self.stop_recording_btn)
+        
+        # 标记事件按钮
+        self.mark_event_btn = QPushButton("标记事件")
+        self.mark_event_btn.setStyleSheet(self._get_button_style("#FF9800"))
+        self.mark_event_btn.setToolTip("标记当前时刻的特殊事件（如外部干扰、异常等）")
+        self.mark_event_btn.clicked.connect(self._mark_event)
+        self.mark_event_btn.setEnabled(False)  # 初始状态禁用，只有在记录时才启用
+        save_layout.addWidget(self.mark_event_btn)
         
         save_layout.addStretch()
         top_row.addWidget(save_group)
@@ -2029,6 +2049,11 @@ class BLEHostGUI(QMainWindow):
                 
                 # 更新文件加载tab状态（连接时禁用文件加载功能）
                 self._update_load_tab_state()
+                
+                # 如果启用了自动开始记录，等待有数据后自动开始
+                if self.auto_start_recording_enabled and self.frame_mode:
+                    # 延迟检查，等待第一帧数据到达
+                    QTimer.singleShot(1000, self._check_and_auto_start_recording)
             else:
                 InfoBarHelper.error(
                     self,
@@ -2062,6 +2087,10 @@ class BLEHostGUI(QMainWindow):
             
             # 更新文件加载tab状态（断开连接后，如果未加载文件，则启用文件加载功能）
             self._update_load_tab_state()
+            
+            # 如果正在记录，停止记录
+            if self.is_recording:
+                self._stop_recording()
     
     def _on_frame_type_changed(self, text):
         """帧类型改变"""
@@ -2260,6 +2289,10 @@ class BLEHostGUI(QMainWindow):
                             frame_data, 
                             detect_channel_change=self.is_direction_estimation_mode
                         )
+                        
+                        # 如果正在记录，自动追加帧到日志
+                        if self.is_recording and self.data_saver.log_writer and self.data_saver.log_writer.is_running:
+                            self.data_saver.append_frame_to_log(frame_data)
                         
                         # 如果检测到信道变化并清空了数据，需要重置呼吸估计状态
                         if cleared_channels and self.is_direction_estimation_mode:
@@ -2668,51 +2701,95 @@ class BLEHostGUI(QMainWindow):
         # 在保存前获取frames的引用（不复制，避免大文件时占用过多内存）
         # 注意：在后台线程中保存时，会进行深拷贝，所以这里不需要复制
         
-        # 根据设置决定是否弹出对话框
+        # 根据设置决定是否弹出对话框（使用JSONL格式）
         if self.use_auto_save:
-            filepath = self.data_saver.get_auto_save_path(prefix="frames", save_all=True, frame_type=frame_type)
+            filepath = self.data_saver.get_auto_save_path(prefix="frames", save_all=True, frame_type=frame_type, use_jsonl=True)
             self.logger.info(f"使用自动保存路径: {filepath}")
         else:
-            default_filename = self.data_saver.get_default_filename(prefix="frames", save_all=True, frame_type=frame_type)
+            default_filename = self.data_saver.get_default_filename(prefix="frames", save_all=True, frame_type=frame_type, use_jsonl=True)
             filepath, _ = QFileDialog.getSaveFileName(
                 self, "保存所有帧数据", default_filename,
-                "JSON文件 (*.json);;所有文件 (*.*)"
+                "JSONL文件 (*.jsonl);;JSON文件 (*.json);;所有文件 (*.*)"
             )
             if not filepath:
                 return
+            # 如果用户选择了.json文件，自动改为.jsonl
+            if filepath.endswith('.json'):
+                filepath = filepath[:-5] + '.jsonl'
         
-        # 在后台线程中执行保存操作
+        # 获取串口信息（用于meta记录）
+        serial_port = None
+        serial_baud = None
+        if hasattr(self, 'port_combo') and self.port_combo.currentData():
+            serial_port = self.port_combo.currentData()
+        if hasattr(self, 'baudrate_combo'):
+            serial_baud = self.baudrate_combo.currentText()
+        
+        # 在后台线程中执行保存操作（使用新的JSONL增量写入方式）
         def save_in_thread():
             try:
                 self.is_saving = True
                 # 通过信号在主线程中更新状态
                 self.save_status_update_signal.emit(f"正在保存 {len(frames)} 帧数据...", "color: black;")
                 
-                # 传递frame_type给save_frames，确保保存的文件信息正确
-                success = self.data_saver.save_frames(frames, filepath, max_frames=None, frame_type=frame_type)
+                # 启动日志会话
+                if not self.data_saver.start_log_session(filepath, frame_type, serial_port, serial_baud):
+                    self.save_error_signal.emit("启动日志会话失败")
+                    return
                 
-                if success:
+                # 增量写入所有帧
+                saved_count = 0
+                total_frames = len(frames)
+                for i, frame in enumerate(frames):
+                    if self.data_saver.append_frame_to_log(frame):
+                        saved_count += 1
+                    # 每1000帧更新一次进度
+                    if (i + 1) % 1000 == 0 or (i + 1) == total_frames:
+                        progress_pct = ((i + 1) / total_frames * 100) if total_frames > 0 else 0
+                        self.save_status_update_signal.emit(
+                            f"正在保存 {i + 1}/{total_frames} 帧 ({progress_pct:.1f}%)...", 
+                            "color: black;"
+                        )
+                
+                # 停止会话
+                stats = self.data_saver.stop_log_session()
+                
+                if saved_count > 0:
                     # 显示简洁的保存信息（只显示文件名）
                     filename = os.path.basename(filepath)
-                    frame_count = len(frames)
                     # 通过信号在主线程中更新UI和显示InfoBar
-                    self.save_success_signal.emit(frame_count, filename)
+                    self.save_success_signal.emit(saved_count, filename)
                 else:
                     # 通过信号在主线程中显示错误提示
-                    self.save_error_signal.emit("保存失败，请查看日志")
+                    self.save_error_signal.emit("保存失败：没有成功写入任何帧")
             except MemoryError as e:
                 self.logger.error(f"保存数据时内存不足: {e}", exc_info=True)
                 error_msg = f"保存失败: 内存不足，请尝试保存更少的数据或关闭其他程序"
                 self.save_error_signal.emit(error_msg)
+                # 确保停止会话
+                try:
+                    self.data_saver.stop_log_session()
+                except:
+                    pass
             except IOError as e:
                 self.logger.error(f"保存数据时IO错误: {e}", exc_info=True)
                 error_msg = f"保存失败: 文件写入错误 - {str(e)}"
                 self.save_error_signal.emit(error_msg)
+                # 确保停止会话
+                try:
+                    self.data_saver.stop_log_session()
+                except:
+                    pass
             except Exception as e:
                 self.logger.error(f"保存数据时出错: {e}", exc_info=True)
                 error_msg = f"保存失败: {str(e)}"
                 # 通过信号在主线程中显示错误提示
                 self.save_error_signal.emit(error_msg)
+                # 确保停止会话
+                try:
+                    self.data_saver.stop_log_session()
+                except:
+                    pass
             finally:
                 self.is_saving = False
         
@@ -2763,6 +2840,224 @@ class BLEHostGUI(QMainWindow):
             content=error_msg
         )
     
+    def _check_and_auto_start_recording(self):
+        """检查并自动开始记录（在有数据后）"""
+        if not self.is_running or not self.frame_mode:
+            return
+        
+        if not self.auto_start_recording_enabled:
+            return
+        
+        if self.is_recording:
+            return
+        
+        # 检查是否有数据
+        frames = self.data_processor.raw_frames
+        if not frames or len(frames) == 0:
+            # 如果还没有数据，再等一会儿
+            QTimer.singleShot(1000, self._check_and_auto_start_recording)
+            return
+        
+        # 有数据了，自动开始记录
+        self.logger.info("自动开始记录（检测到数据）")
+        self._start_recording()
+    
+    def _on_auto_start_recording_changed(self, state):
+        """自动开始记录复选框变化"""
+        checked = (state == Qt.CheckState.Checked.value)
+        self.auto_start_recording_enabled = checked
+        user_settings.set_auto_start_recording(checked)
+        self.logger.info(f"自动开始记录: {'启用' if checked else '禁用'}")
+    
+    def _start_recording(self):
+        """开始记录JSONL"""
+        if not self.frame_mode:
+            InfoBarHelper.warning(
+                self,
+                title="无法记录",
+                content="当前不是帧模式，无法记录帧数据"
+            )
+            return
+        
+        if self.is_recording:
+            InfoBarHelper.warning(
+                self,
+                title="已在记录",
+                content="记录已在进行中"
+            )
+            return
+        
+        # 确定帧类型
+        if self.is_direction_estimation_mode:
+            frame_type = 'direction_estimation'
+        else:
+            frame_type = 'channel_sounding'
+        
+        # 生成日志文件路径
+        if self.use_auto_save:
+            log_path = self.data_saver.get_auto_save_path(prefix="frames", save_all=True, frame_type=frame_type, use_jsonl=True)
+        else:
+            default_filename = self.data_saver.get_default_filename(prefix="frames", save_all=True, frame_type=frame_type, use_jsonl=True)
+            log_path, _ = QFileDialog.getSaveFileName(
+                self, "开始记录JSONL", default_filename,
+                "JSONL文件 (*.jsonl);;所有文件 (*.*)"
+            )
+            if not log_path:
+                return
+            # 确保是.jsonl扩展名
+            if not log_path.endswith('.jsonl'):
+                log_path = log_path + '.jsonl'
+        
+        # 获取串口信息
+        serial_port = None
+        serial_baud = None
+        if hasattr(self, 'port_combo') and self.port_combo.currentData():
+            serial_port = self.port_combo.currentData()
+        if hasattr(self, 'baudrate_combo'):
+            serial_baud = self.baudrate_combo.currentText()
+        
+        # 启动日志会话
+        if self.data_saver.start_log_session(log_path, frame_type, serial_port, serial_baud):
+            self.is_recording = True
+            self.current_log_path = log_path
+            
+            # 更新UI
+            self.start_recording_btn.setEnabled(False)
+            self.stop_recording_btn.setEnabled(True)
+            self.mark_event_btn.setEnabled(True)
+            
+            filename = os.path.basename(log_path)
+            InfoBarHelper.success(
+                self,
+                title="开始记录",
+                content=f"已开始记录到: {filename}"
+            )
+            self.logger.info(f"开始记录JSONL: {log_path}")
+            
+            # 将已有的帧数据追加到日志（如果有）
+            frames = self.data_processor.raw_frames
+            if frames:
+                self.logger.info(f"将已有的 {len(frames)} 帧追加到日志")
+                for frame in frames:
+                    self.data_saver.append_frame_to_log(frame)
+        else:
+            InfoBarHelper.error(
+                self,
+                title="启动失败",
+                content="无法启动日志会话，请查看日志"
+            )
+    
+    def _stop_recording(self):
+        """停止记录JSONL并可选导出为JSON"""
+        if not self.is_recording:
+            InfoBarHelper.warning(
+                self,
+                title="未在记录",
+                content="当前没有正在进行的记录"
+            )
+            return
+        
+        # 停止日志会话
+        stats = self.data_saver.stop_log_session()
+        written_count = stats.get('written_records', 0)
+        dropped_count = stats.get('dropped_records', 0)
+        
+        log_path = self.current_log_path
+        
+        # 更新状态
+        self.is_recording = False
+        self.current_log_path = None
+        
+        # 更新UI
+        self.start_recording_btn.setEnabled(True)
+        self.stop_recording_btn.setEnabled(False)
+        self.mark_event_btn.setEnabled(False)
+        
+        # 询问是否导出为JSON
+        reply = QMessageBox.question(
+            self,
+            "停止记录",
+            f"已停止记录。\n写入记录: {written_count}\n丢弃记录: {dropped_count}\n\n是否导出为JSON格式？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # 导出为JSON
+            default_json_path = log_path.replace('.jsonl', '.json')
+            json_path, _ = QFileDialog.getSaveFileName(
+                self, "导出为JSON", default_json_path,
+                "JSON文件 (*.json);;所有文件 (*.*)"
+            )
+            if json_path:
+                # 在后台线程中导出
+                def export_in_thread():
+                    try:
+                        self.save_status_update_signal.emit("正在导出JSON...", "color: black;")
+                        success = self.data_saver.export_log_to_json(log_path, json_path)
+                        if success:
+                            filename = os.path.basename(json_path)
+                            self.save_success_signal.emit(written_count, filename)
+                        else:
+                            self.save_error_signal.emit("导出JSON失败")
+                    except Exception as e:
+                        self.logger.error(f"导出JSON失败: {e}", exc_info=True)
+                        self.save_error_signal.emit(f"导出失败: {str(e)}")
+                
+                import threading
+                export_thread = threading.Thread(target=export_in_thread, daemon=False, name="ExportThread")
+                export_thread.start()
+        
+        InfoBarHelper.success(
+            self,
+            title="已停止记录",
+            content=f"已写入 {written_count} 条记录"
+        )
+        self.logger.info(f"停止记录JSONL: {log_path}, 写入 {written_count} 条记录")
+    
+    def _mark_event(self):
+        """标记特殊事件"""
+        # 检查是否正在记录
+        if not self.is_recording or not self.data_saver.log_writer or not self.data_saver.log_writer.is_running:
+            InfoBarHelper.warning(
+                self,
+                title="无法标记事件",
+                content="请先开始记录，然后再标记事件"
+            )
+            return
+        
+        # 获取当前最近的帧信息（用于关联）
+        nearest_seq = None
+        nearest_t_dev_ms = None
+        frames = self.data_processor.raw_frames
+        if frames:
+            last_frame = frames[-1]
+            nearest_seq = last_frame.get('index', None)
+            nearest_t_dev_ms = last_frame.get('timestamp_ms', None)
+        
+        # 追加事件记录（使用默认标签"external_spike"，用户可以在未来扩展时添加输入框）
+        label = "external_spike"  # 默认事件标签
+        success = self.data_saver.append_event_to_log(
+            label=label,
+            note=None,  # 未来可以添加输入框让用户输入备注
+            nearest_seq=nearest_seq,
+            nearest_t_dev_ms=nearest_t_dev_ms
+        )
+        
+        if success:
+            InfoBarHelper.success(
+                self,
+                title="事件已标记",
+                content=f"已标记事件: {label}"
+            )
+            self.logger.info(f"已标记事件: {label}, 最近帧: seq={nearest_seq}, t={nearest_t_dev_ms}ms")
+        else:
+            InfoBarHelper.error(
+                self,
+                title="标记失败",
+                content="事件队列已满，无法标记事件"
+            )
+    
     def _save_recent_frames(self):
         """保存最近N帧数据"""
         if not self.frame_mode:
@@ -2805,56 +3100,103 @@ class BLEHostGUI(QMainWindow):
         else:
             frame_type = 'channel_sounding'
         
-        # 根据设置决定是否弹出对话框
+        # 根据设置决定是否弹出对话框（使用JSONL格式）
         if self.use_auto_save:
             filepath = self.data_saver.get_auto_save_path(
-                prefix="frames", save_all=False, max_frames=max_frames, frame_type=frame_type
+                prefix="frames", save_all=False, max_frames=max_frames, frame_type=frame_type, use_jsonl=True
             )
             self.logger.info(f"使用自动保存路径: {filepath}")
         else:
             default_filename = self.data_saver.get_default_filename(
-                prefix="frames", save_all=False, max_frames=max_frames, frame_type=frame_type
+                prefix="frames", save_all=False, max_frames=max_frames, frame_type=frame_type, use_jsonl=True
             )
             filepath, _ = QFileDialog.getSaveFileName(
                 self, f"保存最近{max_frames}帧数据", default_filename,
-                "JSON文件 (*.json);;所有文件 (*.*)"
+                "JSONL文件 (*.jsonl);;JSON文件 (*.json);;所有文件 (*.*)"
             )
             if not filepath:
                 return
+            # 如果用户选择了.json文件，自动改为.jsonl
+            if filepath.endswith('.json'):
+                filepath = filepath[:-5] + '.jsonl'
         
-        saved_count = min(max_frames, len(frames))
+        # 只保存最近的max_frames帧
+        frames_to_save = frames[-max_frames:] if len(frames) > max_frames else frames
+        saved_count = len(frames_to_save)
         
-        # 在后台线程中执行保存操作
+        # 获取串口信息（用于meta记录）
+        serial_port = None
+        serial_baud = None
+        if hasattr(self, 'port_combo') and self.port_combo.currentData():
+            serial_port = self.port_combo.currentData()
+        if hasattr(self, 'baudrate_combo'):
+            serial_baud = self.baudrate_combo.currentText()
+        
+        # 在后台线程中执行保存操作（使用新的JSONL增量写入方式）
         def save_in_thread():
             try:
                 self.is_saving = True
                 # 通过信号在主线程中更新状态
                 self.save_status_update_signal.emit(f"正在保存最近 {saved_count} 帧数据...", "color: black;")
                 
-                # 传递frame_type给save_frames，确保保存的文件信息正确
-                success = self.data_saver.save_frames(frames, filepath, max_frames=max_frames, frame_type=frame_type)
+                # 启动日志会话
+                if not self.data_saver.start_log_session(filepath, frame_type, serial_port, serial_baud):
+                    self.save_error_signal.emit("启动日志会话失败")
+                    return
                 
-                if success:
+                # 增量写入帧
+                actual_saved = 0
+                total_frames = len(frames_to_save)
+                for i, frame in enumerate(frames_to_save):
+                    if self.data_saver.append_frame_to_log(frame):
+                        actual_saved += 1
+                    # 每1000帧更新一次进度
+                    if (i + 1) % 1000 == 0 or (i + 1) == total_frames:
+                        progress_pct = ((i + 1) / total_frames * 100) if total_frames > 0 else 0
+                        self.save_status_update_signal.emit(
+                            f"正在保存 {i + 1}/{total_frames} 帧 ({progress_pct:.1f}%)...", 
+                            "color: black;"
+                        )
+                
+                # 停止会话
+                stats = self.data_saver.stop_log_session()
+                
+                if actual_saved > 0:
                     # 显示简洁的保存信息（只显示文件名）
                     filename = os.path.basename(filepath)
                     # 通过信号在主线程中更新UI和显示InfoBar
-                    self.save_success_signal.emit(saved_count, filename)
+                    self.save_success_signal.emit(actual_saved, filename)
                 else:
                     # 通过信号在主线程中显示错误提示
-                    self.save_error_signal.emit("保存失败，请查看日志")
+                    self.save_error_signal.emit("保存失败：没有成功写入任何帧")
             except MemoryError as e:
                 self.logger.error(f"保存数据时内存不足: {e}", exc_info=True)
                 error_msg = f"保存失败: 内存不足，请尝试保存更少的数据或关闭其他程序"
                 self.save_error_signal.emit(error_msg)
+                # 确保停止会话
+                try:
+                    self.data_saver.stop_log_session()
+                except:
+                    pass
             except IOError as e:
                 self.logger.error(f"保存数据时IO错误: {e}", exc_info=True)
                 error_msg = f"保存失败: 文件写入错误 - {str(e)}"
                 self.save_error_signal.emit(error_msg)
+                # 确保停止会话
+                try:
+                    self.data_saver.stop_log_session()
+                except:
+                    pass
             except Exception as e:
                 self.logger.error(f"保存数据时出错: {e}", exc_info=True)
                 error_msg = f"保存失败: {str(e)}"
                 # 通过信号在主线程中显示错误提示
                 self.save_error_signal.emit(error_msg)
+                # 确保停止会话
+                try:
+                    self.data_saver.stop_log_session()
+                except:
+                    pass
             finally:
                 self.is_saving = False
         
@@ -2996,7 +3338,7 @@ class BLEHostGUI(QMainWindow):
         """浏览加载文件"""
         filepath, _ = QFileDialog.getOpenFileName(
             self, "选择要加载的文件", "",
-            "JSON文件 (*.json);;所有文件 (*.*)"
+            "JSONL文件 (*.jsonl);;JSON文件 (*.json);;所有文件 (*.*)"
         )
         if filepath:
             self.load_file_entry.setText(filepath)
