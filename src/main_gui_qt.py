@@ -2980,11 +2980,11 @@ class BLEHostGUI(QMainWindow):
             self.mark_event_btn.setEnabled(True)
             
             filename = os.path.basename(log_path)
-            InfoBarHelper.success(
-                self,
-                title="开始记录",
-                content=f"已开始记录到: {filename}"
-            )
+            
+            # 更新状态栏显示正在记录
+            self.save_status_label.setText(f"● 正在记录: {filename}")
+            self.save_status_label.setStyleSheet("color: green;")
+            
             self.logger.info(f"开始记录JSONL: {log_path}")
             
             # 将已有的帧数据追加到日志（如果有）
@@ -2994,6 +2994,9 @@ class BLEHostGUI(QMainWindow):
                 for frame in frames:
                     self.data_saver.append_frame_to_log(frame)
         else:
+            # 更新状态栏显示错误
+            self.save_status_label.setText("✗ 启动记录失败")
+            self.save_status_label.setStyleSheet("color: red;")
             InfoBarHelper.error(
                 self,
                 title="启动失败",
@@ -3001,7 +3004,7 @@ class BLEHostGUI(QMainWindow):
             )
     
     def _stop_recording(self):
-        """停止记录JSONL并可选导出为JSON"""
+        """停止记录JSONL"""
         if not self.is_recording:
             InfoBarHelper.warning(
                 self,
@@ -3016,6 +3019,7 @@ class BLEHostGUI(QMainWindow):
         dropped_count = stats.get('dropped_records', 0)
         
         log_path = self.current_log_path
+        filename = os.path.basename(log_path) if log_path else "未知文件"
         
         # 更新状态
         self.is_recording = False
@@ -3026,47 +3030,21 @@ class BLEHostGUI(QMainWindow):
         self.stop_recording_btn.setEnabled(False)
         self.mark_event_btn.setEnabled(False)
         
-        # 询问是否导出为JSON
-        reply = QMessageBox.question(
-            self,
-            "停止记录",
-            f"已停止记录。\n写入记录: {written_count}\n丢弃记录: {dropped_count}\n\n是否导出为JSON格式？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
-        )
+        # 更新状态栏显示停止记录信息
+        # written_count包括meta（1条）和frame记录
+        # end记录不计算在write_count中（因为它是直接写入的，不通过队列）
+        # 所以frame_count = written_count - 1（减去meta记录）
+        if written_count > 1:
+            frame_count = written_count - 1  # 减去meta记录
+            self.save_status_label.setText(f"✓ 已停止向 {filename} 记录，累计 {frame_count} 帧")
+        else:
+            # 只有meta记录，没有frame记录
+            self.save_status_label.setText(f"✓ 已停止向 {filename} 记录")
+        self.save_status_label.setStyleSheet("color: green;")
         
-        if reply == QMessageBox.StandardButton.Yes:
-            # 导出为JSON
-            default_json_path = log_path.replace('.jsonl', '.json')
-            json_path, _ = QFileDialog.getSaveFileName(
-                self, "导出为JSON", default_json_path,
-                "JSON文件 (*.json);;所有文件 (*.*)"
-            )
-            if json_path:
-                # 在后台线程中导出
-                def export_in_thread():
-                    try:
-                        self.save_status_update_signal.emit("正在导出JSON...", "color: black;")
-                        success = self.data_saver.export_log_to_json(log_path, json_path)
-                        if success:
-                            filename = os.path.basename(json_path)
-                            self.save_success_signal.emit(written_count, filename)
-                        else:
-                            self.save_error_signal.emit("导出JSON失败")
-                    except Exception as e:
-                        self.logger.error(f"导出JSON失败: {e}", exc_info=True)
-                        self.save_error_signal.emit(f"导出失败: {str(e)}")
-                
-                import threading
-                export_thread = threading.Thread(target=export_in_thread, daemon=False, name="ExportThread")
-                export_thread.start()
-        
-        InfoBarHelper.success(
-            self,
-            title="已停止记录",
-            content=f"已写入 {written_count} 条记录"
-        )
-        self.logger.info(f"停止记录JSONL: {log_path}, 写入 {written_count} 条记录")
+        # 计算实际帧数用于日志
+        frame_count = max(0, written_count - 1) if written_count > 1 else 0
+        self.logger.info(f"停止记录JSONL: {log_path}, 写入 {written_count} 条记录（其中 {frame_count} 帧）")
     
     def _mark_event(self):
         """标记特殊事件"""
