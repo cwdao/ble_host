@@ -204,6 +204,12 @@ class BLEHostGUI(QMainWindow):
         self.clear_data_progress_value = 0
         self.is_holding_clear_btn = False
         
+        # 停止记录长按相关
+        self.stop_recording_hold_duration = 1.0  # 需要按住1秒
+        self.stop_recording_progress_timer = None
+        self.stop_recording_progress_value = 0
+        self.is_holding_stop_recording_btn = False
+        
         # 显示控制相关（默认都显示）
         self.show_log = True
         self.show_version_info = True
@@ -1218,34 +1224,55 @@ class BLEHostGUI(QMainWindow):
         path_layout.addStretch()
         top_row.addWidget(path_group)
         
-        # 第二组：保存与导出
+        # 第二组：保存与导出（两列布局）
         save_group = QGroupBox("保存与导出")
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
         save_group.setFont(get_app_font(9))
         save_group.setMaximumHeight(180)
-        save_layout = QVBoxLayout(save_group)
+        save_group.setMinimumWidth(400)  # 增加最小宽度以容纳两列
+        save_layout = QHBoxLayout(save_group)  # 改为水平布局
+        
+        # 第一列：开始记录相关
+        left_column = QVBoxLayout()
         
         # 自动开始记录复选框
         self.auto_start_recording_checkbox = QCheckBox("自动开始记录")
         self.auto_start_recording_checkbox.setToolTip("勾选后，连接串口且有数据后自动开始记录JSONL")
         self.auto_start_recording_checkbox.setChecked(user_settings.get_auto_start_recording())
         self.auto_start_recording_checkbox.stateChanged.connect(self._on_auto_start_recording_changed)
-        save_layout.addWidget(self.auto_start_recording_checkbox)
+        left_column.addWidget(self.auto_start_recording_checkbox)
         
         # 开始记录按钮
         self.start_recording_btn = QPushButton("开始记录")
         self.start_recording_btn.setStyleSheet(self._get_button_style("#4CAF50"))
         self.start_recording_btn.setToolTip("开始记录JSONL日志文件")
         self.start_recording_btn.clicked.connect(self._start_recording)
-        save_layout.addWidget(self.start_recording_btn)
+        left_column.addWidget(self.start_recording_btn)
         
-        # 停止记录/导出按钮
-        self.stop_recording_btn = QPushButton("停止记录/导出")
-        self.stop_recording_btn.setStyleSheet(self._get_button_style("#F44336"))
-        self.stop_recording_btn.setToolTip("停止记录并可选导出为JSON格式")
-        self.stop_recording_btn.clicked.connect(self._stop_recording)
-        self.stop_recording_btn.setEnabled(False)  # 初始状态禁用
-        save_layout.addWidget(self.stop_recording_btn)
+        left_column.addStretch()
+        
+        # 第二列：停止记录和标记事件
+        right_column = QVBoxLayout()
+        
+        # 停止记录按钮和进度环容器
+        stop_recording_container = QHBoxLayout()
+        stop_recording_container.setSpacing(5)
+        stop_recording_container.setContentsMargins(0, 0, 0, 0)
+        
+        # 停止记录按钮将在LongPressButton类定义后创建（在清空数据按钮处）
+        # 这里先添加占位，稍后会被替换
+        # 进度环先添加
+        self.stop_recording_progress_ring = ProgressRing(self)
+        self.stop_recording_progress_ring.setFixedSize(32, 32)
+        self.stop_recording_progress_ring.setTextVisible(False)
+        self.stop_recording_progress_ring.setValue(0)
+        self.stop_recording_progress_ring.setStyleSheet("opacity: 0;")
+        stop_recording_container.addWidget(self.stop_recording_progress_ring)
+        
+        # 保存容器引用以便后续插入按钮
+        self._stop_recording_container = stop_recording_container
+        
+        right_column.addLayout(stop_recording_container)
         
         # 标记事件按钮
         self.mark_event_btn = QPushButton("标记事件")
@@ -1253,9 +1280,14 @@ class BLEHostGUI(QMainWindow):
         self.mark_event_btn.setToolTip("标记当前时刻的特殊事件（如外部干扰、异常等）")
         self.mark_event_btn.clicked.connect(self._mark_event)
         self.mark_event_btn.setEnabled(False)  # 初始状态禁用，只有在记录时才启用
-        save_layout.addWidget(self.mark_event_btn)
+        right_column.addWidget(self.mark_event_btn)
         
-        save_layout.addStretch()
+        right_column.addStretch()
+        
+        # 将两列添加到主布局
+        save_layout.addLayout(left_column)
+        save_layout.addLayout(right_column)
+        
         top_row.addWidget(save_group)
         
         # 第三组：清空当前数据单独一个组
@@ -1287,6 +1319,27 @@ class BLEHostGUI(QMainWindow):
                 if event.button() == Qt.MouseButton.LeftButton and self.release_callback:
                     self.release_callback(event)
                 super().mouseReleaseEvent(event)  # 调用父类方法保持默认行为
+        
+        # 保存LongPressButton类以便停止记录按钮使用
+        self._LongPressButtonClass = LongPressButton
+        
+        # 现在创建停止记录按钮为长按按钮
+        self.stop_recording_btn = LongPressButton(
+            "停止记录/导出",
+            self,
+            self._on_stop_recording_btn_pressed,
+            self._on_stop_recording_btn_released
+        )
+        self.stop_recording_btn.setStyleSheet(self._get_button_style("#F44336"))
+        self.stop_recording_btn.setToolTip("长按1秒停止记录并可选导出为JSON格式")
+        self.stop_recording_btn.setEnabled(False)
+        # 局部导入QSizePolicy以避免作用域问题
+        from PySide6.QtWidgets import QSizePolicy
+        self.stop_recording_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.stop_recording_btn.installEventFilter(ToolTipFilter(self.stop_recording_btn, 0, ToolTipPosition.TOP))
+        # 插入到容器的最前面（在进度环之前）
+        if hasattr(self, '_stop_recording_container'):
+            self._stop_recording_container.insertWidget(0, self.stop_recording_btn)
         
         self.clear_data_btn = LongPressButton(
             "清空当前数据", 
@@ -3282,6 +3335,67 @@ class BLEHostGUI(QMainWindow):
             
             # 执行清除数据操作
             self._clear_data()
+    
+    def _on_stop_recording_btn_pressed(self, event):
+        """停止记录按钮按下事件"""
+        # 只响应左键按下
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.is_holding_stop_recording_btn = True
+            self.stop_recording_progress_value = 0
+            self.stop_recording_progress_ring.setValue(0)
+            self.stop_recording_progress_ring.setStyleSheet("opacity: 1;")  # 显示进度环
+            
+            # 创建定时器来更新进度
+            if self.stop_recording_progress_timer is None:
+                self.stop_recording_progress_timer = QTimer()
+                self.stop_recording_progress_timer.timeout.connect(self._update_stop_recording_progress)
+            
+            # 计算更新间隔（每10ms更新一次，1秒共100次，每次增加1%）
+            update_interval = int((self.stop_recording_hold_duration * 1000) / 100)  # 10ms，100次更新
+            self.stop_recording_progress_timer.start(update_interval)
+    
+    def _on_stop_recording_btn_released(self, event):
+        """停止记录按钮松开事件"""
+        # 只响应左键松开
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.is_holding_stop_recording_btn = False
+            
+            # 停止定时器
+            if self.stop_recording_progress_timer:
+                self.stop_recording_progress_timer.stop()
+            
+            # 如果进度未完成，隐藏进度环
+            if self.stop_recording_progress_value < 100:
+                self.stop_recording_progress_ring.setStyleSheet("opacity: 0;")  # 隐藏进度环但保持占用空间
+                self.stop_recording_progress_value = 0
+                self.stop_recording_progress_ring.setValue(0)
+    
+    def _update_stop_recording_progress(self):
+        """更新停止记录进度"""
+        if not self.is_holding_stop_recording_btn:
+            # 如果已经松开，停止更新
+            if self.stop_recording_progress_timer:
+                self.stop_recording_progress_timer.stop()
+                self.stop_recording_progress_ring.setStyleSheet("opacity: 0;")  # 隐藏进度环但保持占用空间
+                self.stop_recording_progress_value = 0
+                self.stop_recording_progress_ring.setValue(0)
+            return
+        
+        # 增加进度值（每次增加1%，100次达到100%）
+        self.stop_recording_progress_value += 1
+        self.stop_recording_progress_ring.setValue(self.stop_recording_progress_value)
+        
+        # 如果达到100%，执行停止记录操作
+        if self.stop_recording_progress_value >= 100:
+            if self.stop_recording_progress_timer:
+                self.stop_recording_progress_timer.stop()
+            self.is_holding_stop_recording_btn = False
+            self.stop_recording_progress_ring.setStyleSheet("opacity: 0;")  # 隐藏进度环但保持占用空间
+            self.stop_recording_progress_value = 0
+            self.stop_recording_progress_ring.setValue(0)
+            
+            # 执行停止记录操作
+            self._stop_recording()
     
     def _clear_data(self):
         """清空数据"""
