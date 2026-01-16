@@ -318,10 +318,9 @@ class BreathingEstimator:
         if not all_channels:
             return []
         
-        # 如果启用了"只在显示信道范围内选取"，则只计算显示的信道
+        # 注意：即使启用了"只在显示信道范围内选取"，这里也计算所有信道
+        # 过滤和替补逻辑在select_adaptive_channel中处理
         channels_to_check = all_channels
-        if self.adaptive_only_display_channels and display_channels is not None:
-            channels_to_check = [ch for ch in all_channels if ch in display_channels]
         
         channel_energy_ratios = []
         
@@ -382,7 +381,7 @@ class BreathingEstimator:
         
         # 如果已经选出了最佳信道，检查是否需要重新选择
         if self.adaptive_selected_channel is not None:
-            # 只检查当前信道的能量占比
+            # 只检查当前信道的能量占比，保持之前计算的前N个最佳信道信息
             if self.data_accessor is None:
                 return {
                     'selected_channel': self.adaptive_selected_channel,
@@ -405,6 +404,15 @@ class BreathingEstimator:
                     )
                     current_ch_ratio = detection_check['energy_ratio']
                     
+                    # 更新当前选中信道的能量占比（如果它在best_channels中）
+                    updated_best_channels = []
+                    for ch, ratio in self.current_best_channels:
+                        if ch == self.adaptive_selected_channel:
+                            updated_best_channels.append((ch, current_ch_ratio))
+                        else:
+                            updated_best_channels.append((ch, ratio))
+                    self.current_best_channels = updated_best_channels
+                    
                     # 如果当前信道的能量占比低于阈值，开始计时
                     if current_ch_ratio < threshold:
                         if self.adaptive_low_energy_start_time is None:
@@ -418,8 +426,7 @@ class BreathingEstimator:
                                 self.adaptive_low_energy_start_time = None
                                 # 继续执行下面的逻辑，重新计算所有信道
                             else:
-                                # 还在超时时间内，继续在当前信道上执行
-                                self.current_best_channels = [(self.adaptive_selected_channel, current_ch_ratio)]
+                                # 还在超时时间内，继续在当前信道上执行，保持前N个最佳信道信息
                                 return {
                                     'selected_channel': self.adaptive_selected_channel,
                                     'best_channels': self.current_best_channels,
@@ -428,15 +435,13 @@ class BreathingEstimator:
                     else:
                         # 能量占比高于阈值，重置计时，继续在当前信道上执行
                         self.adaptive_low_energy_start_time = None
-                        self.current_best_channels = [(self.adaptive_selected_channel, current_ch_ratio)]
                         return {
                             'selected_channel': self.adaptive_selected_channel,
                             'best_channels': self.current_best_channels,
                             'need_reselect': False
                         }
             
-            # 数据不足或处理失败，继续在当前信道上执行
-            self.current_best_channels = [(self.adaptive_selected_channel, 0.0)]
+            # 数据不足或处理失败，继续在当前信道上执行，保持之前的前N个最佳信道信息
             return {
                 'selected_channel': self.adaptive_selected_channel,
                 'best_channels': self.current_best_channels,
@@ -445,16 +450,49 @@ class BreathingEstimator:
         
         # 如果还没有选择信道，或者需要重新选择（超时后）
         # 计算所有信道的能量占比
+        # 如果启用了"只在显示信道范围内选取"，则只计算显示的信道
+        # 否则计算所有信道
+        # 注意：如果数据不足（累积的帧数不够一个时间窗），等待数据积累，不重新计算
         channel_energy_ratios = self.calculate_all_channels_energy_ratios(
             data_type, threshold, max_frames, display_channels
         )
         
+        # 如果数据不足，返回空结果，保持之前的状态（如果有）
+        if not channel_energy_ratios:
+            # 如果之前有计算过最佳信道，保持它们（即使数据暂时不足）
+            if self.current_best_channels:
+                return {
+                    'selected_channel': self.adaptive_selected_channel,
+                    'best_channels': self.current_best_channels,
+                    'need_reselect': False
+                }
+            else:
+                # 没有有效信道，也没有之前的状态
+                return {
+                    'selected_channel': manual_channel,
+                    'best_channels': [],
+                    'need_reselect': False
+                }
+        
         if channel_energy_ratios:
-            # 选择前N个最佳信道
-            top_n = min(self.adaptive_top_n, len(channel_energy_ratios))
-            self.current_best_channels = channel_energy_ratios[:top_n]
+            # 如果启用了"只在显示信道范围内选取"，需要确保前N个都在显示范围内
+            # 如果前N个中有不在显示范围内的，向下替补，直到凑足N个
+            if self.adaptive_only_display_channels and display_channels is not None:
+                display_channels_set = set(display_channels)
+                filtered_channels = []
+                # 从所有信道中筛选出在显示范围内的，保持排序
+                for ch, ratio in channel_energy_ratios:
+                    if ch in display_channels_set:
+                        filtered_channels.append((ch, ratio))
+                # 选择前N个（都在显示范围内），如果不足N个，就选择所有可用的
+                top_n = min(self.adaptive_top_n, len(filtered_channels))
+                self.current_best_channels = filtered_channels[:top_n]
+            else:
+                # 未启用"只在显示信道范围内选取"，直接选择前N个
+                top_n = min(self.adaptive_top_n, len(channel_energy_ratios))
+                self.current_best_channels = channel_energy_ratios[:top_n]
             
-            # 选择能量占比最高且高于阈值的信道
+            # 选择能量占比最高且高于阈值的信道（用于自动切换）
             best_ch = None
             for ch, ratio in self.current_best_channels:
                 if ratio >= threshold:

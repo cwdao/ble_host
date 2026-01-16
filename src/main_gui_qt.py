@@ -339,7 +339,7 @@ class BLEHostGUI(QMainWindow):
         tab_font = get_app_font(11)
         self.config_tabs.setFont(tab_font)
         # 设置最小高度，防止被挤压
-        self.config_tabs.setMinimumHeight(120)
+        self.config_tabs.setMinimumHeight(150)
         self._create_connection_tab()
         self._create_channel_config_tab()
         self._create_data_and_save_tab()
@@ -364,6 +364,10 @@ class BLEHostGUI(QMainWindow):
         self.plot_tabs.setFont(tab_font)
         self._create_plot_tabs()
         left_layout.addWidget(self.plot_tabs)
+        # 设置工具栏最大宽度，确保靠右排列
+        # self.plot_tabs.setMaximumWidth(1000)
+        self.plot_tabs.setMinimumHeight(400)
+        self.plot_tabs.setMaximumHeight(800)
         
         self.main_splitter.addWidget(left_widget)
         # 左侧绘图区域设置为可扩展，当右侧工具栏未占满宽度时会扩充
@@ -384,7 +388,7 @@ class BLEHostGUI(QMainWindow):
         toolbar_layout = QVBoxLayout(self.toolbar_group)
         # 设置工具栏最大宽度，确保靠右排列
         self.toolbar_group.setMaximumWidth(300)
-        self.toolbar_group.setMinimumHeight(600)
+        self.toolbar_group.setMinimumHeight(300)
         self.toolbar_group.setMaximumHeight(800)
         # 设置大小策略，确保工具栏不会扩展，保持靠右
         self.toolbar_group.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
@@ -3959,29 +3963,10 @@ class BLEHostGUI(QMainWindow):
                 adaptive_selected = adaptive_state.get('selected_channel')
                 
                 if (self.breathing_adaptive_highlight and 
-                    self.breathing_adaptive_enabled and 
-                    self.breathing_adaptive_manual_control and
+                    self.breathing_adaptive_enabled and
                     current_best_channels):
-                    # 获取阈值（用于判断是否高亮）
-                    try:
-                        highlight_threshold = float(self.breathing_threshold_entry.text())
-                    except:
-                        highlight_threshold = 0.6
-                    
-                    # 确定要高亮的信道（只高亮能量占比高于阈值的信道，且只高亮一个）
-                    best_channels_to_highlight = []
-                    if adaptive_selected is not None:
-                        # 如果已经选出了最佳信道，只高亮选中的信道（如果能量占比高于阈值）
-                        for ch, ratio in current_best_channels:
-                            if ch == adaptive_selected and ratio >= highlight_threshold:
-                                best_channels_to_highlight = [ch]
-                                break
-                    else:
-                        # 如果还没有选出最佳信道，只高亮第一个（能量占比最高的）且能量占比高于阈值的信道
-                        for ch, ratio in current_best_channels:
-                            if ratio >= highlight_threshold:
-                                best_channels_to_highlight = [ch]
-                                break
+                    # 高亮前N个最佳信道
+                    best_channels_to_highlight = [ch for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]]
                     
                     # 应用高亮（如果plotter支持）
                     if hasattr(plotter, 'highlight_best_channels'):
@@ -5203,8 +5188,9 @@ class BLEHostGUI(QMainWindow):
                     self.breathing_result_text.setPlainText("等待数据积累...")
                     return
         # 信道探测帧模式：支持自适应和手动选择
-        elif (self.breathing_adaptive_enabled and 
-            self.breathing_adaptive_manual_control):
+        # 如果启用了"启用最佳呼吸信道选取"，需要计算最佳信道（无论是否勾选"自适应"checkbox）
+        adaptive_result = None
+        if self.breathing_adaptive_enabled:
             # 更新BreathingEstimator的配置
             self.breathing_estimator.set_adaptive_config(
                 enabled=True,
@@ -5220,6 +5206,7 @@ class BLEHostGUI(QMainWindow):
                 manual_channel = all_channels[0] if all_channels else None
             
             # 调用BreathingEstimator的信道选择逻辑
+            # 注意：即使没有勾选"自适应"checkbox，也要计算最佳信道用于显示
             adaptive_result = self.breathing_estimator.select_adaptive_channel(
                 data_type=data_type,
                 threshold=threshold,
@@ -5227,15 +5214,15 @@ class BLEHostGUI(QMainWindow):
                 display_channels=self.display_channel_list if self.breathing_adaptive_only_display_channels else None,
                 manual_channel=manual_channel
             )
-            
-            # 使用选中的信道（直接从BreathingEstimator获取状态，不保存本地副本）
+        
+        # 如果勾选了"自适应"checkbox且启用了"自动在最佳信道上执行呼吸检测"，使用自适应选择的信道
+        if (self.breathing_adaptive_enabled and 
+            self.breathing_adaptive_manual_control and
+            self.breathing_adaptive_auto_switch and
+            adaptive_result and
+            adaptive_result['selected_channel'] is not None):
+            # 使用自适应选择的信道
             channel = adaptive_result['selected_channel']
-            if channel is None:
-                # 如果没有选中信道，使用手动选择的信道
-                channel = manual_channel
-                if channel is None:
-                    self.breathing_result_text.setPlainText("等待数据积累...")
-                    return
             
             # 如果未勾选"只在显示信道范围内选取"，且最佳信道不在显示范围内，则添加到显示
             if (not self.breathing_adaptive_only_display_channels and 
@@ -5256,11 +5243,11 @@ class BLEHostGUI(QMainWindow):
                     # 应用设置（不显示提示）
                     self._apply_frame_settings(show_info=False)
             
-            # 如果启用了自动切换，更新channel combo
-            if self.breathing_adaptive_auto_switch and channel is not None:
+            # 更新channel combo
+            if channel is not None:
                 self.breathing_channel_combo.setCurrentText(str(channel))
         else:
-            # 未启用自适应，使用手动选择的信道
+            # 未启用自适应或未勾选"自适应"checkbox，使用手动选择的信道
             try:
                 channel = int(self.breathing_channel_combo.currentText())
             except:
@@ -5281,26 +5268,41 @@ class BLEHostGUI(QMainWindow):
         
         # 检查信道是否发生变化（通过比较当前信道和上次使用的信道）
         # 注意：方向估计帧模式下的信道变化已在_update_data中处理，这里只处理信道探测帧模式
+        # 注意：在自动切换模式下，信道变化是由自适应功能控制的，不应该触发"信道已切换"提示和重置
         if not self.is_direction_estimation_mode:
+            # 判断是否是自动切换导致的信道变化
+            is_auto_switch_change = (self.breathing_adaptive_enabled and 
+                                    self.breathing_adaptive_manual_control and
+                                    self.breathing_adaptive_auto_switch and
+                                    adaptive_result and
+                                    adaptive_result['selected_channel'] is not None)
+            
             if self.last_breathing_channel is not None and self.last_breathing_channel != channel:
-                # 信道变化，重置状态并显示提示
-                old_channel = self.last_breathing_channel
-                self.last_breathing_channel = channel
-                
-                # 清空新信道的累积数据（如果还没有被清空）
-                # 注意：在信道探测帧模式下，信道切换不会自动清空数据，需要手动清空
-                self.data_processor.clear_channel_data(channel)
-                
-                self.breathing_result_text.setPlainText(
-                    f"⚠️ 信道已切换: {old_channel} -> {channel}\n"
-                    f"已清空累积数据，重新开始累积时间窗\n"
-                    f"当前信道: {channel}\n"
-                    f"等待数据积累: 0/{self.display_max_frames} 帧"
-                )
-                # 重置呼吸估计状态
-                self.breathing_estimator.reset_adaptive_state()
-                self.logger.info(f"[呼吸估计] 检测到信道变化: {old_channel} -> {channel}，已重置状态，等待新信道数据积累到 {self.display_max_frames} 帧")
-                return
+                if is_auto_switch_change:
+                    # 自动切换导致的信道变化，只更新last_breathing_channel，不重置状态
+                    # 这是自适应功能的正常行为，不应该触发"信道已切换"提示
+                    old_channel_for_log = self.last_breathing_channel
+                    self.last_breathing_channel = channel
+                    self.logger.info(f"[呼吸估计] 自适应功能切换信道: {old_channel_for_log} -> {channel}")
+                else:
+                    # 手动切换或其他原因导致的信道变化，重置状态并显示提示
+                    old_channel = self.last_breathing_channel
+                    self.last_breathing_channel = channel
+                    
+                    # 清空新信道的累积数据（如果还没有被清空）
+                    # 注意：在信道探测帧模式下，信道切换不会自动清空数据，需要手动清空
+                    self.data_processor.clear_channel_data(channel)
+                    
+                    self.breathing_result_text.setPlainText(
+                        f"⚠️ 信道已切换: {old_channel} -> {channel}\n"
+                        f"已清空累积数据，重新开始累积时间窗\n"
+                        f"当前信道: {channel}\n"
+                        f"等待数据积累: 0/{self.display_max_frames} 帧"
+                    )
+                    # 重置呼吸估计状态
+                    self.breathing_estimator.reset_adaptive_state()
+                    self.logger.info(f"[呼吸估计] 检测到信道变化: {old_channel} -> {channel}，已重置状态，等待新信道数据积累到 {self.display_max_frames} 帧")
+                    return
             
             # 更新上次使用的信道
             if self.last_breathing_channel != channel:
@@ -5344,26 +5346,26 @@ class BLEHostGUI(QMainWindow):
             )
             
             # 更新结果显示
-            # 如果启用了自适应，只显示最佳信道的信息，不显示默认信道的能量占比
+            # 如果启用了"启用最佳呼吸信道选取"，显示前N个最佳信道信息
             # 从BreathingEstimator获取最新状态
             adaptive_state = self.breathing_estimator.get_adaptive_state()
             current_best_channels = adaptive_state.get('best_channels', [])
             
-            if (self.breathing_adaptive_enabled and 
-                self.breathing_adaptive_manual_control and 
-                current_best_channels):
-                # 只显示最佳信道信息
+            if self.breathing_adaptive_enabled and current_best_channels:
+                # 显示前N个最佳信道信息
                 result_text = f"Threshold: {threshold:.2f}\n"
-                result_text += "最佳信道（按能量排序）:\n"
+                result_text += f"前{self.breathing_adaptive_top_n}个最佳信道（按能量排序）:\n"
                 adaptive_selected = adaptive_state.get('selected_channel')
                 for i, (ch, ratio) in enumerate(current_best_channels[:self.breathing_adaptive_top_n]):
                     marker = " ← 当前" if (self.breathing_adaptive_auto_switch and 
+                                         self.breathing_adaptive_manual_control and
                                          adaptive_selected == ch) else ""
                     has_breathing_marker = " ✓" if ratio >= threshold else " ✗"
                     result_text += f"  {i+1}. Channel {ch}: {ratio:.4f}{marker}{has_breathing_marker}\n"
                 
-                # 如果当前选中的信道有呼吸，显示详细信息
+                # 如果启用了自动切换且当前选中的信道有呼吸，显示详细信息
                 if (self.breathing_adaptive_auto_switch and 
+                    self.breathing_adaptive_manual_control and
                     adaptive_selected is not None and
                     adaptive_selected == channel):
                     if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
@@ -5376,6 +5378,21 @@ class BLEHostGUI(QMainWindow):
                         result_text += f"\n当前信道 (Channel {channel}):\n"
                         result_text += f"  Energy Ratio: {detection['energy_ratio']:.4f}\n"
                         result_text += "  No Breathing Detected"
+                elif not self.breathing_adaptive_auto_switch or not self.breathing_adaptive_manual_control:
+                    # 如果未启用自动切换，显示当前手动选择信道的详细信息
+                    if self.is_direction_estimation_mode:
+                        result_text += f"\n当前信道 (Channel {channel}):\n"
+                    else:
+                        result_text += f"\n当前信道 (Channel {channel}):\n"
+                    result_text += f"  Energy Ratio: {detection['energy_ratio']:.4f}\n"
+                    result_text += f"  Detection: {'Breathing Detected' if detection['has_breathing'] else 'No Breathing'}\n"
+                    if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
+                        breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
+                        result_text += f"  Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
+                        result_text += f"  Breathing Rate: {breathing_rate:.1f} /min"
+                    else:
+                        result_text += "  Breathing Freq: --\n"
+                        result_text += "  Breathing Rate: --"
             else:
                 # 未启用自适应，显示默认信道的完整信息
                 # 方向估计帧模式下，显示当前信道
