@@ -194,6 +194,9 @@ class BLEHostGUI(QMainWindow):
         self.breathing_adaptive_auto_switch = config.breathing_adaptive_auto_switch
         self.breathing_adaptive_only_display_channels = config.breathing_adaptive_only_display_channels
         self.breathing_adaptive_manual_control = False  # 是否启用自适应（在channel旁边）
+        self.manual_select_triggered = False  # 是否手动触发了最佳信道选择（临时标志，用于单次调用）
+        self.manual_select_mode = False  # 是否处于手动选择模式（持续标志，用于后续调用）
+        self.manual_selected_channel = None  # 手动选择的信道（用于防止自动切换）
         # 注意：adaptive_selected_channel、current_best_channels、adaptive_low_energy_start_time
         # 现在由BreathingEstimator管理，这里只保留引用以便GUI访问
         self.adaptive_low_energy_threshold = config.breathing_adaptive_low_energy_threshold
@@ -490,6 +493,16 @@ class BLEHostGUI(QMainWindow):
         self.breathing_adaptive_manual_checkbox.stateChanged.connect(self._on_adaptive_manual_changed)
         channel_layout.addWidget(self.breathing_adaptive_manual_checkbox)
         basic_layout.addLayout(channel_layout)
+        
+        # 手动触发最佳信道选择按钮
+        manual_select_layout = QHBoxLayout()
+        self.breathing_manual_select_btn = QPushButton("手动选择最佳信道")
+        self.breathing_manual_select_btn.setToolTip("手动触发一次最佳信道选择。需要先启用'启用最佳呼吸信道选取'，且未勾选'自适应'。点击后会选择能量最高的信道并驻留，即使低能量超时也不会自动切换。")
+        self.breathing_manual_select_btn.clicked.connect(self._on_manual_select_best_channel)
+        # 初始状态：根据自适应checkbox和启用状态决定是否启用
+        self._update_manual_select_btn_state()
+        manual_select_layout.addWidget(self.breathing_manual_select_btn)
+        basic_layout.addLayout(manual_select_layout)
         
         # 阈值输入
         threshold_layout = QHBoxLayout()
@@ -1701,6 +1714,7 @@ class BLEHostGUI(QMainWindow):
         self.breathing_adaptive_auto_switch_checkbox = QCheckBox("自动在最佳信道上执行呼吸检测")
         self.breathing_adaptive_auto_switch_checkbox.setChecked(self.breathing_adaptive_auto_switch)
         self.breathing_adaptive_auto_switch_checkbox.setEnabled(self.breathing_adaptive_enabled)
+        self.breathing_adaptive_auto_switch_checkbox.stateChanged.connect(self._on_adaptive_auto_switch_changed)
         auto_switch_layout.addWidget(self.breathing_adaptive_auto_switch_checkbox)
         layout.addLayout(auto_switch_layout)
         
@@ -1766,16 +1780,32 @@ class BLEHostGUI(QMainWindow):
             
             # 更新channel combo的启用状态
             self._update_channel_combo_enabled()
+            # 更新手动选择按钮的状态
+            self._update_manual_select_btn_state()
     
     def _on_adaptive_enable_changed(self, state):
         """当启用最佳呼吸信道选取checkbox状态改变时"""
         enabled = (state == Qt.CheckState.Checked.value)
+        # 更新内部状态（对话框内的checkbox状态改变时，也需要更新内部状态）
+        self.breathing_adaptive_enabled = enabled
         self.breathing_adaptive_top_n_spinbox.setEnabled(enabled)
         self.breathing_adaptive_highlight_checkbox.setEnabled(enabled)
         self.breathing_adaptive_auto_switch_checkbox.setEnabled(enabled)
         self.breathing_adaptive_only_display_checkbox.setEnabled(enabled)
         if hasattr(self, 'breathing_adaptive_timeout_spinbox'):
             self.breathing_adaptive_timeout_spinbox.setEnabled(enabled)
+        # 更新手动选择按钮的状态
+        self._update_manual_select_btn_state()
+    
+    def _on_adaptive_auto_switch_changed(self, state):
+        """当自动在最佳信道上执行呼吸检测checkbox状态改变时"""
+        self.breathing_adaptive_auto_switch = (state == Qt.CheckState.Checked.value)
+        # 如果启用了自动切换，退出手动选择模式
+        if self.breathing_adaptive_auto_switch:
+            self.manual_select_mode = False
+            self.manual_selected_channel = None
+        # 更新手动选择按钮的状态
+        self._update_manual_select_btn_state()
     
     def _clear_adaptive_highlight(self):
         """清除自适应高亮"""
@@ -5109,6 +5139,9 @@ class BLEHostGUI(QMainWindow):
     def _on_adaptive_manual_changed(self, state):
         """当自适应checkbox状态改变时"""
         self.breathing_adaptive_manual_control = (state == Qt.CheckState.Checked.value)
+        # 如果启用自适应，退出手动选择模式
+        if self.breathing_adaptive_manual_control:
+            self.manual_select_mode = False
         # 如果禁用自适应，重置相关状态
         if not self.breathing_adaptive_manual_control:
             self.breathing_estimator.reset_adaptive_state()
@@ -5116,6 +5149,61 @@ class BLEHostGUI(QMainWindow):
             self._clear_adaptive_highlight()
         # 更新channel combo的启用状态
         self._update_channel_combo_enabled()
+        # 更新手动选择按钮的状态
+        self._update_manual_select_btn_state()
+    
+    def _update_manual_select_btn_state(self):
+        """更新手动选择最佳信道按钮的启用状态"""
+        if not hasattr(self, 'breathing_manual_select_btn'):
+            return
+        
+        # 按钮启用条件：
+        # 1. 启用了"启用最佳呼吸信道选取"
+        # 2. 未勾选"自适应"checkbox
+        # 3. 未勾选"自动在最佳信道上执行呼吸检测"
+        # 4. 不是方向估计帧模式
+        enabled = (self.breathing_adaptive_enabled and 
+                  not self.breathing_adaptive_manual_control and
+                  not self.breathing_adaptive_auto_switch and
+                  not self.is_direction_estimation_mode)
+        self.breathing_manual_select_btn.setEnabled(enabled)
+    
+    def _on_manual_select_best_channel(self):
+        """手动触发最佳信道选择"""
+        if not self.breathing_adaptive_enabled:
+            QMessageBox.warning(
+                self,
+                "功能不可用",
+                "请先启用'启用最佳呼吸信道选取'功能。"
+            )
+            return
+        
+        if self.breathing_adaptive_manual_control:
+            QMessageBox.warning(
+                self,
+                "功能不可用",
+                "手动选择功能在'自适应'模式下不可用。\n请先取消勾选'自适应'checkbox。"
+            )
+            return
+        
+        if self.breathing_adaptive_auto_switch:
+            QMessageBox.warning(
+                self,
+                "功能不可用",
+                "手动选择功能在'自动在最佳信道上执行呼吸检测'模式下不可用。\n请先取消勾选'自动在最佳信道上执行呼吸检测'。"
+            )
+            return
+        
+        # 手动触发选择：强制重新选择最佳信道（忽略当前已选择的信道）
+        # 设置标志，表示这是手动触发的，并进入手动选择模式
+        self.manual_select_triggered = True
+        self.manual_select_mode = True
+        # 重置自适应状态，强制重新选择
+        self.breathing_estimator.reset_adaptive_state()
+        # 立即触发一次呼吸估计更新，以执行信道选择
+        self._update_realtime_breathing_estimation()
+        # 清除临时标志（但保持manual_select_mode，以便后续调用时也使用手动模式）
+        self.manual_select_triggered = False
     
     def _update_channel_combo_enabled(self):
         """更新channel combo的启用状态"""
@@ -5207,12 +5295,14 @@ class BLEHostGUI(QMainWindow):
             
             # 调用BreathingEstimator的信道选择逻辑
             # 注意：即使没有勾选"自适应"checkbox，也要计算最佳信道用于显示
+            # 如果是手动触发模式，传入manual_trigger=True，这样即使低能量超时也驻留
             adaptive_result = self.breathing_estimator.select_adaptive_channel(
                 data_type=data_type,
                 threshold=threshold,
                 max_frames=self.display_max_frames,
                 display_channels=self.display_channel_list if self.breathing_adaptive_only_display_channels else None,
-                manual_channel=manual_channel
+                manual_channel=manual_channel,
+                manual_trigger=self.manual_select_triggered or self.manual_select_mode
             )
         
         # 如果勾选了"自适应"checkbox且启用了"自动在最佳信道上执行呼吸检测"，使用自适应选择的信道
@@ -5223,6 +5313,37 @@ class BLEHostGUI(QMainWindow):
             adaptive_result['selected_channel'] is not None):
             # 使用自适应选择的信道
             channel = adaptive_result['selected_channel']
+        # 如果是手动触发模式，使用手动选择的信道（只在首次触发时选择，之后保持不变）
+        elif self.manual_select_mode:
+            # 如果是首次手动触发，选择能量最高的信道
+            if self.manual_select_triggered and adaptive_result and adaptive_result['best_channels']:
+                # 选择能量最高的信道
+                if len(adaptive_result['best_channels']) > 0:
+                    # 选择第一个（能量最高的）
+                    self.manual_selected_channel = adaptive_result['best_channels'][0][0]
+                    self.logger.info(f"[呼吸估计] 手动选择最佳信道: {self.manual_selected_channel}")
+            
+            # 使用手动选择的信道
+            if self.manual_selected_channel is not None:
+                channel = self.manual_selected_channel
+                # 如果数据不足，显示等待提示
+                indices_check, values_check = self.data_processor.get_frame_data_range(
+                    channel, max_frames=self.display_max_frames, data_type=data_type
+                )
+                if len(values_check) < self.display_max_frames:
+                    self.breathing_result_text.setPlainText(
+                        f"手动触发最佳信道选择\n"
+                        f"已选择信道: {channel}\n"
+                        f"数据积累中: {len(values_check)}/{self.display_max_frames} 帧\n"
+                        f"需要积累到 {self.display_max_frames} 帧后开始分析"
+                    )
+                    return
+            else:
+                # 如果还没有选择信道，使用手动选择的信道（fallback）
+                channel = manual_channel
+                if channel is None:
+                    self.breathing_result_text.setPlainText("等待数据积累...")
+                    return
             
             # 如果未勾选"只在显示信道范围内选取"，且最佳信道不在显示范围内，则添加到显示
             if (not self.breathing_adaptive_only_display_channels and 
@@ -5276,6 +5397,10 @@ class BLEHostGUI(QMainWindow):
                                     self.breathing_adaptive_auto_switch and
                                     adaptive_result and
                                     adaptive_result['selected_channel'] is not None)
+            # 判断是否是手动选择导致的信道变化
+            is_manual_select_change = (self.manual_select_mode and 
+                                      self.manual_select_triggered and
+                                      self.manual_selected_channel is not None)
             
             if self.last_breathing_channel is not None and self.last_breathing_channel != channel:
                 if is_auto_switch_change:
@@ -5284,6 +5409,12 @@ class BLEHostGUI(QMainWindow):
                     old_channel_for_log = self.last_breathing_channel
                     self.last_breathing_channel = channel
                     self.logger.info(f"[呼吸估计] 自适应功能切换信道: {old_channel_for_log} -> {channel}")
+                elif is_manual_select_change:
+                    # 手动选择导致的信道变化，只更新last_breathing_channel，不重置状态
+                    # 这是手动触发的正常行为，不应该触发"信道已切换"提示
+                    old_channel_for_log = self.last_breathing_channel
+                    self.last_breathing_channel = channel
+                    self.logger.info(f"[呼吸估计] 手动选择切换信道: {old_channel_for_log} -> {channel}")
                 else:
                     # 手动切换或其他原因导致的信道变化，重置状态并显示提示
                     old_channel = self.last_breathing_channel
@@ -5354,14 +5485,21 @@ class BLEHostGUI(QMainWindow):
             if self.breathing_adaptive_enabled and current_best_channels:
                 # 显示前N个最佳信道信息
                 result_text = f"Threshold: {threshold:.2f}\n"
+                # 如果是手动触发模式，添加提示
+                if self.manual_select_mode:
+                    result_text += "[手动选择模式] 即使低能量超时也驻留\n"
                 result_text += f"前{self.breathing_adaptive_top_n}个最佳信道（按能量排序）:\n"
                 adaptive_selected = adaptive_state.get('selected_channel')
                 for i, (ch, ratio) in enumerate(current_best_channels[:self.breathing_adaptive_top_n]):
-                    marker = " ← 当前" if (self.breathing_adaptive_auto_switch and 
-                                         self.breathing_adaptive_manual_control and
-                                         adaptive_selected == ch) else ""
+                    marker = " ← 当前" if ((self.breathing_adaptive_auto_switch and 
+                                         self.breathing_adaptive_manual_control) or
+                                         (self.manual_select_mode and adaptive_selected == ch)) else ""
                     has_breathing_marker = " ✓" if ratio >= threshold else " ✗"
-                    result_text += f"  {i+1}. Channel {ch}: {ratio:.4f}{marker}{has_breathing_marker}\n"
+                    # 如果是手动选择模式且当前信道能量低于阈值，添加低能量提示
+                    low_energy_warning = ""
+                    if self.manual_select_mode and adaptive_selected == ch and ratio < threshold:
+                        low_energy_warning = " (低能量，手动模式下仍驻留)"
+                    result_text += f"  {i+1}. Channel {ch}: {ratio:.4f}{marker}{has_breathing_marker}{low_energy_warning}\n"
                 
                 # 如果启用了自动切换且当前选中的信道有呼吸，显示详细信息
                 if (self.breathing_adaptive_auto_switch and 

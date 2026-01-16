@@ -355,7 +355,8 @@ class BreathingEstimator:
     
     def select_adaptive_channel(self, data_type: str, threshold: float, max_frames: int,
                                display_channels: Optional[List[int]] = None,
-                               manual_channel: Optional[int] = None) -> Dict:
+                               manual_channel: Optional[int] = None,
+                               manual_trigger: bool = False) -> Dict:
         """
         选择自适应信道（核心逻辑）
         
@@ -365,6 +366,7 @@ class BreathingEstimator:
             max_frames: 最大帧数
             display_channels: 显示的信道列表
             manual_channel: 手动选择的信道（作为fallback）
+            manual_trigger: 是否手动触发（手动触发模式下，即使低能量超时也驻留，不自动切换）
             
         Returns:
             包含以下字段的字典：
@@ -379,7 +381,15 @@ class BreathingEstimator:
                 'need_reselect': False
             }
         
+        # 如果是手动触发，强制重新选择（忽略当前已选择的信道）
+        if manual_trigger:
+            # 重置状态，强制重新选择
+            self.adaptive_selected_channel = None
+            self.adaptive_low_energy_start_time = None
+            # 继续执行下面的逻辑，重新计算所有信道
+        
         # 如果已经选出了最佳信道，检查是否需要重新选择
+        # 注意：手动触发模式下，即使低能量超时也驻留，不自动切换
         if self.adaptive_selected_channel is not None:
             # 只检查当前信道的能量占比，保持之前计算的前N个最佳信道信息
             if self.data_accessor is None:
@@ -414,24 +424,35 @@ class BreathingEstimator:
                     self.current_best_channels = updated_best_channels
                     
                     # 如果当前信道的能量占比低于阈值，开始计时
+                    # 注意：手动触发模式下，即使低能量超时也驻留，不自动切换
                     if current_ch_ratio < threshold:
-                        if self.adaptive_low_energy_start_time is None:
-                            self.adaptive_low_energy_start_time = time.time()
-                        else:
-                            # 检查是否超过超时时长
-                            elapsed = time.time() - self.adaptive_low_energy_start_time
-                            if elapsed >= self.adaptive_low_energy_threshold:
-                                # 超过超时时长，需要重新选择
-                                self.adaptive_selected_channel = None
-                                self.adaptive_low_energy_start_time = None
-                                # 继续执行下面的逻辑，重新计算所有信道
+                        if not manual_trigger:
+                            # 非手动触发模式：检查低能量超时
+                            if self.adaptive_low_energy_start_time is None:
+                                self.adaptive_low_energy_start_time = time.time()
                             else:
-                                # 还在超时时间内，继续在当前信道上执行，保持前N个最佳信道信息
-                                return {
-                                    'selected_channel': self.adaptive_selected_channel,
-                                    'best_channels': self.current_best_channels,
-                                    'need_reselect': False
-                                }
+                                # 检查是否超过超时时长
+                                elapsed = time.time() - self.adaptive_low_energy_start_time
+                                if elapsed >= self.adaptive_low_energy_threshold:
+                                    # 超过超时时长，需要重新选择
+                                    self.adaptive_selected_channel = None
+                                    self.adaptive_low_energy_start_time = None
+                                    # 继续执行下面的逻辑，重新计算所有信道
+                                else:
+                                    # 还在超时时间内，继续在当前信道上执行，保持前N个最佳信道信息
+                                    return {
+                                        'selected_channel': self.adaptive_selected_channel,
+                                        'best_channels': self.current_best_channels,
+                                        'need_reselect': False
+                                    }
+                        else:
+                            # 手动触发模式：即使低能量也驻留，不自动切换
+                            # 可以在结果栏提示，但不切换信道
+                            return {
+                                'selected_channel': self.adaptive_selected_channel,
+                                'best_channels': self.current_best_channels,
+                                'need_reselect': False
+                            }
                     else:
                         # 能量占比高于阈值，重置计时，继续在当前信道上执行
                         self.adaptive_low_energy_start_time = None
