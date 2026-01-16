@@ -15,15 +15,15 @@ from typing import List, Optional
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "3.6.0"
-    version_date: str = "2026-01-10"
+    version: str = "3.6.1"
+    version_date: str = "2026-01-17"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     # 所保存的文件最低兼容版本，类似minimum API
     version_data_save:str = "3.6.0"
     
     # 窗口配置
-    base_window_width: int = 1200
-    base_window_height: int = 950
+    base_window_width: int = 1280
+    base_window_height: int = 800
     
     # 字体配置
     base_font_size: int = 9
