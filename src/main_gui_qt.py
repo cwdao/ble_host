@@ -1670,15 +1670,6 @@ class BLEHostGUI(QMainWindow):
     
     def _open_breathing_adaptive_dialog(self):
         """打开信道呼吸能量计算设置对话框"""
-        # 在文件加载模式下禁用
-        if self.is_loaded_mode:
-            QMessageBox.information(
-                self,
-                "功能不可用",
-                "信道呼吸能量计算功能在文件加载模式下暂时不可用。\n请切换到实时模式使用此功能。"
-            )
-            return
-        
         dialog = QDialog(self)
         dialog.setWindowTitle("信道呼吸能量计算设置")
         dialog.setMinimumWidth(400)
@@ -1719,8 +1710,14 @@ class BLEHostGUI(QMainWindow):
         auto_switch_layout = QHBoxLayout()
         self.breathing_adaptive_auto_switch_checkbox = QCheckBox("在最高能量信道上执行呼吸监测")
         self.breathing_adaptive_auto_switch_checkbox.setChecked(self.breathing_adaptive_auto_switch)
-        # 在手动模式下禁用此checkbox
-        self.breathing_adaptive_auto_switch_checkbox.setEnabled(self.breathing_adaptive_enabled and not self.breathing_adaptive_manual_control)
+        # 在手动模式下或文件加载模式下禁用此checkbox
+        self.breathing_adaptive_auto_switch_checkbox.setEnabled(
+            self.breathing_adaptive_enabled and 
+            not self.breathing_adaptive_manual_control and 
+            not self.is_loaded_mode
+        )
+        if self.is_loaded_mode:
+            self.breathing_adaptive_auto_switch_checkbox.setToolTip("文件加载模式下不可用（与滑动时间窗冲突）")
         self.breathing_adaptive_auto_switch_checkbox.stateChanged.connect(self._on_adaptive_auto_switch_changed)
         auto_switch_layout.addWidget(self.breathing_adaptive_auto_switch_checkbox)
         layout.addLayout(auto_switch_layout)
@@ -1749,9 +1746,10 @@ class BLEHostGUI(QMainWindow):
         timeout_layout.addStretch()
         layout.addLayout(timeout_layout)
         
-        # 提示信息（文件加载模式下不可用）
+        # 提示信息（文件加载模式下的特殊说明）
         if self.is_loaded_mode:
-            info_label = QLabel("注意：此功能在文件加载模式下暂时不可用")
+            info_label = QLabel("注意：文件加载模式下，能量计算基于当前时间窗数据。\n" +
+                               "自动切换功能不可用，请使用手动切换按钮。")
             info_label.setStyleSheet("color: orange; font-weight: bold;")
             layout.addWidget(info_label)
         
@@ -1779,6 +1777,10 @@ class BLEHostGUI(QMainWindow):
                 low_energy_threshold=self.adaptive_low_energy_threshold
             )
             
+            # 在文件加载模式下，强制禁用自动切换
+            if self.is_loaded_mode:
+                self.breathing_adaptive_auto_switch = False
+            
             # 如果禁用了自适应，重置相关状态
             if not self.breathing_adaptive_enabled:
                 self.breathing_estimator.reset_adaptive_state()
@@ -1787,6 +1789,10 @@ class BLEHostGUI(QMainWindow):
             
             # 更新channel combo的启用状态
             self._update_channel_combo_enabled()
+            # 更新自适应checkbox状态（文件加载模式下应该禁用）
+            self._update_adaptive_checkbox_state()
+            # 更新手动选择按钮状态
+            self._update_manual_select_btn_state()
             # 更新"在最高能量信道上执行呼吸监测"checkbox的启用状态（在手动模式下禁用）
             # 注意：只在对话框打开时更新，对话框关闭后不访问对话框内的控件
             try:
@@ -1811,10 +1817,12 @@ class BLEHostGUI(QMainWindow):
         try:
             self.breathing_adaptive_top_n_spinbox.setEnabled(enabled)
             self.breathing_adaptive_highlight_checkbox.setEnabled(enabled)
-            # "在最高能量信道上执行呼吸监测"checkbox在手动模式下禁用
+            # "在最高能量信道上执行呼吸监测"checkbox在手动模式下或文件加载模式下禁用
             if hasattr(self, 'breathing_adaptive_auto_switch_checkbox') and self.breathing_adaptive_auto_switch_checkbox is not None:
                 _ = self.breathing_adaptive_auto_switch_checkbox.isEnabled()
-                self.breathing_adaptive_auto_switch_checkbox.setEnabled(enabled and not self.breathing_adaptive_manual_control)
+                self.breathing_adaptive_auto_switch_checkbox.setEnabled(
+                    enabled and not self.breathing_adaptive_manual_control and not self.is_loaded_mode
+                )
             self.breathing_adaptive_only_display_checkbox.setEnabled(enabled)
             if hasattr(self, 'breathing_adaptive_timeout_spinbox'):
                 if self.breathing_adaptive_timeout_spinbox is not None:
@@ -3563,14 +3571,15 @@ class BLEHostGUI(QMainWindow):
             self.is_loaded_mode = True
             self.current_window_start = 0
             
-            # 在文件加载模式下禁用自适应功能
-            if hasattr(self, 'breathing_adaptive_btn'):
-                self.breathing_adaptive_btn.setEnabled(False)
-            # 禁用自适应功能
-            self.breathing_adaptive_enabled = False
+            # 在文件加载模式下，允许启用能量计算，但禁用自动切换和自适应checkbox
+            # 保持breathing_adaptive_enabled的当前值（允许用户通过对话框启用）
+            # 但强制禁用自动切换和自适应checkbox
+            self.breathing_adaptive_auto_switch = False
             self.breathing_adaptive_manual_control = False
-            # 使用状态变量更新checkbox状态
+            # 使用状态变量更新checkbox状态（文件加载模式下会禁用）
             self._update_adaptive_checkbox_state()
+            # 更新手动选择按钮状态
+            self._update_manual_select_btn_state()
             self._update_channel_combo_enabled()
             
             # 根据文件中的frame_type自动设置模式
@@ -5164,13 +5173,59 @@ class BLEHostGUI(QMainWindow):
         """
         if method == 'get_all_channels':
             def get_all_channels():
-                return self.data_processor.get_all_frame_channels()
+                if self.is_loaded_mode:
+                    # 文件加载模式：从当前时间窗获取所有信道
+                    if not self.loaded_frames:
+                        return []
+                    window_start = self.current_window_start
+                    window_end = min(window_start + self.display_max_frames, len(self.loaded_frames))
+                    window_frames = self.loaded_frames[window_start:window_end]
+                    all_channels = set()
+                    for frame in window_frames:
+                        channels = frame.get('channels', {})
+                        all_channels.update(channels.keys())
+                    # 转换为整数列表并排序
+                    result = []
+                    for ch in all_channels:
+                        try:
+                            result.append(int(ch))
+                        except (ValueError, TypeError):
+                            pass
+                    return sorted(result)
+                else:
+                    # 实时模式：从data_processor获取
+                    return self.data_processor.get_all_frame_channels()
             return get_all_channels
         elif method == 'get_channel_data':
             def get_channel_data(channel: int, max_frames: int, data_type: str):
-                return self.data_processor.get_frame_data_range(
-                    channel, max_frames=max_frames, data_type=data_type
-                )
+                if self.is_loaded_mode:
+                    # 文件加载模式：从当前时间窗获取数据
+                    if not self.loaded_frames:
+                        return np.array([]), np.array([])
+                    window_start = self.current_window_start
+                    window_end = min(window_start + max_frames, len(self.loaded_frames))
+                    window_frames = self.loaded_frames[window_start:window_end]
+                    
+                    indices = []
+                    values = []
+                    for i, frame in enumerate(window_frames):
+                        channels = frame.get('channels', {})
+                        ch_data = None
+                        if channel in channels:
+                            ch_data = channels[channel]
+                        elif str(channel) in channels:
+                            ch_data = channels[str(channel)]
+                        
+                        if ch_data:
+                            values.append(ch_data.get(data_type, 0.0))
+                            indices.append(frame.get('index', window_start + i))
+                    
+                    return np.array(indices), np.array(values)
+                else:
+                    # 实时模式：从data_processor获取
+                    return self.data_processor.get_frame_data_range(
+                        channel, max_frames=max_frames, data_type=data_type
+                    )
             return get_channel_data
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -5241,8 +5296,10 @@ class BLEHostGUI(QMainWindow):
         # checkbox启用条件：
         # 1. 启用了"启用信道的呼吸能量计算"（使用状态变量breathing_adaptive_enabled）
         # 2. 不是方向估计帧模式
+        # 3. 不是文件加载模式（文件加载模式下禁用，因为与滑动时间窗冲突）
         enabled = (self.breathing_adaptive_enabled and 
-                  not self.is_direction_estimation_mode)
+                  not self.is_direction_estimation_mode and
+                  not self.is_loaded_mode)
         self.breathing_adaptive_manual_checkbox.setEnabled(enabled)
     
     def _update_manual_select_btn_state(self):
@@ -5293,10 +5350,93 @@ class BLEHostGUI(QMainWindow):
         self.manual_select_mode = True
         # 重置自适应状态，强制重新选择
         self.breathing_estimator.reset_adaptive_state()
-        # 立即触发一次呼吸估计更新，以执行信道选择
-        self._update_realtime_breathing_estimation()
+        
+        if self.is_loaded_mode:
+            # 文件加载模式：基于当前时间窗计算能量并切换信道
+            self._update_loaded_mode_manual_select_channel()
+        else:
+            # 实时模式：立即触发一次呼吸估计更新，以执行信道选择
+            self._update_realtime_breathing_estimation()
+        
         # 清除临时标志（但保持manual_select_mode，以便后续调用时也使用手动模式）
         self.manual_select_triggered = False
+    
+    def _update_loaded_mode_manual_select_channel(self):
+        """在文件加载模式下手动选择最佳信道"""
+        if not self.is_loaded_mode or not self.loaded_frames:
+            return
+        
+        # 获取当前时间窗的数据
+        window_start = self.current_window_start
+        window_size = self.display_max_frames
+        window_end = min(window_start + window_size, len(self.loaded_frames))
+        if window_start >= window_end:
+            return
+        
+        window_frames = self.loaded_frames[window_start:window_end]
+        
+        # 获取数据类型和阈值
+        data_type = self.breathing_data_type_combo.currentText()
+        try:
+            threshold = float(self.breathing_threshold_entry.text())
+        except:
+            threshold = 0.6
+        
+        # 更新BreathingEstimator的配置
+        self.breathing_estimator.set_adaptive_config(
+            enabled=True,
+            top_n=self.breathing_adaptive_top_n,
+            only_display_channels=self.breathing_adaptive_only_display_channels,
+            low_energy_threshold=self.adaptive_low_energy_threshold
+        )
+        
+        # 获取手动选择的信道（作为fallback）
+        try:
+            manual_channel = int(self.breathing_channel_combo.currentText())
+        except:
+            # 从当前时间窗获取第一个可用信道
+            all_channels = set()
+            for frame in window_frames:
+                channels = frame.get('channels', {})
+                all_channels.update(channels.keys())
+            if all_channels:
+                try:
+                    manual_channel = int(list(all_channels)[0])
+                except:
+                    manual_channel = None
+            else:
+                manual_channel = None
+        
+        # 调用BreathingEstimator的信道选择逻辑
+        adaptive_result = self.breathing_estimator.select_adaptive_channel(
+            data_type=data_type,
+            threshold=threshold,
+            max_frames=self.display_max_frames,
+            display_channels=self.display_channel_list if self.breathing_adaptive_only_display_channels else None,
+            manual_channel=manual_channel,
+            manual_trigger=True  # 手动触发模式
+        )
+        
+        # 选择能量最高的信道
+        if adaptive_result and adaptive_result.get('best_channels'):
+            best_channels = adaptive_result['best_channels']
+            if len(best_channels) > 0:
+                selected_channel = best_channels[0][0]  # 第一个是能量最高的
+                self.manual_selected_channel = selected_channel
+                self.logger.info(f"[呼吸估计] 文件加载模式下手动切换到最佳信道: {selected_channel}")
+                
+                # 更新channel combo
+                if hasattr(self, 'breathing_channel_combo'):
+                    current_text = self.breathing_channel_combo.currentText()
+                    if current_text != str(selected_channel):
+                        # 如果combo中没有这个信道，先添加
+                        items = [self.breathing_channel_combo.itemText(i) for i in range(self.breathing_channel_combo.count())]
+                        if str(selected_channel) not in items:
+                            self.breathing_channel_combo.addItem(str(selected_channel))
+                        self.breathing_channel_combo.setCurrentText(str(selected_channel))
+        
+        # 更新绘图
+        self._update_loaded_mode_plots()
     
     def _update_channel_combo_enabled(self):
         """更新channel combo的启用状态"""
@@ -5784,11 +5924,19 @@ class BLEHostGUI(QMainWindow):
         # 提取时间窗内的帧
         window_frames = self.loaded_frames[window_start:window_end]
         
-        # 更新所有绘图tab
+        # 在文件加载模式下，如果启用了能量计算，先计算能量（这样高亮功能才能获取到最新状态）
+        if self.breathing_adaptive_enabled:
+            self._update_loaded_mode_energy_calculation(window_frames)
+        
+        # 更新所有绘图tab（会应用高亮）
         self._update_loaded_plots_for_tabs(window_frames)
         
         # 更新呼吸估计tab
         self._update_breathing_estimation_plot(window_frames)
+        
+        # 在文件加载模式下，如果启用了能量计算，也更新能量计算结果显示
+        if self.breathing_adaptive_enabled and hasattr(self, 'breathing_result_text'):
+            self._update_loaded_mode_energy_result(window_frames)
         
         # 更新时间窗长度显示
         if len(window_frames) > 1:
@@ -5909,6 +6057,29 @@ class BLEHostGUI(QMainWindow):
                     max_channels=len(display_channels),
                     view_range=view_range
                 )
+                
+                # 如果启用了高亮最高能量波形，应用高亮（文件加载模式下）
+                if (self.breathing_adaptive_highlight and 
+                    self.breathing_adaptive_enabled):
+                    # 从BreathingEstimator获取最新状态
+                    adaptive_state = self.breathing_estimator.get_adaptive_state()
+                    current_best_channels = adaptive_state.get('best_channels', [])
+                    
+                    if current_best_channels:
+                        # 高亮前N个最高能量信道
+                        best_channels_to_highlight = [ch for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]]
+                        
+                        # 应用高亮（如果plotter支持）
+                        if hasattr(plotter, 'highlight_best_channels'):
+                            plotter.highlight_best_channels(best_channels_to_highlight, True)
+                    else:
+                        # 清除高亮
+                        if hasattr(plotter, 'highlight_best_channels'):
+                            plotter.highlight_best_channels([], False)
+                else:
+                    # 清除高亮
+                    if hasattr(plotter, 'highlight_best_channels'):
+                        plotter.highlight_best_channels([], False)
         
         # 注意：按钮颜色更新现在由视图变化信号自动触发（_on_plot_view_changed）
         # 这里不再需要手动检查，因为视图变化时会立即触发更新
@@ -5936,6 +6107,9 @@ class BLEHostGUI(QMainWindow):
                     channel = int(self.breathing_channel_combo.currentText())
                 except:
                     channel = 0
+        elif self.is_loaded_mode and self.manual_select_mode and self.manual_selected_channel is not None:
+            # 文件加载模式下手动选择模式：使用手动选择的信道
+            channel = self.manual_selected_channel
         else:
             try:
                 channel = int(self.breathing_channel_combo.currentText())
@@ -6081,6 +6255,129 @@ class BLEHostGUI(QMainWindow):
         
         # 刷新画布
         plot_info['canvas'].draw_idle()
+    
+    def _update_loaded_mode_energy_calculation(self, window_frames: List[Dict]):
+        """在文件加载模式下计算能量（用于高亮功能）"""
+        if not self.is_loaded_mode or not self.breathing_adaptive_enabled:
+            return
+        
+        # 获取数据类型和阈值
+        data_type = self.breathing_data_type_combo.currentText()
+        try:
+            threshold = float(self.breathing_threshold_entry.text())
+        except:
+            threshold = 0.6
+        
+        # 更新BreathingEstimator的配置
+        self.breathing_estimator.set_adaptive_config(
+            enabled=True,
+            top_n=self.breathing_adaptive_top_n,
+            only_display_channels=self.breathing_adaptive_only_display_channels,
+            low_energy_threshold=self.adaptive_low_energy_threshold
+        )
+        
+        # 获取当前信道
+        if self.manual_select_mode and self.manual_selected_channel is not None:
+            channel = self.manual_selected_channel
+        else:
+            try:
+                channel = int(self.breathing_channel_combo.currentText())
+            except:
+                channel = 0
+        
+        # 计算能量（基于当前时间窗）
+        self.breathing_estimator.select_adaptive_channel(
+            data_type=data_type,
+            threshold=threshold,
+            max_frames=self.display_max_frames,
+            display_channels=self.display_channel_list if self.breathing_adaptive_only_display_channels else None,
+            manual_channel=channel,
+            manual_trigger=self.manual_select_mode
+        )
+    
+    def _update_loaded_mode_energy_result(self, window_frames: List[Dict]):
+        """在文件加载模式下更新能量计算结果显示"""
+        if not self.is_loaded_mode or not self.breathing_adaptive_enabled:
+            return
+        
+        if not hasattr(self, 'breathing_result_text'):
+            return
+        
+        # 获取数据类型和阈值
+        data_type = self.breathing_data_type_combo.currentText()
+        try:
+            threshold = float(self.breathing_threshold_entry.text())
+        except:
+            threshold = 0.6
+        
+        # 获取当前信道
+        if self.manual_select_mode and self.manual_selected_channel is not None:
+            channel = self.manual_selected_channel
+        else:
+            try:
+                channel = int(self.breathing_channel_combo.currentText())
+            except:
+                channel = 0
+        
+        # 从BreathingEstimator获取最新状态（已经在_update_loaded_mode_energy_calculation中计算过）
+        adaptive_state = self.breathing_estimator.get_adaptive_state()
+        current_best_channels = adaptive_state.get('best_channels', [])
+        
+        if not current_best_channels:
+            self.breathing_result_text.setPlainText("计算能量中...")
+            return
+        
+        # 提取当前信道的数据进行呼吸检测
+        signal_data = []
+        for frame in window_frames:
+            channels = frame.get('channels', {})
+            ch_data = None
+            if channel in channels:
+                ch_data = channels[channel]
+            elif str(channel) in channels:
+                ch_data = channels[str(channel)]
+            
+            if ch_data:
+                signal_data.append(ch_data.get(data_type, 0.0))
+        
+        detection = None
+        if len(signal_data) > 0:
+            signal = np.array(signal_data)
+            processed = self.breathing_estimator.process_signal(signal, data_type)
+            if 'highpass_filtered' in processed:
+                detection = self.breathing_estimator.detect_breathing(
+                    processed['highpass_filtered'], threshold=threshold
+                )
+        
+        # 构建结果显示文本
+        result_text = f"Threshold: {threshold:.2f}\n"
+        if self.manual_select_mode:
+            result_text += "[手动选择模式] 滑动时间窗时保持当前信道\n"
+        result_text += f"前{self.breathing_adaptive_top_n}个最高能量信道（按能量排序）:\n"
+        
+        adaptive_selected = adaptive_state.get('selected_channel')
+        for i, (ch, ratio) in enumerate(current_best_channels[:self.breathing_adaptive_top_n]):
+            marker = " ← 当前" if ((self.manual_select_mode and self.manual_selected_channel == ch) or
+                                 (adaptive_selected == ch)) else ""
+            has_breathing_marker = " ✓" if ratio >= threshold else " ✗"
+            result_text += f"  {i+1}. Channel {ch}: {ratio:.4f}{marker}{has_breathing_marker}\n"
+        
+        # 显示当前信道的详细信息
+        result_text += f"\n当前信道 (Channel {channel}):\n"
+        if detection:
+            result_text += f"  Energy Ratio: {detection['energy_ratio']:.4f}\n"
+            result_text += f"  Detection: {'Breathing Detected' if detection['has_breathing'] else 'No Breathing'}\n"
+            if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
+                breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
+                result_text += f"  Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
+                result_text += f"  Breathing Rate: {breathing_rate:.1f} /min"
+            else:
+                result_text += "  Breathing Freq: --\n"
+                result_text += "  Breathing Rate: --"
+        else:
+            result_text += "  数据不足，无法计算"
+        
+        self.breathing_result_text.setPlainText(result_text)
     
     def showEvent(self, event):
         """窗口显示事件 - 确保主题正确应用"""
