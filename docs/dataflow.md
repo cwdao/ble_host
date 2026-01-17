@@ -25,6 +25,10 @@
 帧数据字典 {'frame': True, 'index': int, 'channels': {...}}
     ↓
 [DataProcessor] 存储和处理
+    ├─> frame_buffer: 存储到内存缓冲区（用于显示）
+    └─> [DataSaver] 数据保存（可选）
+        ├─> JSONL格式（v3.6.0+）：LogWriter增量写入
+        └─> JSON格式（向后兼容）：批量保存
     ↓
 处理后的数据 (numpy数组)
     ↓
@@ -270,7 +274,68 @@ parse_direction_frame() → amplitude = sqrt(p_avg)
 
 ---
 
-### 5. BLEHostGUI (主界面模块)
+### 5. DataSaver (数据保存模块)
+
+**文件位置**: `src/data_saver.py`
+
+**功能**: 数据保存和加载，支持JSONL格式（增量写入）和JSON格式（向后兼容）
+
+#### 输入
+- **方法**: `start_log_session(log_path, frame_type, serial_port, serial_baud)` (JSONL格式)
+- **方法**: `append_frame_to_log(frame)` (JSONL格式)
+- **方法**: `save_frames()` (已弃用，v3.7.0+不再支持JSON格式保存)
+
+#### 输出
+- **方法**: `load_frames(filepath)` - 自动检测格式（JSONL或JSON），返回帧数据字典
+- **方法**: `read_meta(log_path)` - 读取JSONL文件的meta记录
+- **方法**: `iter_frames(log_path)` - 迭代读取JSONL文件中的frame记录（流式）
+
+#### 内部存储
+
+##### JSONL格式（v3.6.0+）
+- **类**: `LogWriter`
+- **变量**: `self.record_queue` (Queue) - 记录写入队列
+- **变量**: `self.file_handle` - 文件句柄
+- **变量**: `self.write_count` - 已写入记录数
+- **变量**: `self.dropped_count` - 丢弃记录数（队列满时）
+
+#### 关键方法
+
+##### JSONL格式（v3.6.0+，推荐）
+- `LogWriter.start_session()`: 开始新的日志会话，写入meta记录
+- `LogWriter.append_record()`: 追加记录到队列（非阻塞）
+- `LogWriter._write_worker()`: 后台写入工作线程
+- `LogWriter.stop_session()`: 停止会话，写入end记录
+- `DataSaver.start_log_session()`: 启动JSONL日志会话
+- `DataSaver.append_frame_to_log()`: 追加帧记录到日志
+- `DataSaver.append_event_to_log()`: 追加事件记录到日志
+- `DataSaver.stop_log_session()`: 停止日志会话
+
+##### JSON格式（已弃用，仅支持加载）
+- `load_frames()`: 加载JSON或JSONL文件（自动格式检测）
+- `save_frames()`: 已弃用，v3.7.0+不再支持
+
+#### 数据流（JSONL格式）
+
+```
+帧数据完成
+    ↓
+DataSaver.append_frame_to_log(frame)
+    ↓
+转换为JSONL记录格式
+    ↓
+LogWriter.append_record(record)
+    ↓
+添加到 record_queue（非阻塞）
+    ↓
+后台线程 _write_worker()
+    ↓
+写入JSONL文件（每100条flush一次）
+```
+
+---
+
+### 6. BLEHostGUI (主界面模块)
 
 **文件位置**: `src/main_gui_qt.py`
 
@@ -455,6 +520,14 @@ last_frame_channels = {37}  # 上一个帧的信道集合
 - **位置**: `BLEHostGUI.plotters` (Dict)
 - **格式**: `{'amplitude': {'plotter': Plotter, 'data_type': 'amplitude', ...}}`
 
+### 数据保存（JSONL格式）
+- **位置**: `DataSaver.log_writer` (LogWriter | None)
+- **格式**: 
+  - `record_queue`: Queue - 记录写入队列
+  - `file_handle`: 文件句柄
+  - `write_count`: 已写入记录数
+  - `dropped_count`: 丢弃记录数
+
 ---
 
 ## DF模式信道切换检测流程
@@ -582,6 +655,9 @@ freq = data_processor.calculate_channel_frequency(
 │              │ → 清空新信道数据 (如果信道变化)
 └────┬─────────┘
      │
+     ├─> [DataSaver] (可选，如果正在记录)
+     │   └─> LogWriter.append_record() → record_queue → 后台线程写入JSONL
+     │
 ┌────▼─────────┐
 │   Plotter    │ → 更新 data_lines，绘制图表
 └────┬─────────┘
@@ -619,6 +695,11 @@ freq = data_processor.calculate_channel_frequency(
    - CS模式和DF模式完全隔离，不会互相影响
    - CS模式：`detect_channel_change=False`，手动检测信道变化
    - DF模式：`detect_channel_change=True`，自动检测信道变化
+
+6. **数据保存**:
+   - **JSONL格式（v3.6.0+，推荐）**：增量写入，后台线程+队列，避免阻塞UI
+   - **JSON格式（已弃用）**：v3.7.0+不再支持新保存，仅支持加载旧文件
+   - **格式检测**：加载时自动检测文件格式（通过扩展名或内容判断）
 
 ---
 

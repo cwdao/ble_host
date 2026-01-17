@@ -235,7 +235,8 @@ for event in saver.iter_events('log.jsonl'):
 
 ## 版本兼容性
 
-- **v3.6.0+**：使用JSONL格式保存，支持加载JSONL和JSON格式
+- **v3.7.0+**：仅使用JSONL格式保存，支持加载JSONL和JSON格式（JSON仅用于加载旧文件）
+- **v3.6.0**：使用JSONL格式保存，支持加载JSONL和JSON格式
 - **v3.5.0及以下**：使用JSON格式保存，仍可被新版本加载
 
 ## 性能特性

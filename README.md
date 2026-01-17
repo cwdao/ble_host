@@ -19,9 +19,9 @@
   - 统计分析（均值、最大值、最小值、标准差）
   - 实时呼吸估计（支持CS和DF两种模式，可配置更新间隔）
 - ✅ **数据保存与加载**:
-  - 支持保存所有帧或最近N帧数据
+  - **增量记录（JSONL格式）**：实时追加写入，支持长时间记录，避免内存峰值
   - 自动保存功能（可配置路径）
-  - 加载保存的文件进行离线分析
+  - 加载保存的文件进行离线分析（支持JSONL和JSON格式）
   - **自动识别文件帧类型**（DF/CS），自动设置相应模式
   - 时间窗滑动条，方便查看不同时间段的数据
 - ✅ **命令发送功能**:
@@ -54,21 +54,11 @@ pip install -r requirements.txt
 
 ## 使用方法
 
-### 主版本（PySide6/Qt，推荐）
+### 运行程序
 
 ```bash
 python run_qt.py
 ```
-
-### 旧版本（Tkinter，已弃用）
-
-Tkinter版本仍可使用，但不再维护新功能：
-
-```bash
-python run.py
-```
-
-> **注意**: 新功能仅在Qt版本中开发，建议使用Qt版本。
 
 ---
 
@@ -114,12 +104,6 @@ chmod +x build_qt.sh
 
 生成的可执行文件位于 `dist/BLEHost-Qt-v{版本号}.exe`（Windows）或 `dist/BLEHost-Qt-v{版本号}`（Linux/Mac）
 
-### Tkinter版本打包（旧版）
-
-```bash
-build.bat  # Windows
-```
-
 ### 打包选项说明
 
 - `--clean`: 清理临时文件
@@ -133,35 +117,31 @@ build.bat  # Windows
 ble_host/
 ├── src/                      # 源代码目录
 │   ├── __init__.py
-│   ├── main_gui_qt.py        # 主GUI程序（Qt版本，主版本）
-│   ├── main_gui.py           # 主GUI程序（Tkinter版本，旧版）
+│   ├── main_gui_qt.py        # 主GUI程序（PySide6/Qt）
 │   ├── serial_reader.py     # 串口读取模块
 │   ├── data_parser.py       # 数据解析模块（支持CS/DF双模式）
 │   ├── data_processor.py    # 数据处理模块（支持信道切换检测）
-│   ├── data_saver.py         # 数据保存/加载模块（支持帧类型识别）
+│   ├── data_saver.py         # 数据保存/加载模块（支持JSONL格式）
 │   ├── breathing_estimator.py # 呼吸估计模块（支持CS/DF双模式）
 │   ├── command_interface.py  # 命令接口模块（命令定义、生成、验证、解析）
 │   ├── config.py             # 配置管理模块
 │   ├── plotter_qt_realtime.py # Qt实时绘图（PyQtGraph）
-│   ├── plotter_qt_matplotlib.py # Qt分析绘图（Matplotlib）
-│   └── plotter.py            # Tkinter绘图模块（旧版）
+│   └── plotter_qt_matplotlib.py # Qt分析绘图（Matplotlib）
 ├── docs/                     # 文档目录
 │   ├── framework.md          # 系统架构文档
 │   ├── dataflow.md           # 数据流文档
 │   ├── df_mode_analysis.md   # DF模式实现分析报告
 │   ├── data_save_feature.md  # 数据保存功能说明
+│   ├── jsonl_format.md       # JSONL文件格式详细说明
 │   ├── uart_command_format.md # UART命令格式文档
 │   └── ...                   # 其他文档
-├── run_qt.py                 # Qt版本入口（推荐）
-├── run.py                     # Tkinter版本入口（旧版）
+├── run_qt.py                 # 程序入口
 ├── requirements.txt           # Python依赖
-├── build_qt.spec             # Qt版本PyInstaller配置
-├── build_qt.bat              # Qt版本Windows打包脚本
-├── build_qt.sh               # Qt版本Linux/Mac打包脚本
-├── build.spec                # Tkinter版本PyInstaller配置（旧版）
-├── build.bat                 # Tkinter版本打包脚本（旧版）
+├── build_qt.spec             # PyInstaller配置
+├── build_qt.bat              # Windows打包脚本
+├── build_qt.sh               # Linux/Mac打包脚本
 ├── README.md                 # 本文档
-└── README_QT.md              # Qt版本详细说明
+└── ...
 ```
 
 ## 使用说明
@@ -217,9 +197,10 @@ ble_host/
   - 记录中：显示 `● 正在记录: {文件名}`
   - 停止后：显示 `✓ 已停止向 {文件名} 记录，累计 {帧数} 帧`
 - **文件格式**：
-  - 新版本（v3.6.0+）：使用JSONL格式（.jsonl），支持增量追加
-  - 旧版本兼容：仍支持加载旧版JSON格式文件
-  - 文件自动添加帧类型前缀（DF_/CS_）
+  - **新版本（v3.6.0+）**：使用JSONL格式（.jsonl），支持增量追加写入，解决大量数据保存时的内存问题
+  - **旧版本兼容**：仍支持加载旧版JSON格式文件（自动格式检测）
+  - **文件命名**：自动添加帧类型前缀（DF_/CS_）
+  - **详细格式说明**：参见 `docs/jsonl_format.md`
 - **详细格式说明**：参见 `docs/jsonl_format.md`
 
 #### 7. 命令发送
@@ -242,10 +223,6 @@ ble_host/
 - 在"设置"选项卡中配置应用程序选项
 - **主题设置**：选择浅色/深色模式或跟随系统
 - **显示控制**：控制日志、版本信息、工具栏等显示选项
-
-### Tkinter版本（旧版）
-
-参考上述说明，功能类似但界面较旧。
 
 ## 帧数据模式详解
 
@@ -301,21 +278,23 @@ ble_host/
 ### 文件保存与加载
 
 - **保存格式（v3.6.0+）**：
-  - **JSONL格式**：采用增量写入的JSONL格式（.jsonl），每行一个JSON对象
+  - **JSONL格式**：采用增量写入的JSONL格式（.jsonl），每行一个JSON对象（NDJSON格式）
   - **记录类型**：支持meta（元数据）、frame（帧数据）、event（事件标记）、end（结束统计）
   - **增量写入**：实时追加记录，避免内存峰值，支持长时间记录
-  - **向后兼容**：仍支持加载旧版JSON格式文件（自动格式检测）
+  - **后台线程**：使用后台线程+队列机制，避免阻塞UI
+  - **向后兼容**：仍支持加载旧版JSON格式文件（自动格式检测），但不再支持新保存JSON格式
+  - **详细格式说明**：参见 `docs/jsonl_format.md`
 - **记录控制**：
   - 手动控制：点击"开始记录"按钮启动，长按"停止记录"按钮停止
   - 自动模式：勾选"自动开始记录"，连接后自动开始记录
   - 事件标记：记录过程中可随时标记特殊事件
 - **加载**：
-  - 自动格式检测：自动识别JSONL或JSON格式
-  - 自动识别帧类型：加载时自动识别帧类型（DF/CS），自动设置相应模式
-  - DF文件：自动设置为方向估计模式，显示幅值tab
-  - CS文件：自动设置为信道探测模式，显示所有tab
-- **时间窗**：加载文件后可使用滑动条选择时间窗口进行分析
-- **详细格式说明**：参见 `docs/jsonl_format.md`
+  - **自动格式检测**：自动识别JSONL或JSON格式（通过文件扩展名或内容检测）
+  - **自动识别帧类型**：加载时自动识别帧类型（DF/CS），自动设置相应模式
+  - **DF文件**：自动设置为方向估计模式，显示幅值tab
+  - **CS文件**：自动设置为信道探测模式，显示所有tab
+  - **时间窗**：加载文件后可使用滑动条选择时间窗口进行分析
+  - **文件信息**：显示文件版本、帧类型、保存时间、帧数等信息
 
 ## 自定义数据协议
 
@@ -344,13 +323,16 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
 - **CS模式**：确认数据格式包含 `== Basic Report ==` 和 `== End Report ==`
 
 ### 文件加载问题
-- 确认文件格式正确（新版本为JSONL格式，旧版本为JSON格式）
-- 程序会自动检测文件格式（JSONL或JSON）
-- 检查文件版本是否兼容
-- 查看日志窗口的错误信息
-- **DF文件**：确认文件包含 `frame_type: "direction_estimation"`（JSONL格式在meta记录中）
-- **CS文件**：确认文件包含 `frame_type: "channel_sounding"` 或不包含frame_type（向后兼容）
-- **JSONL文件**：确保第一行是meta记录（包含`record_type: "meta"`）
+- **格式检测**：程序会自动检测文件格式（JSONL或JSON），通过文件扩展名或内容判断
+- **版本兼容性**：检查文件版本是否兼容（文件版本不能高于APP版本）
+- **JSONL文件**：
+  - 确保第一行是meta记录（包含`record_type: "meta"`）
+  - DF文件：meta记录中包含 `frame_type: "direction_estimation"`
+  - CS文件：meta记录中包含 `frame_type: "channel_sounding"`
+- **JSON文件（旧格式）**：
+  - DF文件：包含 `frame_type: "direction_estimation"`
+  - CS文件：包含 `frame_type: "channel_sounding"` 或不包含frame_type（向后兼容）
+- **查看日志**：查看日志窗口的错误信息，了解具体问题
 
 ### 打包失败
 - 确认已安装所有依赖
@@ -359,7 +341,7 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
 
 ## 版本说明
 
-### Qt版本（主版本，推荐）
+## 版本说明
 
 - **框架**: PySide6
 - **绘图**: PyQtGraph（实时）+ Matplotlib（分析）
@@ -367,21 +349,13 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
   - 现代化界面、高性能
   - 支持双帧模式（CS/DF）
   - 自动帧类型识别
-  - 完整的数据保存/加载功能
+  - 完整的数据保存/加载功能（JSONL格式）
   - 时间窗滑动条（加载模式）
   - 实时呼吸估计（支持CS/DF双模式）
   - DF模式信道切换检测和数据累积
   - 命令发送功能
 - **入口**: `run_qt.py`
-- **详细说明**: 参见 `README_QT.md`
-- **版本**: v3.6.0
-
-### Tkinter版本（旧版，已弃用）
-
-- **框架**: Tkinter
-- **绘图**: Matplotlib
-- **状态**: 不再添加新功能，仅维护基本功能
-- **入口**: `run.py`
+- **版本**: v3.7.0
 
 ## 开发说明
 
@@ -405,6 +379,27 @@ logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 本项目仅供学习和开发使用。
 
 ## 更新日志
+
+### v3.7.0 (2026-01-17)
+
+- ✅ **代码清理**
+  - 删除Tkinter相关代码，统一使用PySide6/Qt框架
+  - 清理示例代码和旧代码
+
+- ✅ **文件保存优化**
+  - 统一文件版本管理，使用`version_data_save`标记最低兼容版本
+  - **JSON格式不再支持新保存**，仅支持加载旧文件（向后兼容）
+  - 新保存统一使用JSONL格式（增量写入）
+
+- ✅ **呼吸信道自适应功能优化**
+  - 优化信道高亮功能，支持分别高亮当前信道和最佳信道
+  - 修复自适应呼吸信道选择功能的显示问题
+  - 添加手动选择最佳信道按钮
+  - 支持在文件加载模式下启用信道能量计算
+  - 修复自适应复选框初始化问题
+
+- ✅ **UI更新**
+  - 优化界面交互体验
 
 ### v3.6.0 (2026-01-10)
 

@@ -17,11 +17,11 @@
     │Serial   │    │Data     │    │Data     │    │Plotter  │
     │Reader   │    │Parser   │    │Processor│    │(×4)     │
     └─────────┘    └─────────┘    └─────────┘    └─────────┘
-                            │
-                    ┌───────▼────────┐
-                    │Breathing       │
-                    │Estimator       │
-                    └────────────────┘
+                            │              │
+                    ┌───────▼────────┐    ┌───────▼────────┐
+                    │Breathing       │    │  DataSaver      │
+                    │Estimator       │    │  (LogWriter)    │
+                    └────────────────┘    └─────────────────┘
 ```
 
 ## 数据流向
@@ -82,6 +82,8 @@
 | `last_breathing_channel` | `BLEHostGUI` | `int\|None` | 上一次呼吸估计使用的信道（用于检测信道变化） |
 | `data_lines` | `Plotter` | `Dict` | 绘图数据线 |
 | `plotters` | `BLEHostGUI` | `Dict` | 所有绘图器实例 |
+| `log_writer` | `DataSaver` | `LogWriter\|None` | JSONL日志写入器（v3.6.0+） |
+| `record_queue` | `LogWriter` | `Queue` | 记录写入队列（后台线程消费） |
 
 ## 数据格式转换链
 
@@ -235,6 +237,17 @@ DataProcessor.frame_buffer[channel]
 - 分析绘图（Matplotlib）
 - 支持多通道数据显示
 - 自动缩放和刷新
+
+### DataSaver
+- 数据保存和加载模块
+- **JSONL格式（v3.6.0+）**：
+  - `LogWriter` 类：支持后台线程+队列的增量写入
+  - 实时追加记录，避免内存峰值
+  - 支持meta、frame、event、end四种记录类型
+- **JSON格式（已弃用）**：
+  - v3.7.0+不再支持新保存JSON格式
+  - 自动格式检测：仍支持加载旧版JSON格式文件（向后兼容）
+- 文件命名：自动添加帧类型前缀（DF_/CS_）
 
 ## 模式隔离机制
 
