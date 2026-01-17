@@ -339,8 +339,8 @@ class DataSaver:
                 # 信道探测帧
                 file_version = config.version_data_save  # 最低兼容的APP版本
             else:
-                # 默认情况（向后兼容）
-                file_version = '1.0.0'
+                # 默认情况（向后兼容，统一使用version_data_save）
+                file_version = config.version_data_save
             
             
             # 准备保存的数据结构
@@ -478,7 +478,8 @@ class DataSaver:
                 data = json.load(f)
             
             # 检查版本兼容性
-            file_version = data.get('version', '1.0')
+            # 文件中的version字段是保存时写入的version_data_save（最低兼容版本）
+            file_version = data.get('version', config.version_data_save)
             app_version = config.version
             
             # 如果文件版本高于APP版本，返回错误信息
@@ -516,7 +517,8 @@ class DataSaver:
                 return None
             
             # 检查版本兼容性
-            file_version = meta.get('file_version', meta.get('app_version', '1.0'))
+            # 优先使用file_version（保存时写入的version_data_save），如果没有则使用app_version作为fallback
+            file_version = meta.get('file_version', meta.get('app_version', config.version_data_save))
             app_version = config.version
             
             # 如果文件版本高于APP版本，返回错误信息
@@ -735,11 +737,8 @@ class DataSaver:
             True if success, False otherwise
         """
         try:
-            # 确定文件版本
-            if frame_type == 'direction_estimation':
-                file_version = config.version_data_save
-            else:
-                file_version = '1.0.0'
+            # 确定文件版本（统一使用version_data_save，用于标记最低能打开的软件版本）
+            file_version = config.version_data_save
             
             # 构建meta记录
             meta = {
@@ -1060,7 +1059,7 @@ class DataSaver:
             
             # 构建导出数据结构
             export_data = {
-                'version': meta.get('file_version', '1.0.0'),
+                'version': meta.get('file_version', config.version_data_save),  # 如果meta中没有，使用version_data_save
                 'saved_at': datetime.now().isoformat(),
                 'total_frames': frame_count,
                 'saved_frames': frame_count,

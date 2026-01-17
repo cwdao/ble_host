@@ -15,7 +15,7 @@ from typing import List, Optional
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "3.6.1"
+    version: str = "3.7.0"
     version_date: str = "2026-01-17"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     # 所保存的文件最低兼容版本，类似minimum API
