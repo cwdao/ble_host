@@ -1257,7 +1257,8 @@ class BLEHostGUI(QMainWindow):
         # 使用setFont设置字体大小，而不是样式表，以保持主题响应
         save_group.setFont(get_app_font(9))
         save_group.setMaximumHeight(180)
-        save_group.setMinimumWidth(400)  # 增加最小宽度以容纳两列
+        save_group.setMinimumWidth(200)  # 增加最小宽度以容纳两列
+        save_group.setMaximumWidth(350)  # 增加最小宽度以容纳两列
         save_layout = QHBoxLayout(save_group)  # 改为水平布局
         
         # 第一列：开始记录相关
