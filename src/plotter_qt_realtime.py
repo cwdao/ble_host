@@ -194,33 +194,65 @@ class RealtimePlotter:
             # 即使用户手动操作过，也更新当前视图范围（用于重置功能）
             self.current_view_range = view_range
     
-    def highlight_best_channels(self, best_channels: List[int], highlight_enabled: bool = True):
+    def highlight_best_channels(self, best_channels: List[int] = None, 
+                               current_channel: int = None,
+                               highlight_mode: str = "best",
+                               highlight_enabled: bool = True):
         """
-        高亮最佳信道波形
+        高亮信道波形
         
         Args:
-            best_channels: 最佳信道列表（如果启用了自动切换，只包含选中的信道）
-            highlight_enabled: 是否启用高亮
+            best_channels: 最佳信道列表
+            current_channel: 当前使用的信道
+            highlight_mode: 高亮模式："none"（不高亮）、"current"（高亮当前使用的信道）、
+                           "best"（高亮最佳信道）、"both"（同时高亮）
+            highlight_enabled: 是否启用高亮（已废弃，保留用于兼容性）
         """
-        if not highlight_enabled or not best_channels:
+        if highlight_mode == "none" or (not best_channels and not current_channel):
             # 清除所有高亮
             for var_name, line_info in self.data_lines.items():
                 if var_name.startswith('ch') and var_name[2:].isdigit():
-                    ch = int(var_name[2:])
-                    if ch not in best_channels:
-                        # 恢复正常样式
-                        normal_pen = pg.mkPen(
-                            color=line_info['color'],
-                            width=self.normal_pen_width
-                        )
-                        line_info['curve'].setPen(normal_pen)
+                    # 恢复正常样式
+                    normal_pen = pg.mkPen(
+                        color=line_info['color'],
+                        width=self.normal_pen_width
+                    )
+                    line_info['curve'].setPen(normal_pen)
+                    line_info['curve'].setOpacity(1.0)
             return
         
-        # 高亮最佳信道，淡化其他信道
+        # 确定需要高亮的信道
+        channels_to_highlight = []
+        if highlight_mode == "current" and current_channel is not None:
+            channels_to_highlight = [current_channel]
+        elif highlight_mode == "best" and best_channels:
+            channels_to_highlight = best_channels
+        elif highlight_mode == "both":
+            channels_to_highlight = []
+            if current_channel is not None:
+                channels_to_highlight.append(current_channel)
+            if best_channels:
+                for ch in best_channels:
+                    if ch not in channels_to_highlight:
+                        channels_to_highlight.append(ch)
+        
+        if not channels_to_highlight:
+            # 没有需要高亮的信道，清除所有高亮
+            for var_name, line_info in self.data_lines.items():
+                if var_name.startswith('ch') and var_name[2:].isdigit():
+                    normal_pen = pg.mkPen(
+                        color=line_info['color'],
+                        width=self.normal_pen_width
+                    )
+                    line_info['curve'].setPen(normal_pen)
+                    line_info['curve'].setOpacity(1.0)
+            return
+        
+        # 高亮指定信道，淡化其他信道
         for var_name, line_info in self.data_lines.items():
             if var_name.startswith('ch') and var_name[2:].isdigit():
                 ch = int(var_name[2:])
-                if ch in best_channels:
+                if ch in channels_to_highlight:
                     # 高亮：更粗、更亮的线条
                     highlight_pen = pg.mkPen(
                         color=line_info['color'],
@@ -228,21 +260,20 @@ class RealtimePlotter:
                         style=Qt.PenStyle.SolidLine
                     )
                     line_info['curve'].setPen(highlight_pen)
+                    line_info['curve'].setOpacity(1.0)  # 确保不透明
                 else:
                     # 淡化：降低透明度，变细
                     faded_color = line_info['color']
-                    # 将颜色转换为更淡的版本（降低亮度）
                     faded_pen = pg.mkPen(
                         color=faded_color,
                         width=self.normal_pen_width * 0.5,  # 更细
                         style=Qt.PenStyle.SolidLine
                     )
                     line_info['curve'].setPen(faded_pen)
-                    # 设置透明度（通过设置alpha）
-                    line_info['curve'].setOpacity(0.3)
+                    line_info['curve'].setOpacity(0.3)  # 降低透明度
         
-        # 确保最佳信道不透明
-        for ch in best_channels:
+        # 确保高亮信道不透明
+        for ch in channels_to_highlight:
             var_name = f"ch{ch}"
             if var_name in self.data_lines:
                 self.data_lines[var_name]['curve'].setOpacity(1.0)

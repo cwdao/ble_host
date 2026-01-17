@@ -87,7 +87,7 @@ class AppConfig:
     # 呼吸信道自适应默认参数
     breathing_adaptive_enabled: bool = False  # 是否启用最佳呼吸信道选取
     breathing_adaptive_top_n: int = 1  # 选择前N个最佳信道
-    breathing_adaptive_highlight: bool = False  # 是否高亮最佳信道波形
+    breathing_adaptive_highlight: str = "none"  # 高亮模式："none"（不高亮）、"current"（高亮当前使用的信道）、"best"（高亮最佳信道）、"both"（同时高亮）
     breathing_adaptive_auto_switch: bool = False  # 是否自动在最佳信道上执行呼吸检测
     breathing_adaptive_only_display_channels: bool = False  # 是否只在显示信道范围内选取
     breathing_adaptive_low_energy_threshold: float = 5.0  # 低能量持续时间阈值（秒）

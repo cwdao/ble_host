@@ -192,7 +192,12 @@ class BLEHostGUI(QMainWindow):
         # 在一开始上电时都默认禁用，只有用户手动开启了"启用信道的呼吸能量计算"后才启用
         self.breathing_adaptive_enabled = config.breathing_adaptive_enabled
         self.breathing_adaptive_top_n = config.breathing_adaptive_top_n
-        self.breathing_adaptive_highlight = config.breathing_adaptive_highlight
+        # 兼容旧配置：如果breathing_adaptive_highlight是bool类型，转换为字符串
+        highlight_mode = config.breathing_adaptive_highlight
+        if isinstance(highlight_mode, bool):
+            self.breathing_adaptive_highlight = "best" if highlight_mode else "none"
+        else:
+            self.breathing_adaptive_highlight = highlight_mode
         self.breathing_adaptive_auto_switch = config.breathing_adaptive_auto_switch
         self.breathing_adaptive_only_display_channels = config.breathing_adaptive_only_display_channels
         self.breathing_adaptive_manual_control = False  # 是否启用自适应（在channel旁边）
@@ -1698,13 +1703,43 @@ class BLEHostGUI(QMainWindow):
         top_n_layout.addStretch()
         layout.addLayout(top_n_layout)
         
-        # 高亮最高能量波形
-        highlight_layout = QHBoxLayout()
-        self.breathing_adaptive_highlight_checkbox = QCheckBox("高亮最高能量波形")
-        self.breathing_adaptive_highlight_checkbox.setChecked(self.breathing_adaptive_highlight)
-        self.breathing_adaptive_highlight_checkbox.setEnabled(self.breathing_adaptive_enabled)
-        highlight_layout.addWidget(self.breathing_adaptive_highlight_checkbox)
-        layout.addLayout(highlight_layout)
+        # 高亮模式选择
+        highlight_group = QGroupBox("高亮模式")
+        highlight_group_layout = QVBoxLayout()
+        
+        # 兼容旧配置：如果breathing_adaptive_highlight是bool类型，转换为字符串
+        highlight_mode = self.breathing_adaptive_highlight
+        if isinstance(highlight_mode, bool):
+            highlight_mode = "best" if highlight_mode else "none"
+        
+        self.breathing_adaptive_highlight_none_radio = QRadioButton("不高亮")
+        self.breathing_adaptive_highlight_current_radio = QRadioButton("高亮当前使用的信道")
+        self.breathing_adaptive_highlight_best_radio = QRadioButton("高亮最佳信道")
+        self.breathing_adaptive_highlight_both_radio = QRadioButton("同时高亮当前使用的信道和最佳信道")
+        
+        # 设置默认选中
+        if highlight_mode == "current":
+            self.breathing_adaptive_highlight_current_radio.setChecked(True)
+        elif highlight_mode == "best":
+            self.breathing_adaptive_highlight_best_radio.setChecked(True)
+        elif highlight_mode == "both":
+            self.breathing_adaptive_highlight_both_radio.setChecked(True)
+        else:
+            self.breathing_adaptive_highlight_none_radio.setChecked(True)
+        
+        # 设置启用状态
+        enabled = self.breathing_adaptive_enabled
+        self.breathing_adaptive_highlight_none_radio.setEnabled(enabled)
+        self.breathing_adaptive_highlight_current_radio.setEnabled(enabled)
+        self.breathing_adaptive_highlight_best_radio.setEnabled(enabled)
+        self.breathing_adaptive_highlight_both_radio.setEnabled(enabled)
+        
+        highlight_group_layout.addWidget(self.breathing_adaptive_highlight_none_radio)
+        highlight_group_layout.addWidget(self.breathing_adaptive_highlight_current_radio)
+        highlight_group_layout.addWidget(self.breathing_adaptive_highlight_best_radio)
+        highlight_group_layout.addWidget(self.breathing_adaptive_highlight_both_radio)
+        highlight_group.setLayout(highlight_group_layout)
+        layout.addWidget(highlight_group)
         
         # 在最高能量信道上执行呼吸监测
         auto_switch_layout = QHBoxLayout()
@@ -1764,7 +1799,15 @@ class BLEHostGUI(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.breathing_adaptive_enabled = self.breathing_adaptive_enable_checkbox.isChecked()
             self.breathing_adaptive_top_n = self.breathing_adaptive_top_n_spinbox.value()
-            self.breathing_adaptive_highlight = self.breathing_adaptive_highlight_checkbox.isChecked()
+            # 获取高亮模式
+            if self.breathing_adaptive_highlight_current_radio.isChecked():
+                self.breathing_adaptive_highlight = "current"
+            elif self.breathing_adaptive_highlight_best_radio.isChecked():
+                self.breathing_adaptive_highlight = "best"
+            elif self.breathing_adaptive_highlight_both_radio.isChecked():
+                self.breathing_adaptive_highlight = "both"
+            else:
+                self.breathing_adaptive_highlight = "none"
             self.breathing_adaptive_auto_switch = self.breathing_adaptive_auto_switch_checkbox.isChecked()
             self.breathing_adaptive_only_display_channels = self.breathing_adaptive_only_display_checkbox.isChecked()
             self.adaptive_low_energy_threshold = float(self.breathing_adaptive_timeout_spinbox.value())
@@ -1786,6 +1829,11 @@ class BLEHostGUI(QMainWindow):
                 self.breathing_estimator.reset_adaptive_state()
                 # 清除高亮
                 self._clear_adaptive_highlight()
+                # 清除高亮添加的信道跟踪
+                if hasattr(self, '_highlight_added_channels'):
+                    self._highlight_added_channels = set()
+                # 清除高亮（不再管理高亮信道）
+                self._manage_highlight_channels([])
             
             # 更新channel combo的启用状态
             self._update_channel_combo_enabled()
@@ -1816,7 +1864,12 @@ class BLEHostGUI(QMainWindow):
         # 注意：只在对话框打开时更新对话框内的控件，对话框关闭后不访问
         try:
             self.breathing_adaptive_top_n_spinbox.setEnabled(enabled)
-            self.breathing_adaptive_highlight_checkbox.setEnabled(enabled)
+            # 更新高亮模式单选按钮的启用状态
+            if hasattr(self, 'breathing_adaptive_highlight_none_radio'):
+                self.breathing_adaptive_highlight_none_radio.setEnabled(enabled)
+                self.breathing_adaptive_highlight_current_radio.setEnabled(enabled)
+                self.breathing_adaptive_highlight_best_radio.setEnabled(enabled)
+                self.breathing_adaptive_highlight_both_radio.setEnabled(enabled)
             # "在最高能量信道上执行呼吸监测"checkbox在手动模式下或文件加载模式下禁用
             if hasattr(self, 'breathing_adaptive_auto_switch_checkbox') and self.breathing_adaptive_auto_switch_checkbox is not None:
                 _ = self.breathing_adaptive_auto_switch_checkbox.isEnabled()
@@ -1856,7 +1909,93 @@ class BLEHostGUI(QMainWindow):
         for tab_key, plotter_info in self.plotters.items():
             plotter = plotter_info.get('plotter')
             if plotter and hasattr(plotter, 'highlight_best_channels'):
-                plotter.highlight_best_channels([], False)
+                plotter.highlight_best_channels(highlight_mode="none")
+    
+    def _manage_highlight_channels(self, channels_to_highlight: List[int]):
+        """
+        管理高亮信道的自动添加/移除
+        
+        Args:
+            channels_to_highlight: 需要高亮的信道列表
+        """
+        if not self.breathing_adaptive_enabled:
+            return
+        
+        # 获取所有可用信道
+        if self.is_loaded_mode:
+            if not self.loaded_frames:
+                return
+            all_channels = set()
+            for frame in self.loaded_frames:
+                channels = frame.get('channels', {})
+                all_channels.update(channels.keys())
+            # 转换为整数列表
+            available_channels = []
+            for ch in all_channels:
+                try:
+                    available_channels.append(int(ch))
+                except (ValueError, TypeError):
+                    pass
+        else:
+            available_channels = self.data_processor.get_all_frame_channels()
+        
+        if not available_channels:
+            return
+        
+        # 确定需要添加到显示列表的信道（高亮但不在显示列表中）
+        channels_to_add = []
+        for ch in channels_to_highlight:
+            if ch in available_channels and ch not in self.display_channel_list:
+                channels_to_add.append(ch)
+        
+        # 确定需要从显示列表移除的信道（之前因为高亮添加的，现在不再需要高亮）
+        # 这里需要跟踪哪些信道是因为高亮而添加的
+        if not hasattr(self, '_highlight_added_channels'):
+            self._highlight_added_channels = set()
+        
+        channels_to_remove = []
+        for ch in list(self._highlight_added_channels):
+            if ch not in channels_to_highlight:
+                # 检查这个信道是否在其他地方被使用（比如用户手动添加的）
+                # 如果不在当前显示列表中，说明已经被移除了，不需要处理
+                if ch in self.display_channel_list:
+                    # 检查是否应该移除（只有在不是用户手动添加的情况下才移除）
+                    # 这里简化处理：如果不在高亮列表中，就移除
+                    channels_to_remove.append(ch)
+        
+        # 更新跟踪集合
+        self._highlight_added_channels = set(channels_to_highlight)
+        
+        # 添加需要高亮的信道到显示列表
+        if channels_to_add:
+            self.display_channel_list.extend(channels_to_add)
+            self.display_channel_list = sorted(list(set(self.display_channel_list)))
+            # 更新显示信道输入框
+            if hasattr(self, 'display_channels_entry'):
+                self.display_channels_entry.setText(','.join(map(str, self.display_channel_list)))
+            # 应用设置（不显示提示）
+            if self.is_loaded_mode:
+                # 文件加载模式下，直接更新绘图
+                self._update_loaded_mode_plots()
+            else:
+                # 实时模式下，应用设置
+                self._apply_frame_settings(show_info=False)
+        
+        # 移除不再需要高亮的信道（如果启用了"只在显示信道范围内选取"，不移除）
+        if channels_to_remove and not self.breathing_adaptive_only_display_channels:
+            for ch in channels_to_remove:
+                if ch in self.display_channel_list:
+                    self.display_channel_list.remove(ch)
+            # 更新显示信道输入框
+            if hasattr(self, 'display_channels_entry'):
+                self.display_channels_entry.setText(','.join(map(str, self.display_channel_list)))
+            # 应用设置（不显示提示）
+            if self.is_loaded_mode:
+                # 文件加载模式下，直接更新绘图
+                self._update_loaded_mode_plots()
+            else:
+                # 实时模式下，应用设置
+                self._apply_frame_settings(show_info=False)
     
     def _create_settings_tab(self):
         """创建设置选项卡"""
@@ -4034,25 +4173,57 @@ class BLEHostGUI(QMainWindow):
             if channel_data:
                 plotter.update_frame_data(channel_data, max_channels=len(display_channels))
                 
-                # 如果启用了高亮最高能量波形，应用高亮（只有当能量占比高于阈值时才高亮）
+                # 应用高亮（根据高亮模式）
                 # 从BreathingEstimator获取最新状态
                 adaptive_state = self.breathing_estimator.get_adaptive_state()
                 current_best_channels = adaptive_state.get('best_channels', [])
                 adaptive_selected = adaptive_state.get('selected_channel')
                 
-                if (self.breathing_adaptive_highlight and 
-                    self.breathing_adaptive_enabled and
-                    current_best_channels):
-                    # 高亮前N个最高能量信道
-                    best_channels_to_highlight = [ch for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]]
+                # 获取当前使用的信道
+                try:
+                    current_channel = int(self.breathing_channel_combo.currentText())
+                except:
+                    current_channel = None
+                
+                # 如果启用了自适应且自动切换，使用自适应选择的信道
+                if (self.breathing_adaptive_enabled and 
+                    self.breathing_adaptive_manual_control and
+                    self.breathing_adaptive_auto_switch and
+                    adaptive_selected is not None):
+                    current_channel = adaptive_selected
+                # 如果是手动选择模式，使用手动选择的信道
+                elif self.manual_select_mode and self.manual_selected_channel is not None:
+                    current_channel = self.manual_selected_channel
+                
+                # 确定需要高亮的信道
+                highlight_mode = self.breathing_adaptive_highlight if isinstance(self.breathing_adaptive_highlight, str) else ("best" if self.breathing_adaptive_highlight else "none")
+                channels_to_highlight = []
+                
+                if highlight_mode != "none" and self.breathing_adaptive_enabled:
+                    if highlight_mode == "current" and current_channel is not None:
+                        channels_to_highlight = [current_channel]
+                    elif highlight_mode == "best" and current_best_channels:
+                        channels_to_highlight = [ch for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]]
+                    elif highlight_mode == "both":
+                        if current_channel is not None:
+                            channels_to_highlight.append(current_channel)
+                        if current_best_channels:
+                            for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]:
+                                if ch not in channels_to_highlight:
+                                    channels_to_highlight.append(ch)
                     
-                    # 应用高亮（如果plotter支持）
-                    if hasattr(plotter, 'highlight_best_channels'):
-                        plotter.highlight_best_channels(best_channels_to_highlight, True)
-                else:
-                    # 清除高亮
-                    if hasattr(plotter, 'highlight_best_channels'):
-                        plotter.highlight_best_channels([], False)
+                    # 管理高亮信道的自动添加/移除
+                    if channels_to_highlight:
+                        self._manage_highlight_channels(channels_to_highlight)
+                
+                # 应用高亮（如果plotter支持）
+                if hasattr(plotter, 'highlight_best_channels'):
+                    best_channels_list = [ch for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]] if current_best_channels else []
+                    plotter.highlight_best_channels(
+                        best_channels=best_channels_list,
+                        current_channel=current_channel,
+                        highlight_mode=highlight_mode
+                    )
     
     def _refresh_plotters_throttled(self):
         """节流刷新绘图器"""
@@ -6058,28 +6229,50 @@ class BLEHostGUI(QMainWindow):
                     view_range=view_range
                 )
                 
-                # 如果启用了高亮最高能量波形，应用高亮（文件加载模式下）
-                if (self.breathing_adaptive_highlight and 
-                    self.breathing_adaptive_enabled):
-                    # 从BreathingEstimator获取最新状态
-                    adaptive_state = self.breathing_estimator.get_adaptive_state()
-                    current_best_channels = adaptive_state.get('best_channels', [])
-                    
-                    if current_best_channels:
-                        # 高亮前N个最高能量信道
-                        best_channels_to_highlight = [ch for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]]
-                        
-                        # 应用高亮（如果plotter支持）
-                        if hasattr(plotter, 'highlight_best_channels'):
-                            plotter.highlight_best_channels(best_channels_to_highlight, True)
-                    else:
-                        # 清除高亮
-                        if hasattr(plotter, 'highlight_best_channels'):
-                            plotter.highlight_best_channels([], False)
+                # 应用高亮（文件加载模式下，根据高亮模式）
+                # 从BreathingEstimator获取最新状态
+                adaptive_state = self.breathing_estimator.get_adaptive_state()
+                current_best_channels = adaptive_state.get('best_channels', [])
+                adaptive_selected = adaptive_state.get('selected_channel')
+                
+                # 获取当前使用的信道
+                if self.manual_select_mode and self.manual_selected_channel is not None:
+                    current_channel = self.manual_selected_channel
                 else:
-                    # 清除高亮
-                    if hasattr(plotter, 'highlight_best_channels'):
-                        plotter.highlight_best_channels([], False)
+                    try:
+                        current_channel = int(self.breathing_channel_combo.currentText())
+                    except:
+                        current_channel = None
+                
+                # 确定需要高亮的信道
+                highlight_mode = self.breathing_adaptive_highlight if isinstance(self.breathing_adaptive_highlight, str) else ("best" if self.breathing_adaptive_highlight else "none")
+                channels_to_highlight = []
+                
+                if highlight_mode != "none" and self.breathing_adaptive_enabled:
+                    if highlight_mode == "current" and current_channel is not None:
+                        channels_to_highlight = [current_channel]
+                    elif highlight_mode == "best" and current_best_channels:
+                        channels_to_highlight = [ch for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]]
+                    elif highlight_mode == "both":
+                        if current_channel is not None:
+                            channels_to_highlight.append(current_channel)
+                        if current_best_channels:
+                            for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]:
+                                if ch not in channels_to_highlight:
+                                    channels_to_highlight.append(ch)
+                    
+                    # 管理高亮信道的自动添加/移除
+                    if channels_to_highlight:
+                        self._manage_highlight_channels(channels_to_highlight)
+                
+                # 应用高亮（如果plotter支持）
+                if hasattr(plotter, 'highlight_best_channels'):
+                    best_channels_list = [ch for ch, ratio in current_best_channels[:self.breathing_adaptive_top_n]] if current_best_channels else []
+                    plotter.highlight_best_channels(
+                        best_channels=best_channels_list,
+                        current_channel=current_channel,
+                        highlight_mode=highlight_mode
+                    )
         
         # 注意：按钮颜色更新现在由视图变化信号自动触发（_on_plot_view_changed）
         # 这里不再需要手动检查，因为视图变化时会立即触发更新
