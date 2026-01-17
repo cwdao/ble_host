@@ -480,7 +480,7 @@ class BLEHostGUI(QMainWindow):
         # 信道选择
         channel_layout = QHBoxLayout()
         channel_label = QLabel("Channel:")
-        channel_label.setToolTip("选择用于呼吸估计的信道（方向估计帧模式下自动使用当前帧的信道）")
+        channel_label.setToolTip("选择用于呼吸估计的信道\n（方向估计帧模式下会自动使用当前帧的信道）")
         channel_label.installEventFilter(ToolTipFilter(channel_label, 0, ToolTipPosition.TOP))
         channel_layout.addWidget(channel_label)
         self.breathing_channel_combo = QComboBox()
@@ -490,19 +490,20 @@ class BLEHostGUI(QMainWindow):
         channel_layout.addWidget(self.breathing_channel_combo)
         # 自适应checkbox（方向估计帧模式下禁用）
         self.breathing_adaptive_manual_checkbox = QCheckBox("自适应")
-        self.breathing_adaptive_manual_checkbox.setToolTip("启用后，信道呼吸能量计算功能将接管信道选择（方向估计帧模式下不可用）")
+        self.breathing_adaptive_manual_checkbox.setToolTip("启用后，信道呼吸能量计算功能将接管信道选择（方向估计帧模式下不可用）\n需要先开启“特殊功能-信道呼吸能量计算”。")
         self.breathing_adaptive_manual_checkbox.setChecked(self.breathing_adaptive_manual_control)
         # 默认禁用，只有在开启"启用信道的呼吸能量计算"后才启用（一开始上电时强制禁用）
         # 注意：即使config中breathing_adaptive_enabled为True，一开始也要禁用，只有用户手动开启后才启用
-        self.breathing_adaptive_manual_checkbox.setEnabled(False)
         self.breathing_adaptive_manual_checkbox.stateChanged.connect(self._on_adaptive_manual_changed)
         channel_layout.addWidget(self.breathing_adaptive_manual_checkbox)
+        # 根据状态变量设置初始启用状态（不依赖对话框checkbox）
+        self._update_adaptive_checkbox_state()
         basic_layout.addLayout(channel_layout)
         
         # 手动切换到最佳信道按钮
         manual_select_layout = QHBoxLayout()
         self.breathing_manual_select_btn = QPushButton("手动切换到最佳信道")
-        self.breathing_manual_select_btn.setToolTip("手动触发一次信道切换。需要先启用'启用信道的呼吸能量计算'，且未勾选'自适应'和'在最高能量信道上执行呼吸监测'。点击后会切换到能量最高的信道并驻留，即使低能量超时也不会自动切换。")
+        self.breathing_manual_select_btn.setToolTip("手动触发一次信道切换。\n需要先启用'启用信道的呼吸能量计算'，且未勾选'自适应'和'在最高能量信道上执行呼吸监测'。\n点击后会切换到能量最高的信道并驻留，即使低能量超时也不会自动切换。")
         self.breathing_manual_select_btn.clicked.connect(self._on_manual_select_best_channel)
         # 默认禁用，只有在开启"启用信道的呼吸能量计算"后才按原有逻辑启用
         self._update_manual_select_btn_state()
@@ -1822,11 +1823,8 @@ class BLEHostGUI(QMainWindow):
         except (RuntimeError, AttributeError):
             # 对话框已关闭，控件已被销毁，忽略错误
             pass
-        # 更新"自适应"checkbox的启用状态（只有在开启能量计算后才启用）
-        if hasattr(self, 'breathing_adaptive_manual_checkbox'):
-            self.breathing_adaptive_manual_checkbox.setEnabled(
-                enabled and not self.is_direction_estimation_mode
-            )
+        # 更新"自适应"checkbox的启用状态（使用状态变量，不依赖对话框checkbox）
+        self._update_adaptive_checkbox_state()
         # 更新手动选择按钮的状态
         self._update_manual_select_btn_state()
     
@@ -2228,6 +2226,9 @@ class BLEHostGUI(QMainWindow):
         self.is_direction_estimation_mode = (self.frame_type == "方向估计帧")
         
         self.logger.info(f"帧类型已设置为: {self.frame_type}, 方向估计模式: {self.is_direction_estimation_mode}")
+        
+        # 更新自适应checkbox状态（因为is_direction_estimation_mode会影响其启用状态）
+        self._update_adaptive_checkbox_state()
         
         # 根据帧类型更新呼吸估计器的默认参数
         if hasattr(self, 'breathing_estimator'):
@@ -3565,11 +3566,11 @@ class BLEHostGUI(QMainWindow):
             # 在文件加载模式下禁用自适应功能
             if hasattr(self, 'breathing_adaptive_btn'):
                 self.breathing_adaptive_btn.setEnabled(False)
-            if hasattr(self, 'breathing_adaptive_manual_checkbox'):
-                self.breathing_adaptive_manual_checkbox.setEnabled(False)
             # 禁用自适应功能
             self.breathing_adaptive_enabled = False
             self.breathing_adaptive_manual_control = False
+            # 使用状态变量更新checkbox状态
+            self._update_adaptive_checkbox_state()
             self._update_channel_combo_enabled()
             
             # 根据文件中的frame_type自动设置模式
@@ -3749,8 +3750,8 @@ class BLEHostGUI(QMainWindow):
         # 恢复自适应功能按钮的启用状态
         if hasattr(self, 'breathing_adaptive_btn'):
             self.breathing_adaptive_btn.setEnabled(True)
-        if hasattr(self, 'breathing_adaptive_manual_checkbox'):
-            self.breathing_adaptive_manual_checkbox.setEnabled(True)
+        # 使用状态变量更新checkbox状态（考虑breathing_adaptive_enabled和is_direction_estimation_mode）
+        self._update_adaptive_checkbox_state()
         
         # 更新文件加载tab状态（取消加载后，启用文件选择，禁用时间窗控制）
         self._update_load_tab_state()
@@ -4329,8 +4330,8 @@ class BLEHostGUI(QMainWindow):
             # 禁用信道选择和自适应功能
             if hasattr(self, 'breathing_channel_combo'):
                 self.breathing_channel_combo.setEnabled(False)
-            if hasattr(self, 'breathing_adaptive_manual_checkbox'):
-                self.breathing_adaptive_manual_checkbox.setEnabled(False)
+            # 使用状态变量更新checkbox状态（考虑breathing_adaptive_enabled和is_direction_estimation_mode）
+            self._update_adaptive_checkbox_state()
         else:
             # 信道探测帧模式：恢复所有选项和功能
             if hasattr(self, 'breathing_data_type_combo'):
@@ -4344,8 +4345,8 @@ class BLEHostGUI(QMainWindow):
             # 启用信道选择和自适应功能
             if hasattr(self, 'breathing_channel_combo'):
                 self.breathing_channel_combo.setEnabled(True)
-            if hasattr(self, 'breathing_adaptive_manual_checkbox'):
-                self.breathing_adaptive_manual_checkbox.setEnabled(True)
+            # 使用状态变量更新checkbox状态（考虑breathing_adaptive_enabled和is_direction_estimation_mode）
+            self._update_adaptive_checkbox_state()
         
         self.logger.info(f"已根据帧类型 '{self.frame_type}' 更新呼吸估计参数UI")
     
@@ -5231,6 +5232,18 @@ class BLEHostGUI(QMainWindow):
         self._update_channel_combo_enabled()
         # 更新手动选择按钮的状态
         self._update_manual_select_btn_state()
+    
+    def _update_adaptive_checkbox_state(self):
+        """更新自适应checkbox的启用状态（基于状态变量，不依赖对话框checkbox）"""
+        if not hasattr(self, 'breathing_adaptive_manual_checkbox'):
+            return
+        
+        # checkbox启用条件：
+        # 1. 启用了"启用信道的呼吸能量计算"（使用状态变量breathing_adaptive_enabled）
+        # 2. 不是方向估计帧模式
+        enabled = (self.breathing_adaptive_enabled and 
+                  not self.is_direction_estimation_mode)
+        self.breathing_adaptive_manual_checkbox.setEnabled(enabled)
     
     def _update_manual_select_btn_state(self):
         """更新手动切换到最佳信道按钮的启用状态"""
