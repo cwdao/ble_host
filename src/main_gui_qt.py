@@ -2,6 +2,34 @@
 # -*- coding: utf-8 -*-
 """
 BLE Host上位机主程序 - PySide6 版本
+
+这是BLE Host上位机的核心GUI模块，基于PySide6（Qt for Python）开发。
+
+主要功能：
+1. 串口通信：连接BLE设备，接收实时数据
+2. 数据解析：解析CS（信道探测）和DF（方向估计）两种帧格式
+3. 数据可视化：实时显示幅值、相位、I/Q分量等数据
+4. 呼吸估计：实时分析呼吸频率和能量
+5. 数据保存：保存数据到JSON/JSONL文件
+6. 数据加载：从文件加载历史数据进行分析
+7. 命令发送：向设备发送控制命令
+8. 主题切换：支持浅色/深色/自动主题
+
+架构说明：
+- 核心类：BLEHostGUI（QMainWindow的子类）
+- 数据流：串口 -> SerialReader -> DataParser -> DataProcessor -> Plotter -> GUI
+- 模块耦合：由于功能模块间高度耦合，所有功能集中在一个类中
+- 代码规模：约6900行，162个方法
+
+性能优化：
+- 批量处理：每次最多处理20条数据
+- 节流更新：累积一定帧数后才更新绘图
+- 队列监控：队列积压时发出警告
+- 异步保存：数据保存在后台线程执行
+
+版本信息：
+- 当前版本：v3.7.0+
+- 支持格式：JSON（加载）、JSONL（保存和加载）
 """
 import sys
 import os
@@ -92,149 +120,221 @@ _app_font_size = 10
 
 
 class BLEHostGUI(QMainWindow):
-    """主GUI应用程序 - PySide6 版本"""
+    """
+    BLE Host 上位机主GUI应用程序 - PySide6 版本
     
+    这是整个应用程序的核心控制器类，负责协调所有功能模块：
+    - 串口通信：通过 SerialReader 读取串口数据
+    - 数据解析：通过 DataParser 解析帧数据
+    - 数据处理：通过 DataProcessor 存储和查询数据
+    - 数据可视化：通过多个 Plotter 实例绘制图表
+    - 呼吸估计：通过 BreathingEstimator 进行呼吸频率分析
+    - 数据保存：通过 DataSaver 保存数据到文件
+    - 命令发送：通过 CommandSender 发送命令到设备
+    
+    主要功能模块：
+    1. 连接管理：串口连接/断开、端口选择
+    2. 数据采集：实时接收、解析、存储串口数据
+    3. 数据可视化：多个选项卡显示幅值、相位、I/Q分量等
+    4. 呼吸估计：实时呼吸频率检测和分析
+    5. 数据保存：保存当前数据或历史数据到JSON/JSONL文件
+    6. 数据加载：从文件加载历史数据进行分析
+    7. 命令发送：向设备发送控制命令
+    8. 主题切换：支持浅色/深色/自动主题
+    
+    数据流：
+    串口数据 -> SerialReader -> DataParser -> DataProcessor -> Plotter -> GUI显示
+                                                      |
+                                                      v
+                                              BreathingEstimator -> 呼吸估计结果
+    
+    架构说明：
+    由于功能模块之间高度耦合（共享大量状态变量），所有功能都集中在这个类中。
+    虽然代码量较大（6900+行），但模块间通过共享状态变量进行通信，拆分成本较高。
+    """
+    
+    # ==================== Qt信号定义 ====================
     # 定义信号，用于从后台线程通知主线程更新UI
-    save_status_update_signal = Signal(str, str)  # text, color_style
-    save_success_signal = Signal(int, str)  # frame_count, filename
-    save_error_signal = Signal(str)  # error_msg
+    # 这些信号在数据保存的异步操作中使用
+    save_status_update_signal = Signal(str, str)  # (text, color_style) - 保存状态更新
+    save_success_signal = Signal(int, str)  # (frame_count, filename) - 保存成功
+    save_error_signal = Signal(str)  # (error_msg) - 保存失败
     
     def __init__(self):
+        """
+        初始化BLEHostGUI主窗口
+        
+        初始化流程：
+        1. 设置窗口基本属性（标题、大小）
+        2. 初始化日志系统
+        3. 创建核心业务模块实例
+        4. 初始化状态变量
+        5. 创建GUI界面
+        6. 启动数据更新循环和呼吸估计定时器
+        """
         super().__init__()
         
-        # 连接信号到槽函数
+        # ==================== 信号连接 ====================
+        # 连接信号到槽函数，用于异步操作（如数据保存）完成后更新UI
         self.save_status_update_signal.connect(self._on_save_status_update)
         self.save_success_signal.connect(self._on_save_success)
         self.save_error_signal.connect(self._on_save_error)
         
+        # ==================== 窗口基本设置 ====================
         # 设置窗口标题
         self.setWindowTitle(f"BLE CS Host v{__version__}")
         
         # 设置窗口大小
         self.resize(config.base_window_width, config.base_window_height)
         
-        # 设置日志
+        # ==================== 日志系统初始化 ====================
+        # 设置日志（输出到控制台和文件）
         self._setup_logging()
         
-        # 初始化组件
-        self.serial_reader = None
-        self.data_parser = DataParser()
-        self.data_processor = DataProcessor()
-        self.data_saver = DataSaver()
-        self.command_sender = CommandSender()
+        # ==================== 核心业务模块初始化 ====================
+        # 初始化组件（这些模块负责核心业务逻辑）
+        self.serial_reader = None  # 串口读取器（连接时创建）
+        self.data_parser = DataParser()  # 数据解析器（解析CS/DF帧格式）
+        self.data_processor = DataProcessor()  # 数据处理器（存储和查询帧数据）
+        self.data_saver = DataSaver()  # 数据保存器（保存数据到文件）
+        self.command_sender = CommandSender()  # 命令发送器（发送命令到设备）
         
-        # 多个绘图器（用于不同选项卡）
+        # ==================== 绘图器管理 ====================
+        # 多个绘图器（用于不同选项卡：幅值、相位、I分量、Q分量等）
+        # 结构：{tab_key: {'plotter': Plotter实例, 'data_type': 'amplitude'|'phase'|'I'|'Q', ...}}
         self.plotters = {}
         
+        # ==================== 连接和运行状态控制 ====================
         # 控制变量
-        self.is_running = False
-        self.update_thread = None
-        self.stop_event = threading.Event()
-        self.is_saving = False
-        self.use_auto_save = user_settings.get_use_auto_save_path()
+        self.is_running = False  # 是否正在运行（串口是否已连接）
+        self.update_thread = None  # 数据更新线程（已废弃，现使用QTimer）
+        self.stop_event = threading.Event()  # 停止事件（用于线程同步）
+        self.is_saving = False  # 是否正在保存数据（防止重复保存）
+        self.use_auto_save = user_settings.get_use_auto_save_path()  # 是否使用自动保存路径
         
-        # 记录相关变量
-        self.is_recording = False  # 是否正在记录JSONL
+        # ==================== 数据记录相关 ====================
+        # 记录相关变量（JSONL格式的实时记录功能）
+        self.is_recording = False  # 是否正在记录JSONL（实时追加模式）
         self.current_log_path = None  # 当前日志文件路径
-        self.auto_start_recording_enabled = user_settings.get_auto_start_recording()
+        self.auto_start_recording_enabled = user_settings.get_auto_start_recording()  # 是否自动开始记录
         
-        # 绘图刷新节流控制
-        self.last_plot_refresh_time = 0
+        # ==================== 性能优化控制 ====================
+        # 绘图刷新节流控制（避免频繁刷新导致GUI卡顿）
+        self.last_plot_refresh_time = 0  # 上次刷新时间戳
         self.plot_refresh_interval = 0.2  # 最多每200ms刷新一次
         
-        # 批量处理控制
-        self.max_batch_size = 20  # 每次最多处理的数据条数
-        self.last_queue_warning_time = 0
-        self.queue_warning_interval = 5.0  # 队列警告间隔（秒）
+        # 批量处理控制（提高数据处理效率）
+        self.max_batch_size = 20  # 每次最多处理的数据条数（从队列中批量取出）
+        self.last_queue_warning_time = 0  # 上次队列警告时间
+        self.queue_warning_interval = 5.0  # 队列警告间隔（秒，避免频繁警告）
         
-        # 绘图更新优化：累积一定数量的帧后再更新
-        self.pending_plot_update = False  # 是否有待更新的绘图
+        # 绘图更新优化：累积一定数量的帧后再更新（减少绘图频率，提高性能）
+        self.pending_plot_update = False  # 是否有待更新的绘图（队列积压时使用）
         self.frames_since_last_plot = 0  # 自上次绘图更新后处理的帧数
         self.min_frames_before_plot_update = 1  # 至少处理多少帧后才更新绘图（可调整）
         
+        # ==================== 呼吸估计相关状态 ====================
         # 呼吸信道列表初始化标志
-        self.breathing_channels_initialized = False  # 是否已初始化呼吸信道列表
+        self.breathing_channels_initialized = False  # 是否已初始化呼吸信道列表（下拉框）
         self.last_breathing_channel = None  # 上一次呼吸估计使用的信道（用于检测信道变化）
         
-        # 帧数据处理
-        self.frame_type = config.default_frame_type
-        self.frame_mode = (self.frame_type == "信道探测帧" or self.frame_type == "方向估计帧")
-        self.is_direction_estimation_mode = (self.frame_type == "方向估计帧")
-        # 使用默认配置解析显示信道列表（临时使用，稍后在_apply_frame_settings中会正确设置）
-        self.display_channel_list = []
-        # 根据帧类型设置默认显示帧数
-        if self.is_direction_estimation_mode:
-            self.display_max_frames = config.df_default_display_max_frames
-        else:
-            self.display_max_frames = config.default_display_max_frames
+        # ==================== 帧数据处理配置 ====================
+        # 帧类型和模式设置
+        self.frame_type = config.default_frame_type  # 当前帧类型（"信道探测帧"或"方向估计帧"）
+        self.frame_mode = (self.frame_type == "信道探测帧" or self.frame_type == "方向估计帧")  # 是否为帧模式
+        self.is_direction_estimation_mode = (self.frame_type == "方向估计帧")  # 是否为方向估计帧模式（DF模式）
         
-        # 加载模式相关
-        self.is_loaded_mode = False
-        self.loaded_frames = []
-        self.loaded_file_info = None
-        self.current_window_start = 0
+        # 显示信道配置
+        # 使用默认配置解析显示信道列表（临时使用，稍后在_apply_frame_settings中会正确设置）
+        self.display_channel_list = []  # 当前要显示的信道列表（从用户输入解析得到）
+        
+        # 根据帧类型设置默认显示帧数（方向估计帧需要更多帧数）
+        if self.is_direction_estimation_mode:
+            self.display_max_frames = config.df_default_display_max_frames  # DF模式默认帧数（通常1000）
+        else:
+            self.display_max_frames = config.default_display_max_frames  # CS模式默认帧数（通常100）
+        
+        # ==================== 文件加载模式相关 ====================
+        # 加载模式相关（从文件加载历史数据进行分析）
+        self.is_loaded_mode = False  # 是否处于加载模式（加载文件后进入此模式）
+        self.loaded_frames = []  # 从文件加载的帧数据列表
+        self.loaded_file_info = None  # 加载的文件信息（文件名、帧数等）
+        self.current_window_start = 0  # 当前时间窗的起始位置（用于滑动窗口分析）
+        
+        # ==================== 呼吸估计器初始化 ====================
         # 根据当前帧类型初始化呼吸估计器（从config加载默认参数）
         self.breathing_estimator = BreathingEstimator(frame_type=self.frame_type)
         
-        # 设置数据访问接口
+        # 设置数据访问接口（BreathingEstimator通过此接口访问数据）
         self.breathing_estimator.set_data_accessor(self._breathing_data_accessor)
         
-        # 主题模式
-        self.current_theme_mode = "light"  # auto, light, dark（默认浅色模式）
+        # ==================== 主题模式设置 ====================
+        # 主题模式（auto: 跟随系统, light: 浅色, dark: 深色）
+        self.current_theme_mode = "light"  # 默认浅色模式
         
-        # 实时呼吸估计相关
-        self.breathing_update_interval = config.breathing_default_update_interval  # 从config加载默认值
-        self.breathing_update_timer = None
-        self.last_breathing_update_time = 0
+        # ==================== 实时呼吸估计定时器 ====================
+        # 实时呼吸估计相关（定时更新呼吸估计结果）
+        self.breathing_update_interval = config.breathing_default_update_interval  # 更新间隔（从config加载默认值）
+        self.breathing_update_timer = None  # 呼吸估计定时器（QTimer实例）
+        self.last_breathing_update_time = 0  # 上次更新时间戳
         
+        # ==================== 自适应信道选择相关 ====================
         # 信道呼吸能量计算相关（从config加载默认值）
         # 注意：breathing_adaptive_enabled从config加载，但"自适应"checkbox和"手动切换到最佳信道"按钮
         # 在一开始上电时都默认禁用，只有用户手动开启了"启用信道的呼吸能量计算"后才启用
-        self.breathing_adaptive_enabled = config.breathing_adaptive_enabled
-        self.breathing_adaptive_top_n = config.breathing_adaptive_top_n
+        self.breathing_adaptive_enabled = config.breathing_adaptive_enabled  # 是否启用信道能量计算
+        self.breathing_adaptive_top_n = config.breathing_adaptive_top_n  # 显示前N个最高能量信道
+        
         # 兼容旧配置：如果breathing_adaptive_highlight是bool类型，转换为字符串
         highlight_mode = config.breathing_adaptive_highlight
         if isinstance(highlight_mode, bool):
             self.breathing_adaptive_highlight = "best" if highlight_mode else "none"
         else:
-            self.breathing_adaptive_highlight = highlight_mode
-        self.breathing_adaptive_auto_switch = config.breathing_adaptive_auto_switch
-        self.breathing_adaptive_only_display_channels = config.breathing_adaptive_only_display_channels
-        self.breathing_adaptive_manual_control = False  # 是否启用自适应（在channel旁边）
+            self.breathing_adaptive_highlight = highlight_mode  # "none"|"current"|"best"|"both"
+        
+        self.breathing_adaptive_auto_switch = config.breathing_adaptive_auto_switch  # 是否自动切换到最佳信道
+        self.breathing_adaptive_only_display_channels = config.breathing_adaptive_only_display_channels  # 是否只在显示信道范围内选取
+        
+        # 自适应控制状态
+        self.breathing_adaptive_manual_control = False  # 是否启用自适应（在channel旁边的checkbox）
         self.manual_select_triggered = False  # 是否手动触发了信道切换（临时标志，用于单次调用）
         self.manual_select_mode = False  # 是否处于手动选择模式（持续标志，用于后续调用）
         self.manual_selected_channel = None  # 手动选择的信道（用于防止自动切换）
+        
         # 注意：adaptive_selected_channel、current_best_channels、adaptive_low_energy_start_time
         # 现在由BreathingEstimator管理，这里只保留引用以便GUI访问
-        self.adaptive_low_energy_threshold = config.breathing_adaptive_low_energy_threshold
+        self.adaptive_low_energy_threshold = config.breathing_adaptive_low_energy_threshold  # 低能量阈值
         
-        # 清除数据长按相关
+        # ==================== UI交互控制 ====================
+        # 清除数据长按相关（防止误操作，需要长按2秒）
         self.clear_data_hold_duration = 2.0  # 需要按住2秒
-        self.clear_data_progress_timer = None
-        self.clear_data_progress_value = 0
-        self.is_holding_clear_btn = False
+        self.clear_data_progress_timer = None  # 进度条定时器
+        self.clear_data_progress_value = 0  # 进度条当前值（0-100）
+        self.is_holding_clear_btn = False  # 是否正在按住清除按钮
         
-        # 停止记录长按相关
+        # 停止记录长按相关（防止误操作，需要长按1秒）
         self.stop_recording_hold_duration = 1.0  # 需要按住1秒
-        self.stop_recording_progress_timer = None
-        self.stop_recording_progress_value = 0
-        self.is_holding_stop_recording_btn = False
+        self.stop_recording_progress_timer = None  # 进度条定时器
+        self.stop_recording_progress_value = 0  # 进度条当前值（0-100）
+        self.is_holding_stop_recording_btn = False  # 是否正在按住停止记录按钮
         
-        # 显示控制相关（默认都显示）
-        self.show_log = True
-        self.show_version_info = True
-        self.show_toolbar = True
-        self.show_breathing_control = True
-        self.show_send_command = True
+        # 显示控制相关（控制右侧面板各组件的显示/隐藏，默认都显示）
+        self.show_log = True  # 是否显示日志面板
+        self.show_version_info = True  # 是否显示版本信息
+        self.show_toolbar = True  # 是否显示工具栏
+        self.show_breathing_control = True  # 是否显示呼吸控制面板
+        self.show_send_command = True  # 是否显示命令发送面板
         
-        # 时间窗滑动条按钮长按相关
-        self.slider_button_timer = None
-        self.is_holding_slider_btn = False
-        self.slider_button_direction = None  # 'left' or 'right'
+        # 时间窗滑动条按钮长按相关（用于快速滑动时间窗）
+        self.slider_button_timer = None  # 长按定时器
+        self.is_holding_slider_btn = False  # 是否正在按住滑动条按钮
+        self.slider_button_direction = None  # 滑动方向：'left'（向前）或 'right'（向后）
         
-        # 创建界面
+        # ==================== GUI界面创建 ====================
+        # 创建界面（创建所有选项卡、控件、布局等）
         self._create_widgets()
         
+        # ==================== 初始化配置应用 ====================
         # 应用默认设置（初始化显示信道）
         if self.frame_mode:
             # 先设置默认值
@@ -249,13 +349,17 @@ class BLEHostGUI(QMainWindow):
         # 注意：这里不调用 _on_theme_mode_changed，因为界面还没创建完成
         # 主题会在 _create_settings_tab 中统一初始化
         
+        # ==================== 启动定时器和循环 ====================
         # 定时刷新（使用 QTimer 替代 threading）
+        # 这个定时器会定期调用 _update_data() 来处理串口数据
         self._start_update_loop()
         
         # 启动实时呼吸估计定时器
+        # 这个定时器会定期调用 _update_realtime_breathing_estimation() 来更新呼吸估计结果
         self._start_realtime_breathing_estimation()
         
         # 监听系统主题变化（如果支持）
+        # 当系统主题改变时，自动切换应用主题（如果设置为"auto"模式）
         try:
             from PySide6.QtGui import QGuiApplication
             app = QGuiApplication.instance()
@@ -297,7 +401,22 @@ class BLEHostGUI(QMainWindow):
         self.logger.info(f"日志文件: {log_filename}")
     
     def _create_widgets(self):
-        """创建GUI组件"""
+        """
+        创建GUI组件
+        
+        这是GUI初始化的核心方法，负责创建所有界面元素：
+        1. 菜单栏（文件、视图、帮助等）
+        2. 连接状态栏（顶部显示连接状态和保存状态）
+        3. 配置选项卡区域（连接、信道配置、数据保存、文件加载、特殊功能、设置）
+        4. 绘图选项卡区域（幅值、相位、I/Q分量等）
+        5. 右侧面板（工具栏、日志、版本信息）
+        
+        布局结构：
+        - 顶部：连接状态栏
+        - 中间左侧：配置选项卡
+        - 中间右侧：绘图选项卡（左侧）+ 右侧面板（右侧）
+        - 右侧面板：工具栏（呼吸控制、命令发送）+ 日志 + 版本信息
+        """
         # 创建菜单栏
         self._create_menu_bar()
         
@@ -2274,7 +2393,25 @@ class BLEHostGUI(QMainWindow):
         )
     
     def _toggle_connection(self):
-        """切换连接状态"""
+        """
+        切换连接状态（连接/断开串口）
+        
+        功能：
+        1. 如果未连接：打开串口连接对话框，选择端口并连接
+        2. 如果已连接：断开当前连接
+        
+        连接流程：
+        - 获取用户选择的串口端口和波特率
+        - 创建 SerialReader 实例
+        - 启动串口读取线程
+        - 更新UI状态（按钮文本、状态标签等）
+        
+        断开流程：
+        - 停止串口读取线程
+        - 关闭串口连接
+        - 清理 SerialReader 实例
+        - 更新UI状态
+        """
         if not self.is_running:
             # 连接
             # 检查是否在加载模式（连接和加载互斥）
@@ -2483,13 +2620,37 @@ class BLEHostGUI(QMainWindow):
             self._update_frame_plots('amplitude')
     
     def _start_update_loop(self):
-        """启动更新循环（使用 QTimer）"""
+        """
+        启动数据更新循环（使用 QTimer）
+        
+        创建一个定时器，定期调用 _update_data() 来处理串口数据。
+        使用 QTimer 而不是线程，确保所有UI更新都在主线程中进行。
+        """
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self._update_data)
         self.update_timer.start(int(config.update_interval_sec * 1000))  # 转换为毫秒
     
     def _update_data(self):
-        """更新数据（在主线程中调用，批量处理队列数据）"""
+        """
+        更新数据（在主线程中调用，批量处理队列数据）
+        
+        这是数据处理的核心方法，负责：
+        1. 从串口队列批量获取数据（每次最多处理 max_batch_size 条）
+        2. 解析数据（通过 DataParser）
+        3. 存储数据（通过 DataProcessor）
+        4. 检测命令反馈（通过 CommandSender）
+        5. 处理信道切换（DF模式）
+        6. 更新绘图（通过 _update_frame_plots）
+        7. 更新实时滤波波形（通过 _update_realtime_filtered_signal）
+        
+        数据流：
+        串口队列 -> 批量获取 -> 解析 -> 存储 -> 更新绘图
+        
+        性能优化：
+        - 批量处理：每次最多处理 max_batch_size 条数据
+        - 节流更新：累积一定帧数后才更新绘图
+        - 队列监控：队列积压过多时发出警告
+        """
         if not self.is_running or not self.serial_reader:
             return
         
@@ -2519,24 +2680,31 @@ class BLEHostGUI(QMainWindow):
         frames_processed = 0
         has_new_frame = False
         
-        # 批量处理数据
+        # ==================== 批量处理数据 ====================
+        # 遍历批量获取的数据，逐个处理
         for data in data_batch:
+            # ==================== 命令反馈检测 ====================
             # 检查是否是命令反馈（$OK, $ERR, $EVT）
             # 在帧数据解析之前检查，但反馈识别不影响帧数据处理
+            # 命令反馈和帧数据可以同时存在（设备可能同时发送反馈和帧数据）
             if data.get('text'):
                 response = self.command_sender.parse_response(data['text'])
                 if response:
-                    # 是命令反馈，添加到交互历史
+                    # 是命令反馈，添加到交互历史（显示在命令发送选项卡中）
                     if hasattr(self, 'command_history'):
                         self._add_response_to_history(response)
                     # 反馈识别后继续处理其他数据（如帧数据）
             
+            # ==================== 帧数据处理 ====================
             # 如果是帧模式，优先处理帧数据
             if self.frame_mode:
                 # 解析数据（会更新内部状态，累积IQ数据）
+                # CS模式：多行数据，需要累积到检测到帧尾
+                # DF模式：单行数据，每行就是一个完整帧
                 parsed = self.data_parser.parse(data['text'])
                 
                 # 如果parse返回了完成的帧（检测到帧尾时完成，或方向估计帧单行完成）
+                # parsed['frame'] = True 表示这是一个完整的帧
                 if parsed and parsed.get('frame'):
                     frame_data = parsed
                     if len(frame_data.get('channels', {})) > 0:
@@ -2558,17 +2726,23 @@ class BLEHostGUI(QMainWindow):
                                     f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
                                 )
                         
-                        # 添加帧数据，DF模式需要检测信道变化
+                        # ==================== 存储帧数据 ====================
+                        # 添加帧数据到 DataProcessor 的缓冲区
+                        # DF模式：detect_channel_change=True，会自动检测信道变化并清空新信道的数据
+                        # CS模式：detect_channel_change=False，不检测信道变化
                         cleared_channels = self.data_processor.add_frame_data(
                             frame_data, 
                             detect_channel_change=self.is_direction_estimation_mode
                         )
                         
-                        # 如果正在记录，自动追加帧到日志
+                        # ==================== 实时记录 ====================
+                        # 如果正在记录JSONL，自动追加帧到日志文件（后台线程写入）
                         if self.is_recording and self.data_saver.log_writer and self.data_saver.log_writer.is_running:
                             self.data_saver.append_frame_to_log(frame_data)
                         
+                        # ==================== 信道切换处理（DF模式） ====================
                         # 如果检测到信道变化并清空了数据，需要重置呼吸估计状态
+                        # cleared_channels 是 (old_channels, new_channels) 元组，或 None
                         if cleared_channels and self.is_direction_estimation_mode:
                             # cleared_channels 是 (old_channels, new_channels) 元组
                             if isinstance(cleared_channels, tuple) and len(cleared_channels) == 2:
@@ -2653,27 +2827,37 @@ class BLEHostGUI(QMainWindow):
                 self.data_processor.add_data(data['timestamp'], parsed)
                 has_new_frame = True
         
-        # 批量处理完成后，统一更新绘图（避免每处理一条数据就更新一次）
+        # ==================== 批量处理完成后的统一更新 ====================
+        # 批量处理完成后，统一更新绘图（避免每处理一条数据就更新一次，提高性能）
         if has_new_frame:
             if self.frame_mode:
-                # 实时更新滤波波形（不需要等待时间窗）
+                # ==================== 实时滤波波形更新 ====================
+                # 实时更新滤波波形（不需要等待时间窗，只要有新数据就更新）
+                # 这个更新很快，不会影响性能
                 self._update_realtime_filtered_signal()
                 
+                # ==================== 绘图更新优化 ====================
                 # 帧模式：累积帧数，达到阈值或队列积压较多时才更新绘图
+                # 这样可以减少绘图频率，提高性能
                 self.frames_since_last_plot += frames_processed
                 queue_size = self.serial_reader.get_queue_size()
                 
                 # 如果累积了足够多的帧，或者队列积压较多，则更新绘图
+                # 策略：
+                # 1. 正常情况：累积 min_frames_before_plot_update 帧后更新
+                # 2. 队列积压：队列积压超过50条时强制更新（避免延迟过大）
                 should_update_plot = (
                     self.frames_since_last_plot >= self.min_frames_before_plot_update or
                     queue_size > 50  # 队列积压超过50条时强制更新
                 )
                 
                 if should_update_plot:
+                    # 更新所有绘图选项卡（只更新当前打开的选项卡，性能优化）
                     self._update_frame_plots()
                     self.frames_since_last_plot = 0
                     self.pending_plot_update = False
                 else:
+                    # 标记有待更新的绘图（下次循环时处理）
                     self.pending_plot_update = True
             else:
                 # 非帧模式：更新绘图
@@ -2932,7 +3116,29 @@ class BLEHostGUI(QMainWindow):
         self.logger.info(f"自动保存路径: {'启用' if checked else '禁用'}")
     
     def _save_data(self):
-        """统一的保存数据方法"""
+        """
+        统一的保存数据方法
+        
+        根据用户选择保存所有数据或最近N帧数据到文件。
+        
+        保存模式：
+        1. 保存所有数据：保存 DataProcessor 中的所有帧数据
+        2. 保存最近N帧：只保存最近N帧数据（N由用户输入）
+        
+        文件格式：
+        - JSONL格式（v3.6.0+）：增量写入，支持实时追加
+        - JSON格式（已弃用）：v3.7.0+不再支持新保存，但仍支持加载
+        
+        保存流程：
+        1. 检查是否有数据可保存
+        2. 选择保存路径（如果未设置自动保存路径）
+        3. 在后台线程中执行保存操作（避免阻塞UI）
+        4. 通过信号通知主线程更新保存状态
+        
+        注意：
+        - 保存操作在后台线程执行，不会阻塞UI
+        - 保存过程中会显示进度提示
+        """
         if self.save_all_radio.isChecked():
             self._save_all_frames()
         else:
@@ -3144,7 +3350,28 @@ class BLEHostGUI(QMainWindow):
         self.logger.info(f"自动开始记录: {'启用' if checked else '禁用'}")
     
     def _start_recording(self):
-        """开始记录JSONL"""
+        """
+        开始记录JSONL（实时追加模式）
+        
+        功能：
+        1. 创建JSONL日志文件（带时间戳）
+        2. 启动后台写入线程（LogWriter）
+        3. 开始实时追加帧数据到日志文件
+        
+        记录模式：
+        - 实时追加：每收到一帧数据就追加到文件（通过队列异步写入）
+        - 支持事件标记：可以手动标记事件点
+        - 自动停止：断开连接时自动停止记录
+        
+        文件格式：
+        - JSONL格式：每行一个JSON对象
+        - 包含meta、frame、event、end四种记录类型
+        
+        注意：
+        - 记录过程中会显示当前日志文件路径
+        - 断开连接时会自动停止记录
+        - 可以手动停止记录（需要长按停止按钮）
+        """
         if not self.frame_mode:
             InfoBarHelper.warning(
                 self,
@@ -3664,7 +3891,30 @@ class BLEHostGUI(QMainWindow):
             self._load_file()
     
     def _load_file(self):
-        """加载文件"""
+        """
+        加载文件（从JSON/JSONL文件加载历史数据）
+        
+        功能：
+        1. 选择要加载的文件（JSON或JSONL格式）
+        2. 解析文件内容（自动检测格式）
+        3. 进入加载模式（is_loaded_mode = True）
+        4. 显示加载的数据信息
+        
+        加载模式：
+        - 加载模式与实时模式互斥（加载时不能连接串口）
+        - 支持滑动时间窗分析（通过滑动条选择时间范围）
+        - 支持呼吸估计分析（使用加载的数据）
+        - 支持能量计算（显示各信道的能量信息）
+        
+        支持的文件格式：
+        - JSON格式（旧版）：完整加载到内存
+        - JSONL格式（新版）：流式加载，支持大文件
+        
+        数据使用：
+        - 加载的数据存储在 loaded_frames 列表中
+        - 通过滑动条选择时间窗范围
+        - 时间窗数据用于绘图和呼吸估计分析
+        """
         # 检查是否已连接（连接和加载互斥）
         if self.is_running:
             InfoBarHelper.warning(
@@ -5627,7 +5877,32 @@ class BLEHostGUI(QMainWindow):
             self.breathing_channel_combo.setEnabled(True)
     
     def _update_realtime_breathing_estimation(self):
-        """更新实时呼吸估计（使用最近X帧数据）"""
+        """
+        更新实时呼吸估计（使用最近X帧数据）
+        
+        这是呼吸估计的核心方法，负责：
+        1. 检查数据是否积累到足够的帧数（display_max_frames）
+        2. 处理信道选择（自动/手动/自适应）
+        3. 获取信号数据（从 DataProcessor）
+        4. 进行信号处理（滤波、FFT等，通过 BreathingEstimator）
+        5. 检测呼吸（能量比例计算）
+        6. 更新结果显示和绘图
+        
+        信道选择逻辑：
+        - DF模式：自动使用当前帧的实际信道
+        - CS模式（自适应启用）：根据能量自动选择最佳信道
+        - CS模式（手动选择）：使用用户选择的信道
+        - CS模式（默认）：使用下拉框选择的信道
+        
+        数据要求：
+        - 需要至少 display_max_frames 帧数据才能进行分析
+        - DF模式通常需要1000帧，CS模式通常需要100帧
+        
+        状态管理：
+        - 检测信道变化，如果信道改变则重置状态
+        - 自动切换模式下，信道变化不触发重置
+        - 手动选择模式下，信道变化不触发重置
+        """
         if not self.frame_mode or not self.is_running:
             return
         
