@@ -1,5 +1,11 @@
 {
   "save_directory": "C:/Users/cwdbo/Downloads",
   "use_auto_save_path": true,
-  "auto_start_recording": false
+  "auto_start_recording": false,
+  "show_log": true,
+  "show_version_info": false,
+  "show_toolbar": true,
+  "show_breathing_control": true,
+  "show_send_command": true,
+  "theme_mode": "light"
 }

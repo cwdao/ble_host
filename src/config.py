@@ -15,8 +15,8 @@ from typing import List, Optional
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "3.7.0"
-    version_date: str = "2026-01-17"
+    version: str = "3.7.1"
+    version_date: str = "2026-01-18"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     # 所保存的文件最低兼容版本，类似minimum API
     version_data_save:str = "3.6.0"
@@ -124,6 +124,16 @@ class AppConfig:
     command_default_cte_len: str = "2"  # 默认CTE长度
     command_default_interval_ms: str = "10"  # 默认连接间隔（毫秒）
     
+    # UI显示控制默认值
+    default_show_log: bool = True  # 是否显示日志面板
+    default_show_version_info: bool = False  # 是否显示版本信息
+    default_show_toolbar: bool = True  # 是否显示工具栏
+    default_show_breathing_control: bool = True  # 是否显示呼吸控制面板
+    default_show_send_command: bool = True  # 是否显示命令发送面板
+    
+    # 主题默认值
+    default_theme_mode: str = "light"  # 默认主题模式："auto"（跟随系统）、"light"（浅色）、"dark"（深色）
+    
     def __post_init__(self):
         """初始化后处理"""
         if self.baudrate_options is None:
@@ -147,7 +157,15 @@ class UserSettings:
         self.settings = {
             'save_directory': config.default_save_directory,
             'use_auto_save_path': config.use_auto_save_path,
-            'auto_start_recording': config.auto_start_recording
+            'auto_start_recording': config.auto_start_recording,
+            # 显示控制设置
+            'show_log': config.default_show_log,
+            'show_version_info': config.default_show_version_info,
+            'show_toolbar': config.default_show_toolbar,
+            'show_breathing_control': config.default_show_breathing_control,
+            'show_send_command': config.default_show_send_command,
+            # 主题设置
+            'theme_mode': config.default_theme_mode
         }
         self.load()
     
@@ -211,6 +229,65 @@ class UserSettings:
         """设置是否自动开始记录"""
         self.settings['auto_start_recording'] = auto_start
         self.save()
+    
+    # 显示控制设置方法
+    def get_show_log(self) -> bool:
+        """获取是否显示日志面板"""
+        return self.settings.get('show_log', config.default_show_log)
+    
+    def set_show_log(self, show: bool):
+        """设置是否显示日志面板"""
+        self.settings['show_log'] = show
+        self.save()
+    
+    def get_show_version_info(self) -> bool:
+        """获取是否显示版本信息"""
+        return self.settings.get('show_version_info', config.default_show_version_info)
+    
+    def set_show_version_info(self, show: bool):
+        """设置是否显示版本信息"""
+        self.settings['show_version_info'] = show
+        self.save()
+    
+    def get_show_toolbar(self) -> bool:
+        """获取是否显示工具栏"""
+        return self.settings.get('show_toolbar', config.default_show_toolbar)
+    
+    def set_show_toolbar(self, show: bool):
+        """设置是否显示工具栏"""
+        self.settings['show_toolbar'] = show
+        self.save()
+    
+    def get_show_breathing_control(self) -> bool:
+        """获取是否显示呼吸控制面板"""
+        return self.settings.get('show_breathing_control', config.default_show_breathing_control)
+    
+    def set_show_breathing_control(self, show: bool):
+        """设置是否显示呼吸控制面板"""
+        self.settings['show_breathing_control'] = show
+        self.save()
+    
+    def get_show_send_command(self) -> bool:
+        """获取是否显示命令发送面板"""
+        return self.settings.get('show_send_command', config.default_show_send_command)
+    
+    def set_show_send_command(self, show: bool):
+        """设置是否显示命令发送面板"""
+        self.settings['show_send_command'] = show
+        self.save()
+    
+    # 主题设置方法
+    def get_theme_mode(self) -> str:
+        """获取主题模式"""
+        return self.settings.get('theme_mode', config.default_theme_mode)
+    
+    def set_theme_mode(self, theme: str):
+        """设置主题模式"""
+        if theme in ['auto', 'light', 'dark']:
+            self.settings['theme_mode'] = theme
+            self.save()
+        else:
+            print(f"无效的主题模式: {theme}，应为 'auto', 'light' 或 'dark'")
 
 
 # 全局配置实例

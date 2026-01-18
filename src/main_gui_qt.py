@@ -270,7 +270,7 @@ class BLEHostGUI(QMainWindow):
         
         # ==================== 主题模式设置 ====================
         # 主题模式（auto: 跟随系统, light: 浅色, dark: 深色）
-        self.current_theme_mode = "light"  # 默认浅色模式
+        self.current_theme_mode = user_settings.get_theme_mode()  # 从用户设置加载
         
         # ==================== 实时呼吸估计定时器 ====================
         # 实时呼吸估计相关（定时更新呼吸估计结果）
@@ -318,12 +318,12 @@ class BLEHostGUI(QMainWindow):
         self.stop_recording_progress_value = 0  # 进度条当前值（0-100）
         self.is_holding_stop_recording_btn = False  # 是否正在按住停止记录按钮
         
-        # 显示控制相关（控制右侧面板各组件的显示/隐藏，默认都显示）
-        self.show_log = True  # 是否显示日志面板
-        self.show_version_info = True  # 是否显示版本信息
-        self.show_toolbar = True  # 是否显示工具栏
-        self.show_breathing_control = True  # 是否显示呼吸控制面板
-        self.show_send_command = True  # 是否显示命令发送面板
+        # 显示控制相关（控制右侧面板各组件的显示/隐藏，从用户设置加载）
+        self.show_log = user_settings.get_show_log()
+        self.show_version_info = user_settings.get_show_version_info()
+        self.show_toolbar = user_settings.get_show_toolbar()
+        self.show_breathing_control = user_settings.get_show_breathing_control()
+        self.show_send_command = user_settings.get_show_send_command()
         
         # 时间窗滑动条按钮长按相关（用于快速滑动时间窗）
         self.slider_button_timer = None  # 长按定时器
@@ -1006,6 +1006,7 @@ class BLEHostGUI(QMainWindow):
             return
         
         self.current_theme_mode = theme
+        user_settings.set_theme_mode(theme)  # 保存到用户设置
         self._apply_theme(theme)
         
         # 只在用户主动切换时显示信息提示（初始化时不显示）
@@ -2140,7 +2141,6 @@ class BLEHostGUI(QMainWindow):
         theme_layout.addWidget(self.theme_auto_radio)
         
         self.theme_light_radio = QRadioButton("浅色模式")
-        self.theme_light_radio.setChecked(True)  # 默认浅色模式
         self.theme_light_radio.toggled.connect(lambda checked: self._on_theme_mode_changed("light") if checked else None)
         self.theme_mode_group.addButton(self.theme_light_radio, 1)
         theme_layout.addWidget(self.theme_light_radio)
@@ -2149,6 +2149,15 @@ class BLEHostGUI(QMainWindow):
         self.theme_dark_radio.toggled.connect(lambda checked: self._on_theme_mode_changed("dark") if checked else None)
         self.theme_mode_group.addButton(self.theme_dark_radio, 2)
         theme_layout.addWidget(self.theme_dark_radio)
+        
+        # 根据用户设置设置默认选中的主题
+        saved_theme = user_settings.get_theme_mode()
+        if saved_theme == "auto":
+            self.theme_auto_radio.setChecked(True)
+        elif saved_theme == "dark":
+            self.theme_dark_radio.setChecked(True)
+        else:  # light 或默认
+            self.theme_light_radio.setChecked(True)
         
         layout.addWidget(theme_group)
         
@@ -2254,11 +2263,12 @@ class BLEHostGUI(QMainWindow):
         
         self.config_tabs.addTab(tab, "设置")
         
-        # 初始化主题（浅色模式）- 不显示提示
+        # 初始化主题（从用户设置加载）- 不显示提示
         # 注意：这里设置主题，但实际应用会在窗口显示时（showEvent）再次确认
-        self._on_theme_mode_changed("light", show_info=False)
+        saved_theme = user_settings.get_theme_mode()
+        self._on_theme_mode_changed(saved_theme, show_info=False)
         # 强制应用一次主题，确保界面正确显示
-        self._apply_theme("light")
+        self._apply_theme(saved_theme)
     
     def _create_plot_tabs(self):
         """创建绘图选项卡"""
@@ -2375,6 +2385,8 @@ class BLEHostGUI(QMainWindow):
         self.version_label = QLabel(f"v{__version__} build.{__version_date__}")
         self.version_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.version_label.setStyleSheet("color: gray; font-size: 8pt;")
+        # 根据默认设置决定是否显示版本信息
+        self.version_label.setVisible(self.show_version_info)
         parent_layout.addWidget(self.version_label)
     
     def _refresh_ports(self):
@@ -5220,6 +5232,7 @@ class BLEHostGUI(QMainWindow):
     def _on_show_log_changed(self, state):
         """日志显示控制改变"""
         self.show_log = (state == Qt.CheckState.Checked.value)
+        user_settings.set_show_log(self.show_log)  # 保存到用户设置
         if hasattr(self, 'log_group'):
             self.log_group.setVisible(self.show_log)
         self._update_right_panel_layout()
@@ -5227,6 +5240,7 @@ class BLEHostGUI(QMainWindow):
     def _on_show_version_info_changed(self, state):
         """版本信息显示控制改变"""
         self.show_version_info = (state == Qt.CheckState.Checked.value)
+        user_settings.set_show_version_info(self.show_version_info)  # 保存到用户设置
         if hasattr(self, 'version_label'):
             self.version_label.setVisible(self.show_version_info)
         self._update_right_panel_layout()
@@ -5270,6 +5284,7 @@ class BLEHostGUI(QMainWindow):
         if hasattr(self, 'show_send_command_checkbox'):
             self.show_send_command_checkbox.setEnabled(self.show_toolbar)
         
+        user_settings.set_show_toolbar(self.show_toolbar)  # 保存到用户设置
         self._update_toolbar_tabs_visibility()
         self._update_right_panel_layout()
     
@@ -5318,17 +5333,20 @@ class BLEHostGUI(QMainWindow):
         if hasattr(self, 'show_send_command_checkbox'):
             self.show_send_command_checkbox.setEnabled(self.show_toolbar)
         
+        user_settings.set_show_toolbar(self.show_toolbar)  # 保存到用户设置
         self._update_toolbar_tabs_visibility()
         self._update_right_panel_layout()
     
     def _on_show_breathing_control_changed(self, state):
         """呼吸控制显示控制改变"""
         self.show_breathing_control = (state == Qt.CheckState.Checked.value)
+        user_settings.set_show_breathing_control(self.show_breathing_control)  # 保存到用户设置
         self._update_toolbar_tabs_visibility()
     
     def _on_show_send_command_changed(self, state):
         """发送指令显示控制改变"""
         self.show_send_command = (state == Qt.CheckState.Checked.value)
+        user_settings.set_show_send_command(self.show_send_command)  # 保存到用户设置
         self._update_toolbar_tabs_visibility()
     
     def _update_toolbar_tabs_visibility(self):
