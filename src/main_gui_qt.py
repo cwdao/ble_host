@@ -825,7 +825,7 @@ class BLEHostGUI(QMainWindow):
         self.breathing_result_text = QTextEdit()
         self.breathing_result_text.setReadOnly(True)
         self.breathing_result_text.setFont(QFont("Consolas", 9))
-        self.breathing_result_text.setMaximumHeight(120)
+        self.breathing_result_text.setMaximumHeight(300)
         self.breathing_result_text.setPlainText("等待数据积累...")
         breathing_control_layout.addWidget(self.breathing_result_text)
         
@@ -3882,6 +3882,8 @@ class BLEHostGUI(QMainWindow):
         )
         if filepath:
             self.load_file_entry.setText(filepath)
+            # 选择文件后直接加载
+            self._load_file()
     
     def _toggle_load_file(self):
         """切换加载/取消加载文件"""
@@ -4167,9 +4169,10 @@ class BLEHostGUI(QMainWindow):
         # 恢复重置按钮的默认样式（因为不再处于加载模式）
         self.reset_view_btn.setStyleSheet(self.reset_view_btn_default_style)
         
-        # 清空文件信息
+        # 清空文件信息（但保留文件路径，方便再次加载）
         self.load_file_info_text.clear()
-        self.load_file_entry.clear()
+        # 不清除文件路径，这样再次点击加载文件时可以直接加载上次的文件
+        # self.load_file_entry.clear()
         
         # 清空数据
         self.data_processor.clear_buffer(clear_frames=True)
@@ -6164,16 +6167,31 @@ class BLEHostGUI(QMainWindow):
             
             if self.breathing_adaptive_enabled and current_best_channels:
                 # 显示前N个最高能量信道信息
-                result_text = f"Threshold: {threshold:.2f}\n"
+                result_text = f"已配置的阈值 (Threshold): {threshold:.2f}\n"
                 # 如果是手动触发模式，添加提示
                 if self.manual_select_mode:
                     result_text += "[手动选择模式] 即使低能量超时也驻留\n"
                 result_text += f"前{self.breathing_adaptive_top_n}个最高能量信道（按能量排序）:\n"
                 adaptive_selected = adaptive_state.get('selected_channel')
+                # 获取最佳信道（能量最高的那个）
+                best_channel = current_best_channels[0][0] if current_best_channels else None
+                
                 for i, (ch, ratio) in enumerate(current_best_channels[:self.breathing_adaptive_top_n]):
-                    marker = " ← 当前" if ((self.breathing_adaptive_auto_switch and 
-                                         self.breathing_adaptive_manual_control) or
-                                         (self.manual_select_mode and adaptive_selected == ch)) else ""
+                    # 判断是否是最佳信道
+                    is_best = (ch == best_channel)
+                    # 判断是否是当前使用的信道
+                    is_current = (ch == channel)
+                    
+                    # 根据情况设置标记
+                    if is_best and is_current:
+                        marker = " ← 最佳/使用中"
+                    elif is_best:
+                        marker = " ← 最佳"
+                    elif is_current:
+                        marker = " ← 使用中"
+                    else:
+                        marker = ""
+                    
                     has_breathing_marker = " ✓" if ratio >= threshold else " ✗"
                     # 如果是手动选择模式且当前信道能量低于阈值，添加低能量提示
                     low_energy_warning = ""
@@ -6825,9 +6843,25 @@ class BLEHostGUI(QMainWindow):
         result_text += f"前{self.breathing_adaptive_top_n}个最高能量信道（按能量排序）:\n"
         
         adaptive_selected = adaptive_state.get('selected_channel')
+        # 获取最佳信道（能量最高的那个）
+        best_channel = current_best_channels[0][0] if current_best_channels else None
+        
         for i, (ch, ratio) in enumerate(current_best_channels[:self.breathing_adaptive_top_n]):
-            marker = " ← 当前" if ((self.manual_select_mode and self.manual_selected_channel == ch) or
-                                 (adaptive_selected == ch)) else ""
+            # 判断是否是最佳信道
+            is_best = (ch == best_channel)
+            # 判断是否是当前使用的信道
+            is_current = (ch == channel)
+            
+            # 根据情况设置标记
+            if is_best and is_current:
+                marker = " ← 最佳/使用中"
+            elif is_best:
+                marker = " ← 最佳"
+            elif is_current:
+                marker = " ← 使用中"
+            else:
+                marker = ""
+            
             has_breathing_marker = " ✓" if ratio >= threshold else " ✗"
             result_text += f"  {i+1}. Channel {ch}: {ratio:.4f}{marker}{has_breathing_marker}\n"
         
