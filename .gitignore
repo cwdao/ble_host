@@ -49,3 +49,6 @@ Thumbs.db
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+# Outputs
+outputs/
