@@ -93,6 +93,7 @@ class AppConfig:
     breathing_adaptive_low_energy_threshold: float = 5.0  # 低能量持续时间阈值（秒）
     
     # 信道探测帧的默认参数
+    breathing_cs_fft_zero_pad_size: int = 1024  # FFT零填充起步点数（<=此长度补到此值）
     breathing_cs_sampling_rate: float = 2.0  # Hz
     breathing_cs_median_filter_window: int = 3
     breathing_cs_highpass_cutoff: float = 0.05  # Hz
@@ -106,6 +107,7 @@ class AppConfig:
     breathing_cs_total_freq_high: float = 0.8  # Hz
     
     # 方向估计帧的默认参数
+    breathing_df_fft_zero_pad_size: int = 4096  # FFT零填充起步点数（<=此长度补到此值）
     breathing_df_sampling_rate: float = 50.0  # Hz
     breathing_df_median_filter_window: int = 10
     breathing_df_highpass_cutoff: float = 0.05  # Hz

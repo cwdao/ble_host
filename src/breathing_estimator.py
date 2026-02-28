@@ -28,8 +28,15 @@ except ImportError:
 class BreathingEstimator:
     """呼吸估计类"""
     
-    # FFT零填充目标点数（CS/DF模式均使用，用于频谱插值、更密的频率bin）
-    FFT_ZERO_PAD_SIZE = 2048
+    def _get_fft_size(self, n: int) -> int:
+        """
+        计算FFT点数（零填充目标长度）
+        - n <= fft_zero_pad_size: 补到 fft_zero_pad_size（CS=1024, DF=4096）
+        - n > fft_zero_pad_size: 补到 >= n 的最小2的幂（便于FFT计算）
+        """
+        if n <= self.fft_zero_pad_size:
+            return self.fft_zero_pad_size
+        return 1 << (n - 1).bit_length()
     
     def __init__(self, frame_type: str = "信道探测帧"):
         """
@@ -66,6 +73,7 @@ class BreathingEstimator:
         """
         if frame_type == "方向估计帧":
             # 从config加载方向估计帧的默认参数
+            self.fft_zero_pad_size = config.breathing_df_fft_zero_pad_size
             self.sampling_rate = config.breathing_df_sampling_rate
             self.median_filter_window = config.breathing_df_median_filter_window
             self.highpass_cutoff = config.breathing_df_highpass_cutoff
@@ -79,6 +87,7 @@ class BreathingEstimator:
             self.total_freq_high = config.breathing_df_total_freq_high
         else:
             # 从config加载信道探测帧的默认参数
+            self.fft_zero_pad_size = config.breathing_cs_fft_zero_pad_size
             self.sampling_rate = config.breathing_cs_sampling_rate
             self.median_filter_window = config.breathing_cs_median_filter_window
             self.highpass_cutoff = config.breathing_cs_highpass_cutoff
@@ -93,7 +102,8 @@ class BreathingEstimator:
         
         self.logger.info(
             f"已从config加载帧类型 '{frame_type}' 的默认参数: "
-            f"采样率={self.sampling_rate}Hz, 中值滤波窗口={self.median_filter_window}"
+            f"采样率={self.sampling_rate}Hz, 中值滤波窗口={self.median_filter_window}, "
+            f"FFT零填充起步={self.fft_zero_pad_size}"
         )
     
     def process_signal(self, signal: np.ndarray, data_type: str = 'amplitude') -> Dict:
@@ -155,8 +165,8 @@ class BreathingEstimator:
         else:
             windowed_data = window_data.copy()
         
-        # 零填充到目标FFT点数（用于频谱插值，得到更密的频率bin）
-        n_fft = max(self.FFT_ZERO_PAD_SIZE, len(windowed_data))
+        # 零填充：<=2048补到2048，>2048补到最近的2的幂
+        n_fft = self._get_fft_size(len(windowed_data))
         if len(windowed_data) < n_fft:
             windowed_padded = np.zeros(n_fft, dtype=windowed_data.dtype)
             windowed_padded[:len(windowed_data)] = windowed_data
