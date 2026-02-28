@@ -28,6 +28,9 @@ except ImportError:
 class BreathingEstimator:
     """呼吸估计类"""
     
+    # FFT零填充目标点数（CS/DF模式均使用，用于频谱插值、更密的频率bin）
+    FFT_ZERO_PAD_SIZE = 2048
+    
     def __init__(self, frame_type: str = "信道探测帧"):
         """
         初始化呼吸估计器
@@ -152,9 +155,17 @@ class BreathingEstimator:
         else:
             windowed_data = window_data.copy()
         
+        # 零填充到目标FFT点数（用于频谱插值，得到更密的频率bin）
+        n_fft = max(self.FFT_ZERO_PAD_SIZE, len(windowed_data))
+        if len(windowed_data) < n_fft:
+            windowed_padded = np.zeros(n_fft, dtype=windowed_data.dtype)
+            windowed_padded[:len(windowed_data)] = windowed_data
+        else:
+            windowed_padded = windowed_data
+        
         # 计算带通前的FFT
-        fft_before = np.fft.rfft(windowed_data)
-        fft_freq_before = np.fft.rfftfreq(len(windowed_data), 1.0 / self.sampling_rate)
+        fft_before = np.fft.rfft(windowed_padded)
+        fft_freq_before = np.fft.rfftfreq(n_fft, 1.0 / self.sampling_rate)
         fft_power_before = np.abs(fft_before) ** 2
         
         # 带通滤波
@@ -166,9 +177,16 @@ class BreathingEstimator:
             order=self.bandpass_order
         )
         
+        # 零填充带通滤波后的数据
+        if len(bandpass_filtered) < n_fft:
+            bandpass_padded = np.zeros(n_fft, dtype=bandpass_filtered.dtype)
+            bandpass_padded[:len(bandpass_filtered)] = bandpass_filtered
+        else:
+            bandpass_padded = bandpass_filtered
+        
         # 计算带通后的FFT
-        fft_after = np.fft.rfft(bandpass_filtered)
-        fft_freq_after = np.fft.rfftfreq(len(bandpass_filtered), 1.0 / self.sampling_rate)
+        fft_after = np.fft.rfft(bandpass_padded)
+        fft_freq_after = np.fft.rfftfreq(n_fft, 1.0 / self.sampling_rate)
         fft_power_after = np.abs(fft_after) ** 2
         
         # 估计呼吸频率（在带通范围内找最大功率对应的频率）

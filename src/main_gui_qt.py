@@ -182,7 +182,7 @@ class BLEHostGUI(QMainWindow):
         
         # ==================== 窗口基本设置 ====================
         # 设置窗口标题
-        self.setWindowTitle(f"BLE CS Host v{__version__}")
+        self.setWindowTitle(f"BLE Sensing Host v{__version__}")
         
         # 设置窗口大小
         self.resize(config.base_window_width, config.base_window_height)
@@ -1200,17 +1200,6 @@ class BLEHostGUI(QMainWindow):
         if self.current_theme_mode == "auto":
             self._apply_system_theme()
     
-    def _show_about(self):
-        """显示关于对话框"""
-        about_text = f"""
-        <h2>BLE CS Host</h2>
-        <p><b>版本:</b> {__version__}</p>
-        <p><b>编译日期:</b> {__version_date__}</p>
-        <p><b>作者:</b> {__version_author__}</p>
-        <p>BLE Channel Sounding 上位机应用程序</p>
-        <p>基于 PySide6 开发</p>
-        """
-        QMessageBox.about(self, "关于", about_text)
     
     def _create_connection_tab(self):
         """创建连接配置选项卡"""
@@ -2243,11 +2232,11 @@ class BLEHostGUI(QMainWindow):
         about_text.setReadOnly(True)
         # QTextEdit使用setHtml()来设置富文本，不需要setTextFormat()
         about_text.setHtml(f"""
-        <h3>BLE CS Host</h3>
+        <h3>BLE Sensing Host</h3>
         <p><b>版本:</b> {__version__}</p>
         <p><b>编译日期:</b> {__version_date__}</p>
         <p><b>作者:</b> {__version_author__}</p>
-        <p>BLE Channel Sounding 上位机应用程序</p>
+        <p>BLE 无线感知上位机应用程序</p>
         <p>基于 PySide6 开发</p>
         """)
         about_group.setMaximumHeight(120)  # 限制高度，内容可滚动
@@ -6227,7 +6216,7 @@ class BLEHostGUI(QMainWindow):
                         result_text += f"\n当前信道 (Channel {channel}):\n"
                         result_text += f"  Energy Ratio: {detection['energy_ratio']:.4f}\n"
                         result_text += f"  Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
-                        result_text += f"  Breathing Rate: {breathing_rate:.1f} /min"
+                        result_text += f"  Breathing Rate: {breathing_rate:.3f} /min"
                     else:
                         result_text += f"\n当前信道 (Channel {channel}):\n"
                         result_text += f"  Energy Ratio: {detection['energy_ratio']:.4f}\n"
@@ -6243,7 +6232,7 @@ class BLEHostGUI(QMainWindow):
                     if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
                         breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
                         result_text += f"  Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
-                        result_text += f"  Breathing Rate: {breathing_rate:.1f} /min"
+                        result_text += f"  Breathing Rate: {breathing_rate:.3f} /min"
                     else:
                         result_text += "  Breathing Freq: --\n"
                         result_text += "  Breathing Rate: --"
@@ -6262,7 +6251,7 @@ class BLEHostGUI(QMainWindow):
                 if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
                     breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
                     result_text += f"Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
-                    result_text += f"Breathing Rate: {breathing_rate:.1f} /min"
+                    result_text += f"Breathing Rate: {breathing_rate:.3f} /min"
                 else:
                     result_text += "Breathing Freq: --\n"
                     result_text += "Breathing Rate: --"
@@ -6741,7 +6730,7 @@ class BLEHostGUI(QMainWindow):
                         ha='center', va='center', fontsize=10, family='monospace',
                         transform=ax4.transAxes)
                 # 呼吸次数用大字体和深绿色显示
-                ax4.text(0.5, y_positions[4], f"Breathing Rate: {breathing_rate:.1f} /min", 
+                ax4.text(0.5, y_positions[4], f"Breathing Rate: {breathing_rate:.3f} /min", 
                         ha='center', va='center', fontsize=20, family='monospace',
                         color='#006400', weight='bold',  # 深绿色，加粗，大字体
                         transform=ax4.transAxes)
@@ -6891,7 +6880,7 @@ class BLEHostGUI(QMainWindow):
             if detection['has_breathing'] and not np.isnan(detection['breathing_freq']):
                 breathing_rate = self.breathing_estimator.estimate_breathing_rate(detection['breathing_freq'])
                 result_text += f"  Breathing Freq: {detection['breathing_freq']:.4f} Hz\n"
-                result_text += f"  Breathing Rate: {breathing_rate:.1f} /min"
+                result_text += f"  Breathing Rate: {breathing_rate:.3f} /min"
             else:
                 result_text += "  Breathing Freq: --\n"
                 result_text += "  Breathing Rate: --"
