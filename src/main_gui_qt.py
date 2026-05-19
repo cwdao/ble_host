@@ -88,6 +88,7 @@ from qfluentwidgets import SwitchButton, ProgressRing, ToolTipFilter, ToolTipPos
 try:
     from .serial_reader import SerialReader
     from .data_parser import DataParser
+    from .dip_binary_parser import parse_raw_frame
     from .data_processor import DataProcessor
     from .data_saver import DataSaver
     from .config import config, user_settings
@@ -100,6 +101,7 @@ except ImportError:
     # 直接运行时使用绝对导入
     from serial_reader import SerialReader
     from data_parser import DataParser
+    from dip_binary_parser import parse_raw_frame
     from data_processor import DataProcessor
     from data_saver import DataSaver
     from config import config, user_settings
@@ -240,9 +242,8 @@ class BLEHostGUI(QMainWindow):
         
         # ==================== 帧数据处理配置 ====================
         # 帧类型和模式设置
-        self.frame_type = config.default_frame_type  # 当前帧类型（"信道探测帧"或"方向估计帧"）
-        self.frame_mode = (self.frame_type == "信道探测帧" or self.frame_type == "方向估计帧")  # 是否为帧模式
-        self.is_direction_estimation_mode = (self.frame_type == "方向估计帧")  # 是否为方向估计帧模式（DF模式）
+        self.frame_type = config.default_frame_type
+        self._update_frame_mode_flags()
         
         # 显示信道配置
         # 使用默认配置解析显示信道列表（临时使用，稍后在_apply_frame_settings中会正确设置）
@@ -2436,7 +2437,11 @@ class BLEHostGUI(QMainWindow):
             port = port_data
             baudrate = int(self.baudrate_combo.currentText())
             
-            self.serial_reader = SerialReader(port=port, baudrate=baudrate)
+            self.serial_reader = SerialReader(
+                port=port,
+                baudrate=baudrate,
+                binary_frame_mode=self._is_dip_binary_mode(),
+            )
             if self.serial_reader.connect():
                 self.is_running = True
                 self.connect_btn.setText("断开")
@@ -2501,15 +2506,50 @@ class BLEHostGUI(QMainWindow):
             if self.is_recording:
                 self._stop_recording()
     
+    def _update_frame_mode_flags(self):
+        """
+        根据界面帧类型下拉框（self.frame_type）更新解析/绘图相关标志。
+
+        - frame_mode：三种帧类型均走「整帧」处理路径（非简单键值对模式）
+        - is_direction_estimation_mode：仅「方向估计帧」为 True（单信道、DF Tab 逻辑）
+        - 「DIP-直接IQ输出」与「信道探测帧」同为多信道，但串口为二进制解析
+        """
+        self.frame_mode = self.frame_type in (
+            "信道探测帧", "方向估计帧", "DIP-直接IQ输出"
+        )
+        self.is_direction_estimation_mode = self.frame_type == "方向估计帧"
+
+    def _is_dip_binary_mode(self) -> bool:
+        """当前是否为 DIP 二进制 UART 模式（需 SerialReader.binary_frame_mode）。"""
+        return self.frame_type == "DIP-直接IQ输出"
+
+    def _get_internal_frame_type(self) -> str:
+        """
+        保存/记录用的内部帧类型字符串（写入 JSONL meta 与文件名前缀）。
+
+        Returns:
+            'direction_estimation' | 'dip_direct_iq' | 'channel_sounding'
+        """
+        if self.is_direction_estimation_mode:
+            return "direction_estimation"
+        if self._is_dip_binary_mode():
+            return "dip_direct_iq"
+        return "channel_sounding"
+
     def _on_frame_type_changed(self, text):
         """帧类型改变"""
         old_frame_type = self.frame_type
         self.frame_type = text
         old_frame_mode = self.frame_mode
         old_is_direction_mode = self.is_direction_estimation_mode
-        
-        self.frame_mode = (self.frame_type == "信道探测帧" or self.frame_type == "方向估计帧")
-        self.is_direction_estimation_mode = (self.frame_type == "方向估计帧")
+
+        self._update_frame_mode_flags()
+        # 文本 CS/DF 与 DIP 二进制互斥：切换时同步串口组帧方式并清空 ASCII 多行缓冲
+        dip_mode_changed = self._is_dip_binary_mode() != (old_frame_type == "DIP-直接IQ输出")
+        if self.serial_reader:
+            self.serial_reader.set_binary_frame_mode(self._is_dip_binary_mode())
+        if dip_mode_changed:
+            self.data_parser.clear_buffer()
         
         self.logger.info(f"帧类型已设置为: {self.frame_type}, 方向估计模式: {self.is_direction_estimation_mode}")
         
@@ -2699,10 +2739,13 @@ class BLEHostGUI(QMainWindow):
             # ==================== 帧数据处理 ====================
             # 如果是帧模式，优先处理帧数据
             if self.frame_mode:
-                # 解析数据（会更新内部状态，累积IQ数据）
-                # CS模式：多行数据，需要累积到检测到帧尾
-                # DF模式：单行数据，每行就是一个完整帧
-                parsed = self.data_parser.parse(data['text'])
+                # DIP 二进制：整帧字节；文本模式：CS 多行 / DF 单行
+                if data.get('binary'):
+                    parsed = parse_raw_frame(data['raw'])
+                elif data.get('text'):
+                    parsed = self.data_parser.parse(data['text'])
+                else:
+                    parsed = None
                 
                 # 如果parse返回了完成的帧（检测到帧尾时完成，或方向估计帧单行完成）
                 # parsed['frame'] = True 表示这是一个完整的帧
@@ -2718,6 +2761,12 @@ class BLEHostGUI(QMainWindow):
                                     f"timestamp={frame_data['timestamp_ms']}ms, "
                                     f"信道={channels[0] if channels else 'N/A'}, "
                                     f"幅值={list(frame_data['channels'].values())[0].get('amplitude', 0):.2f}"
+                                )
+                            elif self._is_dip_binary_mode():
+                                self.logger.info(
+                                    f"[DIP帧] pc={frame_data['index']}, "
+                                    f"通道数={len(channels)}, "
+                                    f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
                                 )
                             else:
                                 self.logger.info(
@@ -3172,12 +3221,7 @@ class BLEHostGUI(QMainWindow):
             )
             return
         
-        # 确定帧类型（用于文件名前缀）- 根据当前模式判断，而不是帧数据
-        # 这样可以确保切换模式后保存的文件名正确
-        if self.is_direction_estimation_mode:
-            frame_type = 'direction_estimation'
-        else:
-            frame_type = 'channel_sounding'
+        frame_type = self._get_internal_frame_type()
         
         # 在保存前获取frames的引用（不复制，避免大文件时占用过多内存）
         # 注意：在后台线程中保存时，会进行深拷贝，所以这里不需要复制
@@ -3389,11 +3433,7 @@ class BLEHostGUI(QMainWindow):
             )
             return
         
-        # 确定帧类型
-        if self.is_direction_estimation_mode:
-            frame_type = 'direction_estimation'
-        else:
-            frame_type = 'channel_sounding'
+        frame_type = self._get_internal_frame_type()
         
         # 生成日志文件路径
         if self.use_auto_save:
@@ -3574,11 +3614,7 @@ class BLEHostGUI(QMainWindow):
             max_frames = config.default_display_max_frames
             self.logger.warning(f"显示帧数无效，使用默认值: {max_frames}")
         
-        # 确定帧类型（用于文件名前缀）- 根据当前模式判断，而不是帧数据
-        if self.is_direction_estimation_mode:
-            frame_type = 'direction_estimation'
-        else:
-            frame_type = 'channel_sounding'
+        frame_type = self._get_internal_frame_type()
         
         # 根据设置决定是否弹出对话框（使用JSONL格式）
         if self.use_auto_save:
@@ -3979,11 +4015,8 @@ class BLEHostGUI(QMainWindow):
             file_frame_type = data.get('frame_type')
             if file_frame_type:
                 if file_frame_type == 'direction_estimation':
-                    # 设置为方向估计帧模式
                     self.frame_type = "方向估计帧"
-                    self.is_direction_estimation_mode = True
-                    self.frame_mode = True
-                    # 更新UI中的帧类型选择
+                    self._update_frame_mode_flags()
                     if hasattr(self, 'frame_type_combo'):
                         self.frame_type_combo.setCurrentText("方向估计帧")
                     # 设置DF模式的默认显示帧数
@@ -3991,19 +4024,21 @@ class BLEHostGUI(QMainWindow):
                     if hasattr(self, 'display_max_frames_entry'):
                         self.display_max_frames_entry.setText(str(config.df_default_display_max_frames))
                     self.logger.info(f"根据文件内容自动设置为方向估计帧模式")
-                elif file_frame_type == 'channel_sounding':
-                    # 设置为信道探测帧模式
-                    self.frame_type = "信道探测帧"
-                    self.is_direction_estimation_mode = False
-                    self.frame_mode = True
-                    # 更新UI中的帧类型选择
-                    if hasattr(self, 'frame_type_combo'):
-                        self.frame_type_combo.setCurrentText("信道探测帧")
-                    # 设置CS模式的默认显示帧数
+                elif file_frame_type in ('channel_sounding', 'dip_direct_iq'):
+                    if file_frame_type == 'dip_direct_iq':
+                        self.frame_type = "DIP-直接IQ输出"
+                        if hasattr(self, 'frame_type_combo'):
+                            self.frame_type_combo.setCurrentText("DIP-直接IQ输出")
+                        self.logger.info("根据文件内容自动设置为 DIP-直接IQ输出 模式")
+                    else:
+                        self.frame_type = "信道探测帧"
+                        if hasattr(self, 'frame_type_combo'):
+                            self.frame_type_combo.setCurrentText("信道探测帧")
+                        self.logger.info("根据文件内容自动设置为信道探测帧模式")
+                    self._update_frame_mode_flags()
                     self.display_max_frames = config.default_display_max_frames
                     if hasattr(self, 'display_max_frames_entry'):
                         self.display_max_frames_entry.setText(str(config.default_display_max_frames))
-                    self.logger.info(f"根据文件内容自动设置为信道探测帧模式")
             
             # 根据帧类型更新呼吸估计器的默认参数
             if hasattr(self, 'breathing_estimator'):
@@ -4105,7 +4140,12 @@ class BLEHostGUI(QMainWindow):
         # 显示帧类型和帧版本（如果有）
         frame_type = self.loaded_file_info.get('frame_type')
         if frame_type:
-            frame_type_name = "方向估计帧" if frame_type == 'direction_estimation' else "信道探测帧"
+            if frame_type == 'direction_estimation':
+                frame_type_name = "方向估计帧"
+            elif frame_type == 'dip_direct_iq':
+                frame_type_name = "DIP-直接IQ输出"
+            else:
+                frame_type_name = "信道探测帧"
             info_lines.append(f"帧类型: {frame_type_name}")
             frame_version = self.loaded_file_info.get('frame_version')
             if frame_version:

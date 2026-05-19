@@ -325,8 +325,11 @@ class DataSaver:
             if frame_type is None and frames_to_save:
                 # 如果没有传入frame_type，从帧数据中判断（向后兼容）
                 first_frame = frames_to_save[0]
-                if first_frame.get('frame_type') == 'direction_estimation':
+                ft = first_frame.get('frame_type')
+                if ft == 'direction_estimation':
                     frame_type = 'direction_estimation'
+                elif ft == 'dip_direct_iq':
+                    frame_type = 'dip_direct_iq'
                 else:
                     frame_type = 'channel_sounding'
             
@@ -335,8 +338,7 @@ class DataSaver:
                 if frames_to_save:
                     frame_version = frames_to_save[0].get('frame_version', 1)
                 file_version = config.version_data_save  # 最低兼容的APP版本
-            elif frame_type == 'channel_sounding':
-                # 信道探测帧
+            elif frame_type in ('channel_sounding', 'dip_direct_iq'):
                 file_version = config.version_data_save  # 最低兼容的APP版本
             else:
                 # 默认情况（向后兼容，统一使用version_data_save）
@@ -688,7 +690,8 @@ class DataSaver:
             type_prefix = "DF_"
         elif frame_type == 'channel_sounding':
             type_prefix = "CS_"
-        
+        elif frame_type == 'dip_direct_iq':
+            type_prefix = "DIP_"  # DIP 直接 IQ 二进制帧录制
         if save_all:
             return f"{type_prefix}{prefix}_all_{timestamp}.json"
         else:
@@ -1125,6 +1128,8 @@ class DataSaver:
             type_prefix = "DF_"
         elif frame_type == 'channel_sounding':
             type_prefix = "CS_"
+        elif frame_type == 'dip_direct_iq':
+            type_prefix = "DIP_"  # DIP 直接 IQ 二进制帧录制
         
         # 扩展名
         ext = ".jsonl" if use_jsonl else ".json"

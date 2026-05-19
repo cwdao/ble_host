@@ -10,10 +10,11 @@
 
 - ✅ **串口通信**: 支持自动检测串口，可配置波特率（9600~230400）
 - ✅ **实时波形显示**: 多变量波形实时绘制，支持自动缩放（基于PyQtGraph，高性能）
-- ✅ **双帧模式支持**:
-  - **信道探测（CS）模式**: 支持多通道IQ数据解析，显示幅值、相位等完整信息
-  - **方向估计（DF）模式**: 支持单通道功率数据，显示RMS幅值或功率P，支持信道切换检测
-  - 自动识别帧类型，切换模式时自动清空状态
+- ✅ **多帧类型支持**:
+  - **信道探测（CS）模式**: ASCII 多行 IQ 文本（`== Basic Report ==`），多通道幅值/相位
+  - **方向估计（DF）模式**: 单行 `$DF,...` 功率数据，支持信道切换检测
+  - **DIP 直接 IQ 输出**: 下位机 **二进制 UART 帧**（`0x55 0xAA` 同步），多信道本地 int16 I/Q，可视化流程与 CS 相同
+  - 自动识别保存文件帧类型，切换模式时自动清空状态
 - ✅ **数据处理**: 
   - 频率计算（基于FFT，15秒数据窗口）
   - 统计分析（均值、最大值、最小值、标准差）
@@ -22,7 +23,7 @@
   - **增量记录（JSONL格式）**：实时追加写入，支持长时间记录，避免内存峰值
   - 自动保存功能（可配置路径）
   - 加载保存的文件进行离线分析（支持JSONL和JSON格式）
-  - **自动识别文件帧类型**（DF/CS），自动设置相应模式
+  - **自动识别文件帧类型**（DF/CS/DIP），自动设置相应模式
   - 时间窗滑动条，方便查看不同时间段的数据
 - ✅ **命令发送功能**:
   - 支持PING、BLE_SCAN、BLE_CONN、DF_START、DF_CONFIG、DF_STOP等命令
@@ -64,7 +65,16 @@ python run_qt.py
 
 ## 数据协议格式
 
-程序支持帧数据格式：
+程序支持以下帧数据格式（连接前在界面选择对应帧类型）：
+
+### DIP 直接 IQ 输出（二进制）
+
+下位机 `DIP_REPORT_BINARY_OUTPUT=1` 时输出的 **v2 二进制帧**，上位机帧类型选 **「DIP-直接IQ输出」**。
+
+- 同步字 `0x55 0xAA`，固定头 22 字节 + 按 bitmap 的有效信道 int16 I/Q + CRC16-CCITT
+- 不含 ASCII 帧头/帧尾；串口需与固件波特率一致（常见 **115200**）
+- 解析后进入与 CS 相同的多通道绘图与呼吸估计流程
+- **详细协议、固件配置与排障**：参见 [`docs/dip_binary_frame.md`](docs/dip_binary_frame.md)
 
 ### 信道探测（CS）帧格式
 ```
@@ -118,8 +128,9 @@ ble_host/
 ├── src/                      # 源代码目录
 │   ├── __init__.py
 │   ├── main_gui_qt.py        # 主GUI程序（PySide6/Qt）
-│   ├── serial_reader.py     # 串口读取模块
-│   ├── data_parser.py       # 数据解析模块（支持CS/DF双模式）
+│   ├── serial_reader.py     # 串口读取模块（文本行 / DIP 二进制组帧）
+│   ├── dip_binary_parser.py # DIP 二进制 UART 帧解析（v2）
+│   ├── data_parser.py       # 数据解析模块（ASCII CS/DF）
 │   ├── data_processor.py    # 数据处理模块（支持信道切换检测）
 │   ├── data_saver.py         # 数据保存/加载模块（支持JSONL格式）
 │   ├── breathing_estimator.py # 呼吸估计模块（支持CS/DF双模式）
@@ -134,6 +145,7 @@ ble_host/
 │   ├── data_save_feature.md  # 数据保存功能说明
 │   ├── jsonl_format.md       # JSONL文件格式详细说明
 │   ├── uart_command_format.md # UART命令格式文档
+│   ├── dip_binary_frame.md   # DIP 二进制直接 IQ 接入说明
 │   └── ...                   # 其他文档
 ├── run_qt.py                 # 程序入口
 ├── requirements.txt           # Python依赖
@@ -150,7 +162,7 @@ ble_host/
 
 #### 1. 连接串口
 - 在"连接配置"选项卡中选择串口和波特率
-- 选择帧类型（信道探测帧/方向估计帧）
+- 选择帧类型（信道探测帧 / 方向估计帧 / **DIP-直接IQ输出**）
 - 点击"连接"按钮
 
 #### 2. 配置通道（CS模式）
@@ -168,7 +180,7 @@ ble_host/
 
 #### 4. 文件加载
 - 在"文件加载"选项卡中选择保存的数据文件
-- **自动识别**：程序会自动识别文件中的帧类型（DF/CS），并设置相应模式
+- **自动识别**：程序会自动识别文件中的帧类型（DF/CS/DIP），并设置相应模式
 - **时间窗**：加载后可以使用滑动条选择时间窗口进行分析
 - **文件信息**：显示文件版本、帧类型、保存时间、帧数等信息
 
@@ -199,7 +211,7 @@ ble_host/
 - **文件格式**：
   - **新版本（v3.6.0+）**：使用JSONL格式（.jsonl），支持增量追加写入，解决大量数据保存时的内存问题
   - **旧版本兼容**：仍支持加载旧版JSON格式文件（自动格式检测）
-  - **文件命名**：自动添加帧类型前缀（DF_/CS_）
+  - **文件命名**：自动添加帧类型前缀（DF_/CS_/DIP_）
   - **详细格式说明**：参见 `docs/jsonl_format.md`
 - **详细格式说明**：参见 `docs/jsonl_format.md`
 
@@ -242,6 +254,16 @@ ble_host/
    - 默认显示最近50帧
    - 支持间隔选择、范围选择或手动输入通道
    - 支持呼吸估计功能（支持自适应信道选择）
+
+### DIP 直接 IQ 输出模式
+
+1. **启用方式**：在 GUI 选择 **「DIP-直接IQ输出」**
+2. **数据格式**：二进制 UART（非文本），详见 [`docs/dip_binary_frame.md`](docs/dip_binary_frame.md)
+3. **自动处理**：
+   - `SerialReader` 使用 `DipBinaryFrameReader` 搜同步字并校验 CRC
+   - `dip_binary_parser.parse_raw_frame` 转为与 CS 相同的 `channels` 结构
+   - 本地 IQ 映射为幅值/相位；`frame_type` 为 `dip_direct_iq`
+4. **显示与保存**：与 CS 相同（多 Tab、呼吸估计默认参数同 CS）；保存文件前缀 `DIP_`
 
 ### 方向估计（DF）模式
 
@@ -290,9 +312,10 @@ ble_host/
   - 事件标记：记录过程中可随时标记特殊事件
 - **加载**：
   - **自动格式检测**：自动识别JSONL或JSON格式（通过文件扩展名或内容检测）
-  - **自动识别帧类型**：加载时自动识别帧类型（DF/CS），自动设置相应模式
-  - **DF文件**：自动设置为方向估计模式，显示幅值tab
-  - **CS文件**：自动设置为信道探测模式，显示所有tab
+  - **自动识别帧类型**：加载时自动识别帧类型（DF/CS/DIP），自动设置相应模式
+  - **DF 文件**：方向估计模式，仅幅值 tab
+  - **CS 文件**：信道探测模式，全部 tab
+  - **DIP 文件**（`frame_type: dip_direct_iq`）：DIP-直接IQ输出模式，显示与 CS 相同
   - **时间窗**：加载文件后可使用滑动条选择时间窗口进行分析
   - **文件信息**：显示文件版本、帧类型、保存时间、帧数等信息
 
@@ -321,6 +344,7 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
 - 确认串口数据传输正常
 - **DF模式**：确认数据格式为 `$DF,ver,ch,seq,ts,p_avg`
 - **CS模式**：确认数据格式包含 `== Basic Report ==` 和 `== End Report ==`
+- **DIP模式**：确认已选「DIP-直接IQ输出」、波特率与固件一致；固件建议关闭冗长 ASCII 日志（见 `docs/dip_binary_frame.md`）
 
 ### 文件加载问题
 - **格式检测**：程序会自动检测文件格式（JSONL或JSON），通过文件扩展名或内容判断
@@ -329,6 +353,7 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
   - 确保第一行是meta记录（包含`record_type: "meta"`）
   - DF文件：meta记录中包含 `frame_type: "direction_estimation"`
   - CS文件：meta记录中包含 `frame_type: "channel_sounding"`
+  - DIP文件：meta记录中包含 `frame_type: "dip_direct_iq"`
 - **JSON文件（旧格式）**：
   - DF文件：包含 `frame_type: "direction_estimation"`
   - CS文件：包含 `frame_type: "channel_sounding"` 或不包含frame_type（向后兼容）
@@ -347,7 +372,7 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
 - **绘图**: PyQtGraph（实时）+ Matplotlib（分析）
 - **特点**: 
   - 现代化界面、高性能
-  - 支持双帧模式（CS/DF）
+  - 支持多帧类型（CS/DF/DIP 二进制）
   - 自动帧类型识别
   - 完整的数据保存/加载功能（JSONL格式）
   - 时间窗滑动条（加载模式）
@@ -379,6 +404,12 @@ logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 本项目仅供学习和开发使用。
 
 ## 更新日志
+
+### v3.7.x — DIP 直接 IQ 二进制帧
+
+- ✅ 新增帧类型 **DIP-直接IQ输出**（`dip_binary_parser.py` + 串口二进制组帧）
+- ✅ 与 CS 共用绘图、呼吸估计、JSONL 记录；保存前缀 `DIP_`
+- 📄 详见 [`docs/dip_binary_frame.md`](docs/dip_binary_frame.md)
 
 ### v3.7.0 (2026-01-17)
 
@@ -465,7 +496,7 @@ logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 
 ### 主要功能
 
-- 双帧模式支持（CS/DF）
+- 多帧类型支持（CS/DF/DIP 二进制）
 - 自动帧类型识别
 - 数据保存/加载（支持帧类型记录）
 - 时间窗滑动条（加载模式）
@@ -483,6 +514,7 @@ logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 - `docs/data_save_feature.md` - 数据保存功能说明
 - `docs/jsonl_format.md` - JSONL文件格式详细说明（v3.6.0+）
 - `docs/uart_command_format.md` - UART命令格式文档
+- `docs/dip_binary_frame.md` - DIP 二进制直接 IQ 帧接入说明
 - `INSTALL.md` - 安装指南
 
 ## 联系方式

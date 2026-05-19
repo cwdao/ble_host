@@ -141,8 +141,8 @@ class AppConfig:
         if self.baudrate_options is None:
             self.baudrate_options = ["9600", "19200", "38400", "57600", "115200", "230400"]
         if self.frame_type_options is None:
-            # 帧类型列表：信道探测帧对应原来的帧模式，其他选项可以后续添加（目前先留空）
-            self.frame_type_options = ["信道探测帧","方向估计帧"]
+            # 帧类型：CS/DF 为 ASCII 串口文本；DIP 为 0x55 0xAA 二进制（见 docs/dip_binary_frame.md）
+            self.frame_type_options = ["信道探测帧", "方向估计帧", "DIP-直接IQ输出"]
 
 
 class UserSettings:

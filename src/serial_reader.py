@@ -2,6 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 串口数据读取模块
+
+支持两种入队格式：
+- **文本模式**（默认）：按 ``\\n`` 分行，队列项含 ``text`` 字段，供 ASCII CS/DF 解析。
+- **DIP 二进制模式**（``binary_frame_mode=True``）：由 ``DipBinaryFrameReader`` 搜
+  ``0x55 0xAA`` 组帧，队列项含 ``binary=True`` 与完整 ``raw`` 帧字节。
+  详见 ``dip_binary_parser`` 与 ``docs/dip_binary_frame.md``。
 """
 import serial
 import serial.tools.list_ports
@@ -10,11 +16,16 @@ from queue import Queue
 import time
 import logging
 
+try:
+    from .dip_binary_parser import DipBinaryFrameReader
+except ImportError:
+    from dip_binary_parser import DipBinaryFrameReader
+
 
 class SerialReader:
     """串口数据读取类"""
     
-    def __init__(self, port=None, baudrate=115200, timeout=1.0):
+    def __init__(self, port=None, baudrate=115200, timeout=1.0, binary_frame_mode=False):
         """
         初始化串口读取器
         
@@ -22,16 +33,22 @@ class SerialReader:
             port: 串口名称，如 'COM3'，None则自动检测
             baudrate: 波特率，默认115200
             timeout: 超时时间，默认1.0秒
+            binary_frame_mode: True 时走 DIP 二进制组帧（见 DipBinaryFrameReader），
+                False 时按行切分 UTF-8 文本（信道探测/方向估计帧）
         """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        # 与 GUI 帧类型「DIP-直接IQ输出」联动；连接/切换类型时由 main_gui 设置
+        self.binary_frame_mode = binary_frame_mode
         self.serial = None
         self.is_running = False
         self.read_thread = None
         self.data_queue = Queue()
         self.stop_event = Event()
         self.logger = logging.getLogger(__name__)
+        # 二进制模式下复用同一 reader，避免切换类型时丢失半帧
+        self._dip_frame_reader = DipBinaryFrameReader()
         
     @staticmethod
     def list_ports():
@@ -95,6 +112,16 @@ class SerialReader:
         
         self.logger.info("串口已断开")
     
+    def set_binary_frame_mode(self, enabled: bool):
+        """
+        切换 DIP 二进制帧模式（会清空 DipBinaryFrameReader 内部缓冲）。
+
+        在已连接状态下切换「DIP-直接IQ输出」↔ 文本帧类型时由 GUI 调用，
+        防止上一模式的残留字节造成错帧。
+        """
+        self.binary_frame_mode = enabled
+        self._dip_frame_reader.clear()
+
     def _read_loop(self):
         """串口读取循环（在单独线程中运行）"""
         buffer = b''
@@ -109,27 +136,34 @@ class SerialReader:
                 try:
                     if self.serial.in_waiting > 0:
                         data = self.serial.read(self.serial.in_waiting)
-                        buffer += data
-                        
-                        # 假设数据以换行符结尾，可以自定义协议
-                        while b'\n' in buffer:
-                            line, buffer = buffer.split(b'\n', 1)
-                            try:
-                                # 尝试解码为字符串
-                                text = line.decode('utf-8').strip()
-                                if text:
+                        if self.binary_frame_mode:
+                            # DIP：chunk 可能含半帧或日志噪声，由 feed 返回 0..n 个完整帧
+                            for frame in self._dip_frame_reader.feed(data):
+                                self.data_queue.put({
+                                    'timestamp': time.time(),
+                                    'raw': frame,       # 完整二进制帧 bytes
+                                    'binary': True,     # 供 main_gui 走 parse_raw_frame
+                                    'text': None,
+                                })
+                        else:
+                            # ASCII：按行入队，DataParser.parse(text) 处理 CS/DF
+                            buffer += data
+                            while b'\n' in buffer:
+                                line, buffer = buffer.split(b'\n', 1)
+                                try:
+                                    text = line.decode('utf-8').strip()
+                                    if text:
+                                        self.data_queue.put({
+                                            'timestamp': time.time(),
+                                            'raw': line,
+                                            'text': text
+                                        })
+                                except UnicodeDecodeError:
                                     self.data_queue.put({
                                         'timestamp': time.time(),
                                         'raw': line,
-                                        'text': text
+                                        'text': None
                                     })
-                            except UnicodeDecodeError:
-                                # 如果不是文本数据，可以按字节处理
-                                self.data_queue.put({
-                                    'timestamp': time.time(),
-                                    'raw': line,
-                                    'text': None
-                                })
                 except (serial.SerialException, OSError, ValueError) as e:
                     # 串口操作异常（可能是设备断开）
                     if self.is_running:
