@@ -2,6 +2,8 @@
 
 一个用于BLE嵌入式系统的Python上位机程序，支持串口数据采集、波形显示和数据处理。
 
+**当前版本：v4.0.0**（2026-05-19）— 主版本更新：**DIP 直接 IQ 二进制帧**接入。
+
 **主版本：PySide6 (Qt) 版本** - 现代化的界面，更好的性能和用户体验。
 
 ## 功能特性
@@ -366,21 +368,19 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
 
 ## 版本说明
 
-## 版本说明
-
 - **框架**: PySide6
 - **绘图**: PyQtGraph（实时）+ Matplotlib（分析）
 - **特点**: 
   - 现代化界面、高性能
-  - 支持多帧类型（CS/DF/DIP 二进制）
-  - 自动帧类型识别
+  - 支持多帧类型（CS / DF / **DIP 二进制**）
+  - 自动帧类型识别（含 `dip_direct_iq` 录制文件）
   - 完整的数据保存/加载功能（JSONL格式）
   - 时间窗滑动条（加载模式）
-  - 实时呼吸估计（支持CS/DF双模式）
+  - 实时呼吸估计（CS / DF / DIP 模式）
   - DF模式信道切换检测和数据累积
   - 命令发送功能
 - **入口**: `run_qt.py`
-- **版本**: v3.7.0
+- **版本**: v4.0.0
 
 ## 开发说明
 
@@ -405,11 +405,23 @@ logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 
 ## 更新日志
 
-### v3.7.x — DIP 直接 IQ 二进制帧
+### v4.0.0 (2026-05-19) — DIP 直接 IQ 二进制帧（主版本更新）
 
-- ✅ 新增帧类型 **DIP-直接IQ输出**（`dip_binary_parser.py` + 串口二进制组帧）
-- ✅ 与 CS 共用绘图、呼吸估计、JSONL 记录；保存前缀 `DIP_`
-- 📄 详见 [`docs/dip_binary_frame.md`](docs/dip_binary_frame.md)
+本版本的核心变更是对接下位机 **DIP v2 二进制 UART 协议**，在保持 CS 多信道可视化与呼吸估计流程不变的前提下，用纯二进制替代原 ASCII IQ 文本上报。
+
+- ✅ **新帧类型「DIP-直接IQ输出」**
+  - 同步字 `0x55 0xAA`，22 字节固定头 + 信道 bitmap + int16 本地 I/Q + CRC16-CCITT
+  - 新增 `src/dip_binary_parser.py`：`DipBinaryFrameReader` 组帧、`parse_raw_frame` 转统一帧结构
+  - `SerialReader` 支持 `binary_frame_mode`，与 GUI 帧类型联动
+- ✅ **与信道探测（CS）共用后续流程**
+  - 多通道幅值/相位/Local 等 Tab、呼吸估计默认参数、JSONL 实时记录
+  - 保存/加载：`frame_type: dip_direct_iq`，文件名前缀 `DIP_`
+- ✅ **文档**
+  - 协议与排障：[`docs/dip_binary_frame.md`](docs/dip_binary_frame.md)
+  - README 协议说明与使用步骤已同步更新
+- ⚠️ **使用注意**
+  - 连接前在界面选择「DIP-直接IQ输出」；波特率需与固件一致（常见 115200）
+  - 固件建议 `DIP_REPORT_LOG_VERBOSE=0`，避免 ASCII 日志干扰二进制同步
 
 ### v3.7.0 (2026-01-17)
 

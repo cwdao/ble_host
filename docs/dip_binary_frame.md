@@ -165,7 +165,7 @@ python doc/dip_parse_uart.py COM3
 ## 7. 版本与兼容性
 
 - 协议 `version = 0x01`，`type = 0x01`  
-- 上位机自 v3.7.x 起支持；与 ASCII CS/DF 帧类型**互斥**（同一串口连接只应选一种帧类型）  
+- 上位机自 **v4.0.0** 起正式支持；与 ASCII CS/DF 帧类型**互斥**（同一串口连接只应选一种帧类型）  
 - 切换「DIP-直接IQ输出」↔ 文本帧类型时会清空 `DataParser` 缓冲并切换 `SerialReader` 行/二进制模式  
 
 ---
