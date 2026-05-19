@@ -1,7 +1,7 @@
 {
   "save_directory": "C:/Users/cwdbo/Downloads",
   "use_auto_save_path": true,
-  "auto_start_recording": false,
+  "auto_start_recording": true,
   "show_log": true,
   "show_version_info": false,
   "show_toolbar": true,

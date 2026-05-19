@@ -61,7 +61,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='BLEHost-Qt-v3.7.2',
+    name='BLEHost-Qt-v4.0.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
