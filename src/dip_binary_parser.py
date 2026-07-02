@@ -7,6 +7,10 @@ UART 二进制帧解析（DIP v2 / CS 双端 IQ）
 - type ``0x01``：DIP 本地 IQ（4 B/信道）
 - type ``0x02``：全功能 CS 双端 IQ（8 B/信道）
 
+帧头 version：
+- ``0x02``（当前）：30 字节固定头，含 ``timestamp_ms``（uint64 LE，k_uptime_get 毫秒）
+- ``0x01``（旧版）：22 字节固定头，无 ``timestamp_ms``
+
 本模块负责：同步搜帧、CRC 校验、bitmap 展开信道、转为上位机统一帧结构。
 
 协议与固件对齐：
@@ -41,17 +45,28 @@ except ImportError:
 
 SYNC1 = 0x55
 SYNC2 = 0xAA
-HEADER_SIZE = 22
+HEADER_SIZE_V1 = 22
+HEADER_SIZE_V2 = 30
+PAYLOAD_FIXED_V1 = 16
+PAYLOAD_FIXED_V2 = 24
 MAX_FFT_CHANNELS = 75
 
 TYPE_DIP_LOCAL = 0x01
 TYPE_CS_DUAL = 0x02
 
 # 向后兼容旧名称
+HEADER_SIZE = HEADER_SIZE_V2
 DIP_MAX_FFT_CHANNELS = MAX_FFT_CHANNELS
 DIP_FRAME_TYPE_IQ = TYPE_DIP_LOCAL
 
 _iq_helper = DataParser()
+
+
+def header_layout(version: int) -> Tuple[int, int, int, int]:
+    """返回 (header_size, payload_fixed, ap_offset, bitmap_offset)。"""
+    if version == 0x01:
+        return HEADER_SIZE_V1, PAYLOAD_FIXED_V1, 8, 12
+    return HEADER_SIZE_V2, PAYLOAD_FIXED_V2, 16, 20
 
 
 def iq_bytes_per_channel(ftype: int) -> Optional[int]:
@@ -71,8 +86,8 @@ def crc16_ccitt(data: bytes) -> int:
     覆盖范围：从 sync1 到 IQ 区最后一字节（不含帧尾 2 字节 CRC）。
     """
     crc = 0xFFFF
-    for b in data:
-        crc ^= b << 8
+    for byte in data:
+        crc ^= byte << 8
         for _ in range(8):
             if crc & 0x8000:
                 crc = ((crc << 1) ^ 0x1021) & 0xFFFF
@@ -99,50 +114,62 @@ def parse_frame(frame: bytes) -> Optional[Dict]:
     """
     校验并解析**一整帧**二进制数据（调用方需已按长度切好）。
 
-    帧布局（little-endian）::
+    帧布局 v0x02（little-endian，30 字节头）::
 
         [0:2]   sync1, sync2
-        [2]     version (0x01)
+        [2]     version (0x02)
         [3]     type (0x01=DIP / 0x02=CS 双端)
         [4:6]   payload_len  — 从 procedure_counter 起到 IQ 末字节，不含 CRC
         [6:8]   procedure_counter
-        [8]     ap
-        [9]     iq_format (0 = int16 I/Q)
-        [10]    channel_count N
-        [11]    reserved
-        [12:22] channel_bitmap[10]
-        [22:...] IQ 载荷（type 0x01: 4N；type 0x02: 8N）
+        [8:16]  timestamp_ms (uint64 LE，v0x02 起)
+        [16]    ap
+        [17]    iq_format (0 = int16 I/Q)
+        [18]    channel_count N
+        [19]    reserved
+        [20:30] channel_bitmap[10]
+        [30:...] IQ 载荷（type 0x01: 4N；type 0x02: 8N）
         [...]   crc16
 
-    ``payload_len = 16 + bpc×N``，整帧长度 ``22 + bpc×N + 2``。
+    v0x01 固定头 22 字节，无 timestamp_ms，``payload_fixed=16``。
+
+    v0x02 ``payload_len = 24 + bpc×N``，整帧长度 ``30 + bpc×N + 2``。
 
     Returns:
         解析成功时返回中间结构（含 iq 字典）；失败返回 None。
     """
-    if len(frame) < HEADER_SIZE + 2:
+    if len(frame) < HEADER_SIZE_V1 + 2:
         return None
     if frame[0] != SYNC1 or frame[1] != SYNC2:
         return None
 
     version, ftype = frame[2], frame[3]
+    hdr_size, payload_fixed, ap_off, bitmap_off = header_layout(version)
+
+    if len(frame) < hdr_size + 2:
+        return None
+
     bpc = iq_bytes_per_channel(ftype)
     if bpc is None:
         return None
 
     payload_len, pc = struct.unpack_from("<HH", frame, 4)
-    ap, iq_format, ch_count, _reserved = struct.unpack_from("<BBBB", frame, 8)
-    bitmap = frame[12:22]
+    timestamp_ms: Optional[int] = None
+    if version >= 0x02:
+        timestamp_ms = struct.unpack_from("<Q", frame, 8)[0]
 
-    iq_len = payload_len - 16
+    ap, iq_format, ch_count, _reserved = struct.unpack_from("<BBBB", frame, ap_off)
+    bitmap = frame[bitmap_off : bitmap_off + 10]
+
+    iq_len = payload_len - payload_fixed
     if iq_len < 0 or iq_len % bpc != 0:
         return None
 
-    expected = HEADER_SIZE + iq_len + 2
+    expected = hdr_size + iq_len + 2
     if len(frame) != expected:
         return None
 
-    body = frame[: HEADER_SIZE + iq_len]
-    crc_rx = struct.unpack_from("<H", frame, HEADER_SIZE + iq_len)[0]
+    body = frame[: hdr_size + iq_len]
+    crc_rx = struct.unpack_from("<H", frame, hdr_size + iq_len)[0]
     if crc16_ccitt(body) != crc_rx:
         return None
 
@@ -150,7 +177,7 @@ def parse_frame(frame: bytes) -> Optional[Dict]:
     if len(chs) != ch_count or ch_count * bpc != iq_len:
         return None
 
-    iq_bytes = frame[HEADER_SIZE : HEADER_SIZE + iq_len]
+    iq_bytes = frame[hdr_size : hdr_size + iq_len]
     iq_map: Dict[int, Union[Tuple[int, int], Tuple[int, int, int, int]]] = {}
     off = 0
     for ch in chs:
@@ -163,7 +190,7 @@ def parse_frame(frame: bytes) -> Optional[Dict]:
             off += 8
             iq_map[ch] = (il, ql, ir, qr)
 
-    return {
+    result: Dict = {
         "version": version,
         "type": ftype,
         "procedure_counter": pc,
@@ -174,13 +201,16 @@ def parse_frame(frame: bytes) -> Optional[Dict]:
         "iq": iq_map,
         "raw": frame,
     }
+    if timestamp_ms is not None:
+        result["timestamp_ms"] = timestamp_ms
+    return result
 
 
 class UartBinaryFrameReader:
     """
     串口字节流 → 完整 UART 二进制帧（带同步字搜索的状态机）。
 
-    同时支持 type 0x01（DIP）与 0x02（CS 双端）；根据帧内 type 字段定 IQ 区宽度。
+    同时支持 type 0x01（DIP）与 0x02（CS 双端）；根据帧内 type 与 version 定头长与 IQ 区宽度。
     错位恢复：CRC 失败时丢弃 1 字节后继续搜同步。
     """
 
@@ -215,20 +245,22 @@ class UartBinaryFrameReader:
             if len(self._buf) < 6:
                 break
 
+            version = self._buf[2]
             ftype = self._buf[3]
             bpc = iq_bytes_per_channel(ftype)
             if bpc is None:
                 del self._buf[0]
                 continue
 
+            hdr_size, payload_fixed, _, _ = header_layout(version)
             payload_len = struct.unpack_from("<H", self._buf, 4)[0]
-            iq_len = payload_len - 16
+            iq_len = payload_len - payload_fixed
             max_iq = MAX_FFT_CHANNELS * bpc
             if iq_len < 0 or iq_len > max_iq or iq_len % bpc != 0:
                 del self._buf[0]
                 continue
 
-            total = HEADER_SIZE + iq_len + 2
+            total = hdr_size + iq_len + 2
             if len(self._buf) < total:
                 break
 
@@ -246,11 +278,20 @@ class UartBinaryFrameReader:
 DipBinaryFrameReader = UartBinaryFrameReader
 
 
+def _device_timestamp_ms(parsed: Dict) -> int:
+    """v0x02 使用设备毫秒时间戳；v0x01 回退为 procedure_counter。"""
+    ts = parsed.get("timestamp_ms")
+    if ts is not None:
+        return int(ts)
+    return int(parsed["procedure_counter"])
+
+
 def dip_binary_to_app_frame(parsed: Dict) -> Optional[Dict]:
     """
     将 type 0x01 解析结果转为上位机统一帧字典。
 
-    - ``procedure_counter`` → ``index`` / ``timestamp_ms``
+    - ``procedure_counter`` → ``index``
+    - ``timestamp_ms``（v0x02）→ ``timestamp_ms``；v0x01 回退为 ``procedure_counter``
     - 每信道 int16 (i,q) → ``channels[ch]`` 含 amplitude/phase/I/Q/local_* 等
     - ``frame_type`` 固定为 ``dip_direct_iq``
     """
@@ -262,7 +303,7 @@ def dip_binary_to_app_frame(parsed: Dict) -> Optional[Dict]:
         "frame": True,
         "frame_type": "dip_direct_iq",
         "index": pc,
-        "timestamp_ms": pc,
+        "timestamp_ms": _device_timestamp_ms(parsed),
         "ap": parsed.get("ap", 0),
         "channels": OrderedDict(),
     }
@@ -296,7 +337,8 @@ def cs_binary_to_app_frame(parsed: Dict) -> Optional[Dict]:
     """
     将 type 0x02 解析结果转为上位机统一帧字典（与 ASCII CS ``finalize_frame`` 兼容）。
 
-    - ``procedure_counter``（RAS ranging_counter）→ ``index`` / ``timestamp_ms``
+    - ``procedure_counter``（RAS ranging_counter）→ ``index``
+    - ``timestamp_ms``（v0x02）→ ``timestamp_ms``；v0x01 回退为 ``procedure_counter``
     - 双端 int16 → il/ql/ir/qr，幅相按 ``DataParser.combine_iq`` 合成
     - ``frame_type`` 为 ``channel_sounding``，后续绘图/呼吸/保存与文本 CS 共用
     """
@@ -308,7 +350,7 @@ def cs_binary_to_app_frame(parsed: Dict) -> Optional[Dict]:
         "frame": True,
         "frame_type": "channel_sounding",
         "index": pc,
-        "timestamp_ms": pc,
+        "timestamp_ms": _device_timestamp_ms(parsed),
         "ap": parsed.get("ap", 0),
         "channels": OrderedDict(),
     }

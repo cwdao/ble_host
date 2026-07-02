@@ -73,7 +73,7 @@ python run_qt.py
 
 下位机 `DIP_REPORT_BINARY_OUTPUT=1` 时输出的 **v2 二进制帧**，上位机帧类型选 **「DIP-直接IQ输出」**。
 
-- 同步字 `0x55 0xAA`，固定头 22 字节 + 按 bitmap 的有效信道 int16 I/Q + CRC16-CCITT
+- 同步字 `0x55 0xAA`，固定头 30 字节（v0x02，含 `timestamp_ms`）+ 按 bitmap 的有效信道 int16 I/Q + CRC16-CCITT
 - 不含 ASCII 帧头/帧尾；串口需与固件波特率一致（常见 **115200**）
 - 解析后进入与 CS 相同的多通道绘图与呼吸估计流程
 - **详细协议、固件配置与排障**：参见 [`docs/dip_binary_frame.md`](docs/dip_binary_frame.md)
@@ -82,7 +82,7 @@ python run_qt.py
 
 下位机 `CS_REPORT_BINARY_OUTPUT=1` 且 `APP_CS_DIP_BYPASS_RAS=0` 时输出的 **type `0x02` 帧**，上位机帧类型选 **「CS-二进制双端IQ」**。
 
-- 与 DIP 共用 `0x55 0xAA` 帧头；每有效信道 8 字节（i_local, q_local, i_remote, q_remote）
+- 与 DIP 共用 `0x55 0xAA` 帧头（v0x02 为 30 字节，含设备毫秒时间戳）；每有效信道 8 字节（i_local, q_local, i_remote, q_remote）
 - 解析后与 ASCII「信道探测帧」结构相同（`frame_type: channel_sounding`），绘图/呼吸/保存流程无需改动
 - **详细协议与固件配置**：参见 [`docs/cs_binary_frame.md`](docs/cs_binary_frame.md)
 
@@ -412,6 +412,14 @@ logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 本项目仅供学习和开发使用。
 
 ## 更新日志
+
+### v4.1.0 (2026-07-02) — 二进制 UART 协议 v0x02（设备时间戳）
+
+下位机帧头 version 升级为 **0x02**：固定头由 22 字节增至 30 字节，在 `procedure_counter` 后增加 `timestamp_ms`（uint64 LE，`k_uptime_get()` 毫秒）。
+
+- ✅ **`dip_binary_parser.py`**：对齐下位机 `cs_parse_uart.py`，支持 v0x01 / v0x02 双版本解析
+- ✅ **统一帧**：`timestamp_ms` 使用设备真实毫秒时间戳（v0x02）；v0x01 旧固件回退为 `procedure_counter`
+- ✅ **文档**：[`docs/dip_binary_frame.md`](docs/dip_binary_frame.md)、[`docs/cs_binary_frame.md`](docs/cs_binary_frame.md) 已同步
 
 ### v4.0.0 (2026-05-19) — DIP 直接 IQ 二进制帧（主版本更新）
 

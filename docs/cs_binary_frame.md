@@ -48,28 +48,31 @@ DataProcessor → Plotter / BreathingEstimator / DataSaver
 
 ## 3. 协议摘要（type = 0x02）
 
-帧头与 DIP v2 **完全相同**（22 字节），差异仅在 `type` 与 IQ 载荷宽度：
+帧头与 DIP v2 **完全相同**（version 0x02 为 30 字节），差异仅在 `type` 与 IQ 载荷宽度：
 
 ```
 偏移   长度    字段
 0      1       sync1 = 0x55
 1      1       sync2 = 0xAA
-2      1       version = 0x01
+2      1       version = 0x02
 3      1       type = 0x02 (CS 双端 IQ)
 4      2       payload_len (LE)
 6      2       procedure_counter (LE) — RAS ranging_counter
-8      1       ap
-9      1       iq_format (0 = int16)
-10     1       channel_count N
-11     1       reserved
-12     10      channel_bitmap[10]
-22     8×N     IQ: 按 ch 升序，每信道 int16 i_local, q_local, i_remote, q_remote
-22+8N  2       crc16 (LE, CRC16-CCITT)
+8      8       timestamp_ms (LE, uint64, k_uptime_get 毫秒)
+16     1       ap
+17     1       iq_format (0 = int16)
+18     1       channel_count N
+19     1       reserved
+20     10      channel_bitmap[10]
+30     8×N     IQ: 按 ch 升序，每信道 int16 i_local, q_local, i_remote, q_remote
+30+8N  2       crc16 (LE, CRC16-CCITT)
 ```
 
-- 整帧长度：`22 + 8×N + 2` 字节  
-- `payload_len = 16 + 8×N`  
+- 整帧长度：`30 + 8×N + 2` 字节  
+- `payload_len = 24 + 8×N`  
 - CRC 覆盖：从 **sync1** 到 IQ 区最后一字节  
+
+**version 0x01（旧版）**：固定头 22 字节，无 `timestamp_ms`；上位机解析器仍兼容。
 
 ---
 
@@ -84,7 +87,7 @@ DataProcessor → Plotter / BreathingEstimator / DataSaver
 | — | I, Q | `DataParser.combine_iq(il, ql, ir, qr)` |
 | — | amplitude, phase | 合成复数幅相 |
 
-二进制帧**不含** `timestamp_ms`（设备毫秒时间戳）；上位机用 `procedure_counter` 同时填充 `index` 与 `timestamp_ms`，与 DIP 二进制一致。
+v0x02 帧含 `timestamp_ms`（设备 `k_uptime_get()` 毫秒）；上位机将其映射为统一帧的 `timestamp_ms`，`procedure_counter` 仍作为 `index`。v0x01 旧帧无该字段，回退为用 `procedure_counter` 填充 `timestamp_ms`。
 
 ---
 

@@ -48,28 +48,31 @@ DataProcessor → Plotter / BreathingEstimator / DataSaver
 
 ## 3. 协议摘要（v2）
 
-### 3.1 帧结构
+### 3.1 帧结构（version 0x02，当前固件）
 
 ```
 偏移   长度    字段
 0      1       sync1 = 0x55
 1      1       sync2 = 0xAA
-2      1       version = 0x01
+2      1       version = 0x02
 3      1       type = 0x01 (DIP IQ)
 4      2       payload_len (LE)
 6      2       procedure_counter (LE)
-8      1       ap
-9      1       iq_format (0 = int16)
-10     1       channel_count N
-11     1       reserved
-12     10      channel_bitmap[10]
-22     4×N     IQ: 按 ch 升序，每信道 int16 i + int16 q
-22+4N  2       crc16 (LE, CRC16-CCITT)
+8      8       timestamp_ms (LE, uint64, k_uptime_get 毫秒)
+16     1       ap
+17     1       iq_format (0 = int16)
+18     1       channel_count N
+19     1       reserved
+20     10      channel_bitmap[10]
+30     4×N     IQ: 按 ch 升序，每信道 int16 i + int16 q
+30+4N  2       crc16 (LE, CRC16-CCITT)
 ```
 
-- 整帧长度：`22 + 4×N + 2` 字节  
-- `payload_len = 16 + 4×N`（从 `procedure_counter` 起到 IQ 末字节，**不含** sync 与 CRC）  
+- 整帧长度：`30 + 4×N + 2` 字节  
+- `payload_len = 24 + 4×N`（从 `procedure_counter` 起到 IQ 末字节，**不含** sync 与 CRC）  
 - CRC 覆盖：从 **sync1** 到 IQ 区最后一字节  
+
+**version 0x01（旧版，无 timestamp）**：固定头 22 字节，`payload_len = 16 + 4×N`，整帧 `22 + 4×N + 2`。上位机解析器仍兼容。
 
 ### 3.2 信道位图
 
@@ -120,7 +123,7 @@ DataProcessor → Plotter / BreathingEstimator / DataSaver
     "frame": True,
     "frame_type": "dip_direct_iq",
     "index": 100,           # procedure_counter
-    "timestamp_ms": 100,    # 同 index（DIP 无独立 ms 时间戳）
+    "timestamp_ms": 18482,  # v0x02：设备 k_uptime_get() 毫秒；v0x01 回退为 index
     "ap": 0,
     "channels": {
         3: {
@@ -164,8 +167,10 @@ python doc/dip_parse_uart.py COM3
 
 ## 7. 版本与兼容性
 
-- 协议 `version = 0x01`，`type = 0x01`  
-- 上位机自 **v4.0.0** 起正式支持；与 ASCII CS/DF 帧类型**互斥**（同一串口连接只应选一种帧类型）  
+- 当前固件协议 `version = 0x02`（30 字节头 + `timestamp_ms`），`type = 0x01`  
+- 仍兼容旧固件 `version = 0x01`（22 字节头，无 `timestamp_ms`）  
+- 上位机自 **v4.0.0** 起支持二进制 DIP；**v4.1.0** 起对齐下位机 v0x02 时间戳字段  
+- 与 ASCII CS/DF 帧类型**互斥**（同一串口连接只应选一种帧类型）  
 - 切换 UART 二进制帧类型 ↔ 文本帧类型时会清空 `DataParser` 缓冲并切换 `SerialReader` 行/二进制模式  
 
 ---
