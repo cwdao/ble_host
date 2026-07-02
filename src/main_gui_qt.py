@@ -2440,7 +2440,7 @@ class BLEHostGUI(QMainWindow):
             self.serial_reader = SerialReader(
                 port=port,
                 baudrate=baudrate,
-                binary_frame_mode=self._is_dip_binary_mode(),
+                binary_frame_mode=self._is_binary_uart_mode(),
             )
             if self.serial_reader.connect():
                 self.is_running = True
@@ -2512,16 +2512,25 @@ class BLEHostGUI(QMainWindow):
 
         - frame_mode：三种帧类型均走「整帧」处理路径（非简单键值对模式）
         - is_direction_estimation_mode：仅「方向估计帧」为 True（单信道、DF Tab 逻辑）
-        - 「DIP-直接IQ输出」与「信道探测帧」同为多信道，但串口为二进制解析
+        - 「DIP-直接IQ输出」「CS-二进制双端IQ」与「信道探测帧」同为多信道 CS 路径，
+          但串口为二进制解析（type 0x01 / 0x02）
         """
         self.frame_mode = self.frame_type in (
-            "信道探测帧", "方向估计帧", "DIP-直接IQ输出"
+            "信道探测帧", "CS-二进制双端IQ", "方向估计帧", "DIP-直接IQ输出"
         )
         self.is_direction_estimation_mode = self.frame_type == "方向估计帧"
 
+    def _is_binary_uart_mode(self) -> bool:
+        """当前是否为 UART 二进制帧模式（DIP 或 CS 双端）。"""
+        return self.frame_type in ("DIP-直接IQ输出", "CS-二进制双端IQ")
+
     def _is_dip_binary_mode(self) -> bool:
-        """当前是否为 DIP 二进制 UART 模式（需 SerialReader.binary_frame_mode）。"""
+        """当前是否为 DIP 二进制 UART 模式。"""
         return self.frame_type == "DIP-直接IQ输出"
+
+    def _is_cs_binary_mode(self) -> bool:
+        """当前是否为 CS 二进制双端 IQ UART 模式。"""
+        return self.frame_type == "CS-二进制双端IQ"
 
     def _get_internal_frame_type(self) -> str:
         """
@@ -2544,11 +2553,13 @@ class BLEHostGUI(QMainWindow):
         old_is_direction_mode = self.is_direction_estimation_mode
 
         self._update_frame_mode_flags()
-        # 文本 CS/DF 与 DIP 二进制互斥：切换时同步串口组帧方式并清空 ASCII 多行缓冲
-        dip_mode_changed = self._is_dip_binary_mode() != (old_frame_type == "DIP-直接IQ输出")
+        # 文本 CS/DF 与 UART 二进制互斥：切换时同步串口组帧方式并清空 ASCII 多行缓冲
+        binary_mode_changed = self._is_binary_uart_mode() != (
+            old_frame_type in ("DIP-直接IQ输出", "CS-二进制双端IQ")
+        )
         if self.serial_reader:
-            self.serial_reader.set_binary_frame_mode(self._is_dip_binary_mode())
-        if dip_mode_changed:
+            self.serial_reader.set_binary_frame_mode(self._is_binary_uart_mode())
+        if binary_mode_changed:
             self.data_parser.clear_buffer()
         
         self.logger.info(f"帧类型已设置为: {self.frame_type}, 方向估计模式: {self.is_direction_estimation_mode}")
@@ -2765,6 +2776,12 @@ class BLEHostGUI(QMainWindow):
                             elif self._is_dip_binary_mode():
                                 self.logger.info(
                                     f"[DIP帧] pc={frame_data['index']}, "
+                                    f"通道数={len(channels)}, "
+                                    f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
+                                )
+                            elif self._is_cs_binary_mode():
+                                self.logger.info(
+                                    f"[CS二进制帧] pc={frame_data['index']}, "
                                     f"通道数={len(channels)}, "
                                     f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
                                 )
@@ -4036,6 +4053,8 @@ class BLEHostGUI(QMainWindow):
                             self.frame_type_combo.setCurrentText("信道探测帧")
                         self.logger.info("根据文件内容自动设置为信道探测帧模式")
                     self._update_frame_mode_flags()
+                    if self.serial_reader:
+                        self.serial_reader.set_binary_frame_mode(self._is_binary_uart_mode())
                     self.display_max_frames = config.default_display_max_frames
                     if hasattr(self, 'display_max_frames_entry'):
                         self.display_max_frames_entry.setText(str(config.default_display_max_frames))
@@ -4144,8 +4163,10 @@ class BLEHostGUI(QMainWindow):
                 frame_type_name = "方向估计帧"
             elif frame_type == 'dip_direct_iq':
                 frame_type_name = "DIP-直接IQ输出"
-            else:
+            elif frame_type == 'channel_sounding':
                 frame_type_name = "信道探测帧"
+            else:
+                frame_type_name = str(frame_type)
             info_lines.append(f"帧类型: {frame_type_name}")
             frame_version = self.loaded_file_info.get('frame_version')
             if frame_version:

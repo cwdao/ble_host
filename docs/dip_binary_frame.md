@@ -166,7 +166,7 @@ python doc/dip_parse_uart.py COM3
 
 - 协议 `version = 0x01`，`type = 0x01`  
 - 上位机自 **v4.0.0** 起正式支持；与 ASCII CS/DF 帧类型**互斥**（同一串口连接只应选一种帧类型）  
-- 切换「DIP-直接IQ输出」↔ 文本帧类型时会清空 `DataParser` 缓冲并切换 `SerialReader` 行/二进制模式  
+- 切换 UART 二进制帧类型 ↔ 文本帧类型时会清空 `DataParser` 缓冲并切换 `SerialReader` 行/二进制模式  
 
 ---
 
@@ -174,3 +174,4 @@ python doc/dip_parse_uart.py COM3
 
 - 下位机：`DIP_binary_protocol.md`、`DIP_binary_pc_parser.md`、`dip_parse_uart.py`  
 - 上位机：`src/dip_binary_parser.py`、`README.md` 中「DIP 直接 IQ 输出」章节  
+- 同模块 CS 双端 IQ（type `0x02`）：[`cs_binary_frame.md`](./cs_binary_frame.md)

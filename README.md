@@ -78,6 +78,14 @@ python run_qt.py
 - 解析后进入与 CS 相同的多通道绘图与呼吸估计流程
 - **详细协议、固件配置与排障**：参见 [`docs/dip_binary_frame.md`](docs/dip_binary_frame.md)
 
+### CS 二进制双端 IQ（二进制）
+
+下位机 `CS_REPORT_BINARY_OUTPUT=1` 且 `APP_CS_DIP_BYPASS_RAS=0` 时输出的 **type `0x02` 帧**，上位机帧类型选 **「CS-二进制双端IQ」**。
+
+- 与 DIP 共用 `0x55 0xAA` 帧头；每有效信道 8 字节（i_local, q_local, i_remote, q_remote）
+- 解析后与 ASCII「信道探测帧」结构相同（`frame_type: channel_sounding`），绘图/呼吸/保存流程无需改动
+- **详细协议与固件配置**：参见 [`docs/cs_binary_frame.md`](docs/cs_binary_frame.md)
+
 ### 信道探测（CS）帧格式
 ```
 == Basic Report == index:123, timestamp:456789

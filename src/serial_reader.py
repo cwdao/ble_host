@@ -5,9 +5,9 @@
 
 支持两种入队格式：
 - **文本模式**（默认）：按 ``\\n`` 分行，队列项含 ``text`` 字段，供 ASCII CS/DF 解析。
-- **DIP 二进制模式**（``binary_frame_mode=True``）：由 ``DipBinaryFrameReader`` 搜
+- **UART 二进制模式**（``binary_frame_mode=True``）：由 ``UartBinaryFrameReader`` 搜
   ``0x55 0xAA`` 组帧，队列项含 ``binary=True`` 与完整 ``raw`` 帧字节。
-  详见 ``dip_binary_parser`` 与 ``docs/dip_binary_frame.md``。
+  支持 type ``0x01``（DIP）与 ``0x02``（CS 双端）；详见 ``dip_binary_parser``。
 """
 import serial
 import serial.tools.list_ports
@@ -17,9 +17,9 @@ import time
 import logging
 
 try:
-    from .dip_binary_parser import DipBinaryFrameReader
+    from .dip_binary_parser import UartBinaryFrameReader
 except ImportError:
-    from dip_binary_parser import DipBinaryFrameReader
+    from dip_binary_parser import UartBinaryFrameReader
 
 
 class SerialReader:
@@ -33,13 +33,13 @@ class SerialReader:
             port: 串口名称，如 'COM3'，None则自动检测
             baudrate: 波特率，默认115200
             timeout: 超时时间，默认1.0秒
-            binary_frame_mode: True 时走 DIP 二进制组帧（见 DipBinaryFrameReader），
-                False 时按行切分 UTF-8 文本（信道探测/方向估计帧）
+            binary_frame_mode: True 时走 UART 二进制组帧（见 UartBinaryFrameReader），
+                False 时按行切分 UTF-8 文本（ASCII 信道探测/方向估计帧）
         """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
-        # 与 GUI 帧类型「DIP-直接IQ输出」联动；连接/切换类型时由 main_gui 设置
+        # 与 GUI 二进制帧类型联动；连接/切换类型时由 main_gui 设置
         self.binary_frame_mode = binary_frame_mode
         self.serial = None
         self.is_running = False
@@ -48,7 +48,7 @@ class SerialReader:
         self.stop_event = Event()
         self.logger = logging.getLogger(__name__)
         # 二进制模式下复用同一 reader，避免切换类型时丢失半帧
-        self._dip_frame_reader = DipBinaryFrameReader()
+        self._binary_frame_reader = UartBinaryFrameReader()
         
     @staticmethod
     def list_ports():
@@ -114,13 +114,13 @@ class SerialReader:
     
     def set_binary_frame_mode(self, enabled: bool):
         """
-        切换 DIP 二进制帧模式（会清空 DipBinaryFrameReader 内部缓冲）。
+        切换 UART 二进制帧模式（会清空 UartBinaryFrameReader 内部缓冲）。
 
-        在已连接状态下切换「DIP-直接IQ输出」↔ 文本帧类型时由 GUI 调用，
+        在已连接状态下切换二进制帧类型 ↔ 文本帧类型时由 GUI 调用，
         防止上一模式的残留字节造成错帧。
         """
         self.binary_frame_mode = enabled
-        self._dip_frame_reader.clear()
+        self._binary_frame_reader.clear()
 
     def _read_loop(self):
         """串口读取循环（在单独线程中运行）"""
@@ -137,8 +137,8 @@ class SerialReader:
                     if self.serial.in_waiting > 0:
                         data = self.serial.read(self.serial.in_waiting)
                         if self.binary_frame_mode:
-                            # DIP：chunk 可能含半帧或日志噪声，由 feed 返回 0..n 个完整帧
-                            for frame in self._dip_frame_reader.feed(data):
+                            # chunk 可能含半帧或日志噪声，由 feed 返回 0..n 个完整帧
+                            for frame in self._binary_frame_reader.feed(data):
                                 self.data_queue.put({
                                     'timestamp': time.time(),
                                     'raw': frame,       # 完整二进制帧 bytes
