@@ -3,11 +3,12 @@
 """
 串口数据读取模块
 
-支持两种入队格式：
-- **文本模式**（默认）：按 ``\\n`` 分行，队列项含 ``text`` 字段，供 ASCII CS/DF 解析。
-- **UART 二进制模式**（``binary_frame_mode=True``）：由 ``UartBinaryFrameReader`` 搜
-  ``0x55 0xAA`` 组帧，队列项含 ``binary=True`` 与完整 ``raw`` 帧字节。
-  支持 type ``0x01``（DIP）与 ``0x02``（CS 双端）；详见 ``dip_binary_parser``。
+支持三种入队格式（``uart_frame_mode``）：
+- **text**（默认）：按 ``\\n`` 分行，队列项含 ``text`` 字段，供 ASCII CS/DF 解析。
+- **ble_binary**：由 ``UartBinaryFrameReader`` 搜 ``0x55 0xAA`` 组帧；详见 ``dip_binary_parser``。
+- **hkh11c**：由 ``HKH11CFrameReader`` 搜 ``0xFF 0xCC`` 组帧；详见 ``hkh11c_parser``。
+
+队列项在二进制模式下含 ``binary=True`` 与完整 ``raw`` 帧字节。
 """
 import serial
 import serial.tools.list_ports
@@ -18,14 +19,17 @@ import logging
 
 try:
     from .dip_binary_parser import UartBinaryFrameReader
+    from .hkh11c_parser import HKH11CFrameReader
 except ImportError:
     from dip_binary_parser import UartBinaryFrameReader
+    from hkh11c_parser import HKH11CFrameReader
 
 
 class SerialReader:
     """串口数据读取类"""
     
-    def __init__(self, port=None, baudrate=115200, timeout=1.0, binary_frame_mode=False):
+    def __init__(self, port=None, baudrate=115200, timeout=1.0, binary_frame_mode=False,
+                 uart_frame_mode: str = None):
         """
         初始化串口读取器
         
@@ -33,22 +37,25 @@ class SerialReader:
             port: 串口名称，如 'COM3'，None则自动检测
             baudrate: 波特率，默认115200
             timeout: 超时时间，默认1.0秒
-            binary_frame_mode: True 时走 UART 二进制组帧（见 UartBinaryFrameReader），
-                False 时按行切分 UTF-8 文本（ASCII 信道探测/方向估计帧）
+            binary_frame_mode: 向后兼容；True 等价于 uart_frame_mode='ble_binary'
+            uart_frame_mode: 'text' | 'ble_binary' | 'hkh11c'
         """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
-        # 与 GUI 二进制帧类型联动；连接/切换类型时由 main_gui 设置
-        self.binary_frame_mode = binary_frame_mode
+        if uart_frame_mode is not None:
+            self.uart_frame_mode = uart_frame_mode
+        else:
+            self.uart_frame_mode = 'ble_binary' if binary_frame_mode else 'text'
+        self.binary_frame_mode = self.uart_frame_mode == 'ble_binary'
         self.serial = None
         self.is_running = False
         self.read_thread = None
         self.data_queue = Queue()
         self.stop_event = Event()
         self.logger = logging.getLogger(__name__)
-        # 二进制模式下复用同一 reader，避免切换类型时丢失半帧
         self._binary_frame_reader = UartBinaryFrameReader()
+        self._hkh11c_frame_reader = HKH11CFrameReader()
         
     @staticmethod
     def list_ports():
@@ -112,15 +119,25 @@ class SerialReader:
         
         self.logger.info("串口已断开")
     
-    def set_binary_frame_mode(self, enabled: bool):
+    def set_uart_frame_mode(self, mode: str):
         """
-        切换 UART 二进制帧模式（会清空 UartBinaryFrameReader 内部缓冲）。
+        切换 UART 组帧模式（会清空对应 reader 内部缓冲）。
 
-        在已连接状态下切换二进制帧类型 ↔ 文本帧类型时由 GUI 调用，
-        防止上一模式的残留字节造成错帧。
+        Args:
+            mode: 'text' | 'ble_binary' | 'hkh11c'
         """
-        self.binary_frame_mode = enabled
+        if mode not in ('text', 'ble_binary', 'hkh11c'):
+            mode = 'text'
+        self.uart_frame_mode = mode
+        self.binary_frame_mode = mode in ('ble_binary', 'hkh11c')
         self._binary_frame_reader.clear()
+        self._hkh11c_frame_reader.clear()
+
+    def set_binary_frame_mode(self, enabled: bool):
+        """向后兼容：True → ble_binary，False → text（非 HKH）。"""
+        if self.uart_frame_mode == 'hkh11c' and enabled:
+            return
+        self.set_uart_frame_mode('ble_binary' if enabled else 'text')
 
     def _read_loop(self):
         """串口读取循环（在单独线程中运行）"""
@@ -136,13 +153,22 @@ class SerialReader:
                 try:
                     if self.serial.in_waiting > 0:
                         data = self.serial.read(self.serial.in_waiting)
-                        if self.binary_frame_mode:
-                            # chunk 可能含半帧或日志噪声，由 feed 返回 0..n 个完整帧
+                        if self.uart_frame_mode == 'hkh11c':
+                            for frame in self._hkh11c_frame_reader.feed(data):
+                                self.data_queue.put({
+                                    'timestamp': time.time(),
+                                    'raw': frame,
+                                    'binary': True,
+                                    'protocol': 'hkh11c',
+                                    'text': None,
+                                })
+                        elif self.uart_frame_mode == 'ble_binary':
                             for frame in self._binary_frame_reader.feed(data):
                                 self.data_queue.put({
                                     'timestamp': time.time(),
-                                    'raw': frame,       # 完整二进制帧 bytes
-                                    'binary': True,     # 供 main_gui 走 parse_raw_frame
+                                    'raw': frame,
+                                    'binary': True,
+                                    'protocol': 'ble',
                                     'text': None,
                                 })
                         else:

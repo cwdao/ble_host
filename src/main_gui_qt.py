@@ -7,7 +7,7 @@ BLE Host上位机主程序 - PySide6 版本
 
 主要功能：
 1. 串口通信：连接BLE设备，接收实时数据
-2. 数据解析：CS（信道探测）、DF（方向估计）、DIP（直接 IQ 二进制）三种帧格式
+2. 数据解析：CS（信道探测）、DF（方向估计）、DIP/CS 二进制、HKH-11C 呼吸传感器等帧格式
 3. 数据可视化：实时显示幅值、相位、I/Q分量等数据
 4. 呼吸估计：实时分析呼吸频率和能量
 5. 数据保存：保存数据到JSON/JSONL文件
@@ -28,7 +28,7 @@ BLE Host上位机主程序 - PySide6 版本
 - 异步保存：数据保存在后台线程执行
 
 版本信息：
-- 当前版本：v4.0.0（DIP 二进制帧见 dip_binary_parser）
+- 当前版本：v4.2.0（HKH-11C 呼吸传感器见 hkh11c_parser）
 - 支持格式：JSON（加载）、JSONL（保存和加载）
 """
 import sys
@@ -89,6 +89,12 @@ try:
     from .serial_reader import SerialReader
     from .data_parser import DataParser
     from .dip_binary_parser import parse_raw_frame
+    from .hkh11c_parser import parse_raw_wave_frame, parse_frame as parse_hkh11c_frame
+    from .hkh11c_parser import reset_sample_counter
+    from .hkh11c_commands import (
+        build_hkh11c_frame, build_reset, format_hex,
+        CMD_PING, CMD_START, CMD_STOP, CMD_SET_GAIN, CMD_READ_SN, CMD_READ_DATE,
+    )
     from .data_processor import DataProcessor
     from .data_saver import DataSaver
     from .config import config, user_settings
@@ -102,6 +108,12 @@ except ImportError:
     from serial_reader import SerialReader
     from data_parser import DataParser
     from dip_binary_parser import parse_raw_frame
+    from hkh11c_parser import parse_raw_wave_frame, parse_frame as parse_hkh11c_frame
+    from hkh11c_parser import reset_sample_counter
+    from hkh11c_commands import (
+        build_hkh11c_frame, build_reset, format_hex,
+        CMD_PING, CMD_START, CMD_STOP, CMD_SET_GAIN, CMD_READ_SN, CMD_READ_DATE,
+    )
     from data_processor import DataProcessor
     from data_saver import DataSaver
     from config import config, user_settings
@@ -325,6 +337,13 @@ class BLEHostGUI(QMainWindow):
         self.show_toolbar = user_settings.get_show_toolbar()
         self.show_breathing_control = user_settings.get_show_breathing_control()
         self.show_send_command = user_settings.get_show_send_command()
+        self.show_hkh11c_control = user_settings.get_show_hkh11c_control()
+        
+        # HKH-11C 设备状态
+        self.hkh11c_state = "CLOSED"  # CLOSED/OPENED/READY/MEASURING/STOPPING
+        self.hkh11c_device_sn = ""
+        self.hkh11c_device_date = ""
+        self.hkh11c_last_raw = None
         
         # 时间窗滑动条按钮长按相关（用于快速滑动时间窗）
         self.slider_button_timer = None  # 长按定时器
@@ -533,6 +552,9 @@ class BLEHostGUI(QMainWindow):
         
         # 创建发送指令tab
         self._create_send_command_tab(toolbar_layout)
+        
+        # 创建 HKH-11C 控制 tab
+        self._create_hkh11c_tab(toolbar_layout)
         
         toolbar_layout.addWidget(self.toolbar_tabs)
         self.right_splitter.addWidget(self.toolbar_group)
@@ -936,6 +958,87 @@ class BLEHostGUI(QMainWindow):
         
         # 将发送指令widget添加到工具栏tab
         self.toolbar_tabs.addTab(send_command_widget, "发送指令")
+    
+    def _create_hkh11c_tab(self, parent_layout):
+        """创建 HKH-11C 呼吸传感器控制 tab"""
+        hkh_widget = QWidget()
+        hkh_layout = QVBoxLayout(hkh_widget)
+        hkh_layout.setContentsMargins(5, 5, 5, 5)
+        hkh_layout.setSpacing(8)
+        
+        status_label = QLabel("设备状态:")
+        hkh_layout.addWidget(status_label)
+        self.hkh11c_status_label = QLabel("未连接")
+        self.hkh11c_status_label.setStyleSheet("color: gray; font-weight: bold;")
+        hkh_layout.addWidget(self.hkh11c_status_label)
+        
+        btn_row1 = QHBoxLayout()
+        self.hkh11c_reset_btn = QPushButton("复位")
+        self.hkh11c_reset_btn.setStyleSheet(self._get_button_style("#9E9E9E"))
+        self.hkh11c_reset_btn.clicked.connect(self._hkh11c_on_reset)
+        btn_row1.addWidget(self.hkh11c_reset_btn)
+        
+        self.hkh11c_ping_btn = QPushButton("点名")
+        self.hkh11c_ping_btn.setStyleSheet(self._get_button_style("#2196F3"))
+        self.hkh11c_ping_btn.clicked.connect(self._hkh11c_on_ping)
+        btn_row1.addWidget(self.hkh11c_ping_btn)
+        hkh_layout.addLayout(btn_row1)
+        
+        gain_row = QHBoxLayout()
+        gain_row.addWidget(QLabel("幅度:"))
+        self.hkh11c_gain_spin = QSpinBox()
+        self.hkh11c_gain_spin.setRange(0, 16)
+        self.hkh11c_gain_spin.setValue(config.hkh11c_default_gain)
+        gain_row.addWidget(self.hkh11c_gain_spin)
+        self.hkh11c_gain_btn = QPushButton("设置")
+        self.hkh11c_gain_btn.setStyleSheet(self._get_button_style("#FF9800"))
+        self.hkh11c_gain_btn.clicked.connect(self._hkh11c_on_set_gain)
+        gain_row.addWidget(self.hkh11c_gain_btn)
+        hkh_layout.addLayout(gain_row)
+        
+        btn_row2 = QHBoxLayout()
+        self.hkh11c_start_btn = QPushButton("开始测量")
+        self.hkh11c_start_btn.setStyleSheet(self._get_button_style("#4CAF50"))
+        self.hkh11c_start_btn.clicked.connect(self._hkh11c_on_start)
+        btn_row2.addWidget(self.hkh11c_start_btn)
+        
+        self.hkh11c_stop_btn = QPushButton("停止测量")
+        self.hkh11c_stop_btn.setStyleSheet(self._get_button_style("#f44336"))
+        self.hkh11c_stop_btn.clicked.connect(self._hkh11c_on_stop)
+        btn_row2.addWidget(self.hkh11c_stop_btn)
+        hkh_layout.addLayout(btn_row2)
+        
+        btn_row3 = QHBoxLayout()
+        self.hkh11c_read_sn_btn = QPushButton("读设备号")
+        self.hkh11c_read_sn_btn.clicked.connect(self._hkh11c_on_read_sn)
+        btn_row3.addWidget(self.hkh11c_read_sn_btn)
+        self.hkh11c_read_date_btn = QPushButton("读生产日期")
+        self.hkh11c_read_date_btn.clicked.connect(self._hkh11c_on_read_date)
+        btn_row3.addWidget(self.hkh11c_read_date_btn)
+        hkh_layout.addLayout(btn_row3)
+        
+        self.hkh11c_raw_label = QLabel("当前值: --")
+        hkh_layout.addWidget(self.hkh11c_raw_label)
+        
+        self.hkh11c_info_label = QLabel("设备信息: --")
+        self.hkh11c_info_label.setWordWrap(True)
+        hkh_layout.addWidget(self.hkh11c_info_label)
+        
+        history_label = QLabel("交互历史:")
+        hkh_layout.addWidget(history_label)
+        self.hkh11c_history = QTextEdit()
+        self.hkh11c_history.setReadOnly(True)
+        self.hkh11c_history.setMaximumHeight(120)
+        hkh_layout.addWidget(self.hkh11c_history)
+        
+        clear_hkh_btn = QPushButton("清空历史")
+        clear_hkh_btn.setStyleSheet(self._get_button_style("#9E9E9E"))
+        clear_hkh_btn.clicked.connect(lambda: self.hkh11c_history.clear())
+        hkh_layout.addWidget(clear_hkh_btn)
+        
+        hkh_layout.addStretch()
+        self.toolbar_tabs.addTab(hkh_widget, "HKH-11C")
+        self._update_hkh11c_buttons_state()
     
     def _create_menu_bar(self):
         """创建菜单栏（已移除，设置改为tab）"""
@@ -2218,6 +2321,17 @@ class BLEHostGUI(QMainWindow):
         self.show_send_command_checkbox.setEnabled(self.show_toolbar)  # 只有工具栏显示时才启用
         toolbar_sub_layout.addWidget(self.show_send_command_checkbox)
         
+        self.show_hkh11c_control_checkbox = QCheckBox("HKH-11C")
+        self.show_hkh11c_control_checkbox.setFont(get_app_font(8))
+        self.show_hkh11c_control_checkbox.setStyleSheet(
+            "QCheckBox::indicator { width: 12px; height: 12px; }"
+        )
+        self.show_hkh11c_control_checkbox.setChecked(self.show_hkh11c_control)
+        self.show_hkh11c_control_checkbox.stateChanged.connect(self._on_show_hkh11c_control_changed)
+        self.show_hkh11c_control_checkbox.stateChanged.connect(self._update_toolbar_checkbox_state)
+        self.show_hkh11c_control_checkbox.setEnabled(self.show_toolbar)
+        toolbar_sub_layout.addWidget(self.show_hkh11c_control_checkbox)
+        
         display_right_layout.addLayout(toolbar_sub_layout)
         display_right_layout.addStretch()
         display_main_layout.addLayout(display_right_layout)
@@ -2440,7 +2554,7 @@ class BLEHostGUI(QMainWindow):
             self.serial_reader = SerialReader(
                 port=port,
                 baudrate=baudrate,
-                binary_frame_mode=self._is_binary_uart_mode(),
+                uart_frame_mode=self._get_uart_frame_mode(),
             )
             if self.serial_reader.connect():
                 self.is_running = True
@@ -2461,6 +2575,11 @@ class BLEHostGUI(QMainWindow):
                 if hasattr(self, 'breathing_result_text'):
                     self.breathing_result_text.setPlainText("等待数据积累...")
                 
+                if self.is_hkh11c_mode:
+                    self.hkh11c_state = "OPENED"
+                    self._update_hkh11c_status_ui()
+                    self._update_hkh11c_buttons_state()
+                
                 # 更新文件加载tab状态（连接时禁用文件加载功能）
                 self._update_load_tab_state()
                 
@@ -2476,9 +2595,15 @@ class BLEHostGUI(QMainWindow):
                 )
         else:
             # 断开
+            if self.is_hkh11c_mode and self.hkh11c_state == "MEASURING" and self.serial_reader:
+                self._hkh11c_send(build_hkh11c_frame(CMD_STOP), "停止测量", update_state=False)
             if self.serial_reader:
                 self.serial_reader.disconnect()
             self.is_running = False
+            if self.is_hkh11c_mode:
+                self.hkh11c_state = "CLOSED"
+                self._update_hkh11c_status_ui()
+                self._update_hkh11c_buttons_state()
             self.connect_btn.setText("连接")
             self.connect_btn.setStyleSheet(self._get_button_style("#4CAF50"))
             self.status_label.setText("未连接")
@@ -2516,13 +2641,27 @@ class BLEHostGUI(QMainWindow):
           但串口为二进制解析（type 0x01 / 0x02）
         """
         self.frame_mode = self.frame_type in (
-            "信道探测帧", "CS-二进制双端IQ", "方向估计帧", "DIP-直接IQ输出"
+            "CS-二进制双端IQ", "DIP-直接IQ输出", "信道探测帧", "方向估计帧",
+            "HKH-11C呼吸波形",
         )
         self.is_direction_estimation_mode = self.frame_type == "方向估计帧"
+        self.is_hkh11c_mode = self.frame_type == "HKH-11C呼吸波形"
 
     def _is_binary_uart_mode(self) -> bool:
-        """当前是否为 UART 二进制帧模式（DIP 或 CS 双端）。"""
+        """当前是否为 BLE UART 二进制帧模式（DIP 或 CS 双端）。"""
         return self.frame_type in ("DIP-直接IQ输出", "CS-二进制双端IQ")
+
+    def _is_hkh11c_mode_fn(self) -> bool:
+        """当前是否为 HKH-11C 呼吸传感器模式。"""
+        return self.frame_type == "HKH-11C呼吸波形"
+
+    def _get_uart_frame_mode(self) -> str:
+        """SerialReader 组帧模式。"""
+        if self._is_hkh11c_mode_fn():
+            return 'hkh11c'
+        if self._is_binary_uart_mode():
+            return 'ble_binary'
+        return 'text'
 
     def _is_dip_binary_mode(self) -> bool:
         """当前是否为 DIP 二进制 UART 模式。"""
@@ -2543,6 +2682,8 @@ class BLEHostGUI(QMainWindow):
             return "direction_estimation"
         if self._is_dip_binary_mode():
             return "dip_direct_iq"
+        if self._is_hkh11c_mode_fn():
+            return "hkh11c_resp"
         return "channel_sounding"
 
     def _on_frame_type_changed(self, text):
@@ -2553,14 +2694,53 @@ class BLEHostGUI(QMainWindow):
         old_is_direction_mode = self.is_direction_estimation_mode
 
         self._update_frame_mode_flags()
-        # 文本 CS/DF 与 UART 二进制互斥：切换时同步串口组帧方式并清空 ASCII 多行缓冲
-        binary_mode_changed = self._is_binary_uart_mode() != (
-            old_frame_type in ("DIP-直接IQ输出", "CS-二进制双端IQ")
+        old_uart_mode = 'hkh11c' if old_frame_type == "HKH-11C呼吸波形" else (
+            'ble_binary' if old_frame_type in ("DIP-直接IQ输出", "CS-二进制双端IQ") else 'text'
         )
+        uart_mode_changed = self._get_uart_frame_mode() != old_uart_mode
         if self.serial_reader:
-            self.serial_reader.set_binary_frame_mode(self._is_binary_uart_mode())
-        if binary_mode_changed:
+            self.serial_reader.set_uart_frame_mode(self._get_uart_frame_mode())
+        if uart_mode_changed:
             self.data_parser.clear_buffer()
+            reset_sample_counter()
+        
+        # HKH 模式：联动工具栏、显示信道、波特率提示
+        if self.is_hkh11c_mode:
+            self._switch_toolbar_to_hkh11c_tab()
+            self.display_channel_list = [0]
+            if hasattr(self, 'display_channels_entry'):
+                self.display_channels_entry.setText("0")
+            self.display_max_frames = config.hkh11c_default_display_max_frames
+            if hasattr(self, 'display_max_frames_entry'):
+                self.display_max_frames_entry.setText(str(config.hkh11c_default_display_max_frames))
+            if self.baudrate_combo.currentText() != config.hkh11c_default_baudrate:
+                self.baudrate_combo.setCurrentText(config.hkh11c_default_baudrate)
+                InfoBarHelper.info(
+                    self,
+                    title="HKH-11C 模式",
+                    content=f"已建议波特率 {config.hkh11c_default_baudrate}；请确认后连接串口",
+                )
+            self._update_plot_tabs_enabled_state()
+            if old_frame_type != text:
+                self.data_processor.clear_buffer(clear_frames=True)
+                for plotter_info in self.plotters.values():
+                    plotter = plotter_info.get('plotter')
+                    if plotter is not None:
+                        plotter.clear_plot()
+                reset_sample_counter()
+        elif old_frame_type == "HKH-11C呼吸波形":
+            self.display_max_frames = config.default_display_max_frames
+            if hasattr(self, 'display_max_frames_entry'):
+                self.display_max_frames_entry.setText(str(config.default_display_max_frames))
+            self._update_plot_tabs_enabled_state()
+            self.data_processor.clear_buffer(clear_frames=True)
+            for plotter_info in self.plotters.values():
+                plotter = plotter_info.get('plotter')
+                if plotter is not None:
+                    plotter.clear_plot()
+        
+        # 文本 CS/DF 与 UART 二进制互斥（保留原逻辑注释位置）
+        binary_mode_changed = uart_mode_changed
         
         self.logger.info(f"帧类型已设置为: {self.frame_type}, 方向估计模式: {self.is_direction_estimation_mode}")
         
@@ -2619,8 +2799,9 @@ class BLEHostGUI(QMainWindow):
         
         for tab_key, tab_index in tab_configs:
             if tab_key in self.plotters:
-                # 方向估计帧模式下，只启用幅值tab
-                enabled = not self.is_direction_estimation_mode or (tab_key == 'amplitude')
+                # 方向估计帧 / HKH-11C：只启用幅值 tab
+                only_amplitude = self.is_direction_estimation_mode or self.is_hkh11c_mode
+                enabled = not only_amplitude or (tab_key == 'amplitude')
                 self.plot_tabs.setTabEnabled(tab_index, enabled)
                 
                 # 如果当前tab被禁用，切换到幅值tab
@@ -2750,9 +2931,16 @@ class BLEHostGUI(QMainWindow):
             # ==================== 帧数据处理 ====================
             # 如果是帧模式，优先处理帧数据
             if self.frame_mode:
-                # DIP 二进制：整帧字节；文本模式：CS 多行 / DF 单行
+                # DIP / CS 二进制、HKH-11C 或文本模式
                 if data.get('binary'):
-                    parsed = parse_raw_frame(data['raw'])
+                    if data.get('protocol') == 'hkh11c' or self.is_hkh11c_mode:
+                        raw_frame = data['raw']
+                        event = parse_hkh11c_frame(raw_frame)
+                        if event:
+                            self._hkh11c_handle_event(event)
+                        parsed = parse_raw_wave_frame(raw_frame)
+                    else:
+                        parsed = parse_raw_frame(data['raw'])
                 elif data.get('text'):
                     parsed = self.data_parser.parse(data['text'])
                 else:
@@ -2784,6 +2972,12 @@ class BLEHostGUI(QMainWindow):
                                     f"[CS二进制帧] pc={frame_data['index']}, "
                                     f"通道数={len(channels)}, "
                                     f"通道范围={channels[0]}-{channels[-1] if channels else 'N/A'}"
+                                )
+                            elif self.is_hkh11c_mode:
+                                ch0 = frame_data['channels'].get(0, {})
+                                self.logger.info(
+                                    f"[HKH-11C] sample={frame_data['index']}, "
+                                    f"raw={ch0.get('raw', 0)}"
                                 )
                             else:
                                 self.logger.info(
@@ -4041,8 +4235,19 @@ class BLEHostGUI(QMainWindow):
                     if hasattr(self, 'display_max_frames_entry'):
                         self.display_max_frames_entry.setText(str(config.df_default_display_max_frames))
                     self.logger.info(f"根据文件内容自动设置为方向估计帧模式")
-                elif file_frame_type in ('channel_sounding', 'dip_direct_iq'):
-                    if file_frame_type == 'dip_direct_iq':
+                elif file_frame_type in ('channel_sounding', 'dip_direct_iq', 'hkh11c_resp'):
+                    if file_frame_type == 'hkh11c_resp':
+                        self.frame_type = "HKH-11C呼吸波形"
+                        if hasattr(self, 'frame_type_combo'):
+                            self.frame_type_combo.setCurrentText("HKH-11C呼吸波形")
+                        self.logger.info("根据文件内容自动设置为 HKH-11C呼吸波形 模式")
+                        self.display_max_frames = config.hkh11c_default_display_max_frames
+                        if hasattr(self, 'display_max_frames_entry'):
+                            self.display_max_frames_entry.setText(str(config.hkh11c_default_display_max_frames))
+                        self.display_channel_list = [0]
+                        if hasattr(self, 'display_channels_entry'):
+                            self.display_channels_entry.setText("0")
+                    elif file_frame_type == 'dip_direct_iq':
                         self.frame_type = "DIP-直接IQ输出"
                         if hasattr(self, 'frame_type_combo'):
                             self.frame_type_combo.setCurrentText("DIP-直接IQ输出")
@@ -4054,10 +4259,11 @@ class BLEHostGUI(QMainWindow):
                         self.logger.info("根据文件内容自动设置为信道探测帧模式")
                     self._update_frame_mode_flags()
                     if self.serial_reader:
-                        self.serial_reader.set_binary_frame_mode(self._is_binary_uart_mode())
-                    self.display_max_frames = config.default_display_max_frames
-                    if hasattr(self, 'display_max_frames_entry'):
-                        self.display_max_frames_entry.setText(str(config.default_display_max_frames))
+                        self.serial_reader.set_uart_frame_mode(self._get_uart_frame_mode())
+                    if file_frame_type != 'hkh11c_resp':
+                        self.display_max_frames = config.default_display_max_frames
+                        if hasattr(self, 'display_max_frames_entry'):
+                            self.display_max_frames_entry.setText(str(config.default_display_max_frames))
             
             # 根据帧类型更新呼吸估计器的默认参数
             if hasattr(self, 'breathing_estimator'):
@@ -4163,6 +4369,8 @@ class BLEHostGUI(QMainWindow):
                 frame_type_name = "方向估计帧"
             elif frame_type == 'dip_direct_iq':
                 frame_type_name = "DIP-直接IQ输出"
+            elif frame_type == 'hkh11c_resp':
+                frame_type_name = "HKH-11C呼吸波形"
             elif frame_type == 'channel_sounding':
                 frame_type_name = "信道探测帧"
             else:
@@ -5115,6 +5323,127 @@ class BLEHostGUI(QMainWindow):
             if isinstance(widget, QLineEdit):
                 widget.setText(default_params['interval_ms'])
     
+    # ==================== HKH-11C 传感器控制 ====================
+    
+    def _switch_toolbar_to_hkh11c_tab(self):
+        """帧类型切到 HKH 时，工具栏切换到 HKH-11C Tab。"""
+        if not hasattr(self, 'toolbar_tabs'):
+            return
+        for i in range(self.toolbar_tabs.count()):
+            if self.toolbar_tabs.tabText(i) == "HKH-11C":
+                self.toolbar_tabs.setTabVisible(i, True)
+                self.toolbar_tabs.setCurrentIndex(i)
+                break
+    
+    def _hkh11c_append_history(self, direction: str, text: str):
+        if not hasattr(self, 'hkh11c_history'):
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.hkh11c_history.append(f"[{timestamp}] {direction}: {text}")
+    
+    def _hkh11c_send(self, payload: bytes, label: str = "", update_state: bool = True) -> bool:
+        if not self.is_running or not self.serial_reader:
+            InfoBarHelper.warning(self, title="无法发送", content="请先连接串口")
+            return False
+        success = self.serial_reader.write(payload)
+        hex_str = format_hex(payload)
+        if success:
+            self._hkh11c_append_history("发送", f"{label} {hex_str}".strip())
+            self.logger.info(f"HKH-11C TX: {hex_str}")
+        else:
+            InfoBarHelper.error(self, title="发送失败", content="HKH-11C 命令发送失败")
+        return success
+    
+    def _update_hkh11c_status_ui(self):
+        if not hasattr(self, 'hkh11c_status_label'):
+            return
+        state_text = {
+            "CLOSED": ("未连接", "gray"),
+            "OPENED": ("已连接 · 待点名", "orange"),
+            "READY": ("设备在线 · 待测量", "#2196F3"),
+            "MEASURING": ("测量中", "green"),
+            "STOPPING": ("停止中…", "orange"),
+        }
+        text, color = state_text.get(self.hkh11c_state, (self.hkh11c_state, "gray"))
+        self.hkh11c_status_label.setText(text)
+        self.hkh11c_status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+    
+    def _update_hkh11c_buttons_state(self):
+        if not hasattr(self, 'hkh11c_start_btn'):
+            return
+        connected = self.is_running
+        state = self.hkh11c_state
+        for btn in (self.hkh11c_reset_btn, self.hkh11c_ping_btn, self.hkh11c_gain_btn,
+                    self.hkh11c_read_sn_btn, self.hkh11c_read_date_btn):
+            btn.setEnabled(connected)
+        self.hkh11c_start_btn.setEnabled(connected and state in ("READY", "OPENED"))
+        self.hkh11c_stop_btn.setEnabled(connected and state in ("MEASURING", "STOPPING"))
+        self.hkh11c_gain_spin.setEnabled(connected)
+    
+    def _hkh11c_handle_event(self, event: dict):
+        if not event:
+            return
+        etype = event.get("type")
+        raw = event.get("raw", b"")
+        if isinstance(raw, bytes) and raw:
+            self._hkh11c_append_history("接收", format_hex(raw))
+        
+        if etype == "ping_ack":
+            self.hkh11c_state = "READY"
+            InfoBarHelper.success(self, title="HKH-11C", content="设备在线")
+        elif etype == "stop_ack":
+            self.hkh11c_state = "READY"
+            reset_sample_counter()
+        elif etype == "set_gain_ack":
+            InfoBarHelper.success(self, title="HKH-11C", content="幅度设置成功")
+        elif etype == "serial_number":
+            self.hkh11c_device_sn = event.get("sn", "")
+            self.hkh11c_info_label.setText(f"设备号: {self.hkh11c_device_sn}")
+        elif etype == "production_date":
+            d, m, y = event.get("day"), event.get("month"), event.get("year")
+            self.hkh11c_device_date = f"{y}-{m:02d}-{d:02d}" if y else str(event.get("params"))
+            self.hkh11c_info_label.setText(
+                f"设备号: {self.hkh11c_device_sn or '--'}  生产日期: {self.hkh11c_device_date}"
+            )
+        elif etype == "resp_wave":
+            raw_val = event.get("raw")
+            self.hkh11c_last_raw = raw_val
+            if hasattr(self, 'hkh11c_raw_label') and raw_val is not None:
+                self.hkh11c_raw_label.setText(f"当前值: {raw_val}")
+        
+        self._update_hkh11c_status_ui()
+        self._update_hkh11c_buttons_state()
+    
+    def _hkh11c_on_reset(self):
+        self._hkh11c_send(build_reset(), "复位")
+    
+    def _hkh11c_on_ping(self):
+        if self._hkh11c_send(build_hkh11c_frame(CMD_PING), "点名"):
+            if self.hkh11c_state == "OPENED":
+                pass  # 等待 ping_ack
+    
+    def _hkh11c_on_set_gain(self):
+        gain = self.hkh11c_gain_spin.value()
+        self._hkh11c_send(build_hkh11c_frame(CMD_SET_GAIN, [gain]), f"设置幅度={gain}")
+    
+    def _hkh11c_on_start(self):
+        reset_sample_counter()
+        if self._hkh11c_send(build_hkh11c_frame(CMD_START), "启动测量"):
+            self.hkh11c_state = "MEASURING"
+            self._update_hkh11c_status_ui()
+            self._update_hkh11c_buttons_state()
+    
+    def _hkh11c_on_stop(self):
+        if self._hkh11c_send(build_hkh11c_frame(CMD_STOP), "停止测量"):
+            self.hkh11c_state = "STOPPING"
+            self._update_hkh11c_status_ui()
+            self._update_hkh11c_buttons_state()
+    
+    def _hkh11c_on_read_sn(self):
+        self._hkh11c_send(build_hkh11c_frame(CMD_READ_SN), "读设备号")
+    
+    def _hkh11c_on_read_date(self):
+        self._hkh11c_send(build_hkh11c_frame(CMD_READ_DATE), "读生产日期")
     
     def _on_generate_command(self):
         """生成命令按钮的回调"""
@@ -5307,6 +5636,8 @@ class BLEHostGUI(QMainWindow):
                 self.show_breathing_control_checkbox.setChecked(True)
             if hasattr(self, 'show_send_command_checkbox'):
                 self.show_send_command_checkbox.setChecked(True)
+            if hasattr(self, 'show_hkh11c_control_checkbox'):
+                self.show_hkh11c_control_checkbox.setChecked(True)
         elif state == Qt.CheckState.Unchecked.value:
             # 未选中状态：取消所有子项并隐藏工具栏
             self.show_toolbar = False
@@ -5314,6 +5645,8 @@ class BLEHostGUI(QMainWindow):
                 self.show_breathing_control_checkbox.setChecked(False)
             if hasattr(self, 'show_send_command_checkbox'):
                 self.show_send_command_checkbox.setChecked(False)
+            if hasattr(self, 'show_hkh11c_control_checkbox'):
+                self.show_hkh11c_control_checkbox.setChecked(False)
         elif state == Qt.CheckState.PartiallyChecked.value:
             # 部分选中状态：用户点击时，选中所有子项（常见行为）
             # 这样用户可以通过点击来快速选中所有子项
@@ -5322,6 +5655,8 @@ class BLEHostGUI(QMainWindow):
                 self.show_breathing_control_checkbox.setChecked(True)
             if hasattr(self, 'show_send_command_checkbox'):
                 self.show_send_command_checkbox.setChecked(True)
+            if hasattr(self, 'show_hkh11c_control_checkbox'):
+                self.show_hkh11c_control_checkbox.setChecked(True)
             # 注意：子项状态改变后会触发_update_toolbar_checkbox_state，
             # 它会将父checkbox状态更新为Checked
         
@@ -5333,6 +5668,8 @@ class BLEHostGUI(QMainWindow):
             self.show_breathing_control_checkbox.setEnabled(self.show_toolbar)
         if hasattr(self, 'show_send_command_checkbox'):
             self.show_send_command_checkbox.setEnabled(self.show_toolbar)
+        if hasattr(self, 'show_hkh11c_control_checkbox'):
+            self.show_hkh11c_control_checkbox.setEnabled(self.show_toolbar)
         
         user_settings.set_show_toolbar(self.show_toolbar)  # 保存到用户设置
         self._update_toolbar_tabs_visibility()
@@ -5349,18 +5686,23 @@ class BLEHostGUI(QMainWindow):
         # 检查子项的选中状态
         breathing_checked = False
         send_command_checked = False
+        hkh11c_checked = False
         
         if hasattr(self, 'show_breathing_control_checkbox'):
             breathing_checked = self.show_breathing_control_checkbox.isChecked()
         if hasattr(self, 'show_send_command_checkbox'):
             send_command_checked = self.show_send_command_checkbox.isChecked()
+        if hasattr(self, 'show_hkh11c_control_checkbox'):
+            hkh11c_checked = self.show_hkh11c_control_checkbox.isChecked()
         
-        # 根据子项状态设置父checkbox状态
-        if breathing_checked and send_command_checked:
+        all_checked = breathing_checked and send_command_checked and hkh11c_checked
+        none_checked = not breathing_checked and not send_command_checked and not hkh11c_checked
+        
+        if all_checked:
             # 所有子项都选中
             self.show_toolbar_checkbox.setCheckState(Qt.CheckState.Checked)
             self.show_toolbar = True
-        elif not breathing_checked and not send_command_checked:
+        elif none_checked:
             # 所有子项都未选中
             self.show_toolbar_checkbox.setCheckState(Qt.CheckState.Unchecked)
             self.show_toolbar = False
@@ -5382,6 +5724,8 @@ class BLEHostGUI(QMainWindow):
             self.show_breathing_control_checkbox.setEnabled(self.show_toolbar)
         if hasattr(self, 'show_send_command_checkbox'):
             self.show_send_command_checkbox.setEnabled(self.show_toolbar)
+        if hasattr(self, 'show_hkh11c_control_checkbox'):
+            self.show_hkh11c_control_checkbox.setEnabled(self.show_toolbar)
         
         user_settings.set_show_toolbar(self.show_toolbar)  # 保存到用户设置
         self._update_toolbar_tabs_visibility()
@@ -5397,6 +5741,12 @@ class BLEHostGUI(QMainWindow):
         """发送指令显示控制改变"""
         self.show_send_command = (state == Qt.CheckState.Checked.value)
         user_settings.set_show_send_command(self.show_send_command)  # 保存到用户设置
+        self._update_toolbar_tabs_visibility()
+    
+    def _on_show_hkh11c_control_changed(self, state):
+        """HKH-11C 控制显示改变"""
+        self.show_hkh11c_control = (state == Qt.CheckState.Checked.value)
+        user_settings.set_show_hkh11c_control(self.show_hkh11c_control)
         self._update_toolbar_tabs_visibility()
     
     def _update_toolbar_tabs_visibility(self):
@@ -5415,9 +5765,11 @@ class BLEHostGUI(QMainWindow):
                 self.toolbar_tabs.setTabVisible(i, self.show_breathing_control)
             elif tab_text == "发送指令":
                 self.toolbar_tabs.setTabVisible(i, self.show_send_command)
+            elif tab_text == "HKH-11C":
+                self.toolbar_tabs.setTabVisible(i, self.show_hkh11c_control)
         
-        # 如果两个tab都不显示，隐藏整个工具栏
-        if not self.show_breathing_control and not self.show_send_command:
+        # 如果所有 tab 都不显示，隐藏整个工具栏
+        if not self.show_breathing_control and not self.show_send_command and not self.show_hkh11c_control:
             if hasattr(self, 'toolbar_group'):
                 self.toolbar_group.setVisible(False)
         else:

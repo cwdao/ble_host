@@ -193,7 +193,7 @@ DataProcessor.frame_buffer[channel]
 
 ### SerialReader
 - 从串口读取原始字节数据
-- 解码为UTF-8文本
+- **三种组帧模式**：文本行（CS/DF ASCII）、BLE 二进制（`0x55 0xAA`）、HKH-11C（`0xFF 0xCC`）
 - 放入队列供主线程消费
 
 ### DataParser

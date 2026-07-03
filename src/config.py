@@ -15,8 +15,8 @@ from typing import List, Optional
 class AppConfig:
     """应用程序配置"""
     # 版本信息
-    version: str = "4.1.0"
-    version_date: str = "2026-07-02"
+    version: str = "4.2.0"
+    version_date: str = "2026-07-03"
     version_author: str = "chwn@outlook.ie, HKUST(GZ); Auto (Cursor AI Assistant)"
     # 所保存的文件最低兼容版本，类似minimum API
     version_data_save:str = "3.6.0"
@@ -47,7 +47,7 @@ class AppConfig:
     
     # 帧模式默认配置
     default_frame_mode: bool = True  # 保留用于向后兼容，但不再使用
-    default_frame_type: str = "信道探测帧"  # 默认帧类型
+    default_frame_type: str = "CS-二进制双端IQ"  # 默认帧类型
     frame_type_options: List[str] = None  # 帧类型列表
     default_display_channels: str = "0,4,8,12,16,20,24,28,32,36,40,44,48,52,56,60,64,68,72"
     default_display_max_frames: int = 50
@@ -126,12 +126,19 @@ class AppConfig:
     command_default_cte_len: str = "2"  # 默认CTE长度
     command_default_interval_ms: str = "10"  # 默认连接间隔（毫秒）
     
+    # HKH-11C 呼吸传感器
+    hkh11c_sampling_rate: float = 50.0  # Hz
+    hkh11c_default_display_max_frames: int = 1000  # 50Hz 下约 20 秒
+    hkh11c_default_baudrate: str = "115200"
+    hkh11c_default_gain: int = 5  # 幅度级别 0~16
+    
     # UI显示控制默认值
     default_show_log: bool = True  # 是否显示日志面板
     default_show_version_info: bool = False  # 是否显示版本信息
     default_show_toolbar: bool = True  # 是否显示工具栏
     default_show_breathing_control: bool = True  # 是否显示呼吸控制面板
     default_show_send_command: bool = True  # 是否显示命令发送面板
+    default_show_hkh11c_control: bool = True  # 是否显示 HKH-11C 控制面板
     
     # 主题默认值
     default_theme_mode: str = "light"  # 默认主题模式："auto"（跟随系统）、"light"（浅色）、"dark"（深色）
@@ -143,10 +150,11 @@ class AppConfig:
         if self.frame_type_options is None:
             # 帧类型：CS/DF 为 ASCII；DIP/CS-二进制 为 0x55 0xAA UART 二进制
             self.frame_type_options = [
-                "信道探测帧",
                 "CS-二进制双端IQ",
-                "方向估计帧",
                 "DIP-直接IQ输出",
+                "方向估计帧",
+                "信道探测帧",
+                "HKH-11C呼吸波形",
             ]
 
 
@@ -171,6 +179,7 @@ class UserSettings:
             'show_toolbar': config.default_show_toolbar,
             'show_breathing_control': config.default_show_breathing_control,
             'show_send_command': config.default_show_send_command,
+            'show_hkh11c_control': config.default_show_hkh11c_control,
             # 主题设置
             'theme_mode': config.default_theme_mode
         }
@@ -281,6 +290,15 @@ class UserSettings:
     def set_show_send_command(self, show: bool):
         """设置是否显示命令发送面板"""
         self.settings['show_send_command'] = show
+        self.save()
+    
+    def get_show_hkh11c_control(self) -> bool:
+        """获取是否显示 HKH-11C 控制面板"""
+        return self.settings.get('show_hkh11c_control', config.default_show_hkh11c_control)
+    
+    def set_show_hkh11c_control(self, show: bool):
+        """设置是否显示 HKH-11C 控制面板"""
+        self.settings['show_hkh11c_control'] = show
         self.save()
     
     # 主题设置方法

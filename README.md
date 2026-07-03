@@ -2,7 +2,9 @@
 
 一个用于BLE嵌入式系统的Python上位机程序，支持串口数据采集、波形显示和数据处理。
 
-**当前版本：v4.0.0**（2026-05-19）— 主版本更新：**DIP 直接 IQ 二进制帧**接入。
+**当前版本：v4.2.0**（2026-07-03）— **HKH-11C 呼吸传感器** UART 接入（帧类型 + 专用工具栏 Tab）。
+
+**上一主版本：v4.1.0** — 二进制 UART 协议 v0x02（设备 `timestamp_ms`）。
 
 **主版本：PySide6 (Qt) 版本** - 现代化的界面，更好的性能和用户体验。
 
@@ -16,6 +18,7 @@
   - **信道探测（CS）模式**: ASCII 多行 IQ 文本（`== Basic Report ==`），多通道幅值/相位
   - **方向估计（DF）模式**: 单行 `$DF,...` 功率数据，支持信道切换检测
   - **DIP 直接 IQ 输出**: 下位机 **二进制 UART 帧**（`0x55 0xAA` 同步），多信道本地 int16 I/Q，可视化流程与 CS 相同
+  - **HKH-11C 呼吸波形**: 独立呼吸传感器 **UART 协议**（`0xFF 0xCC` 同步），单通道呼吸波形（50 Hz），专用工具栏控制（点名/启停/幅度）
   - 自动识别保存文件帧类型，切换模式时自动清空状态
 - ✅ **数据处理**: 
   - 频率计算（基于FFT，15秒数据窗口）
@@ -25,7 +28,7 @@
   - **增量记录（JSONL格式）**：实时追加写入，支持长时间记录，避免内存峰值
   - 自动保存功能（可配置路径）
   - 加载保存的文件进行离线分析（支持JSONL和JSON格式）
-  - **自动识别文件帧类型**（DF/CS/DIP），自动设置相应模式
+  - **自动识别文件帧类型**（DF/CS/DIP/HKH），自动设置相应模式
   - 时间窗滑动条，方便查看不同时间段的数据
 - ✅ **命令发送功能**:
   - 支持PING、BLE_SCAN、BLE_CONN、DF_START、DF_CONFIG、DF_STOP等命令
@@ -86,6 +89,15 @@ python run_qt.py
 - 解析后与 ASCII「信道探测帧」结构相同（`frame_type: channel_sounding`），绘图/呼吸/保存流程无需改动
 - **详细协议与固件配置**：参见 [`docs/cs_binary_frame.md`](docs/cs_binary_frame.md)
 
+### HKH-11C 呼吸波形（二进制）
+
+HKH-11C 呼吸传感器经 USB 虚拟串口直连上位机，帧类型选 **「HKH-11C呼吸波形」**。
+
+- 同步字 `0xFF 0xCC`，校验和帧格式；波特率 **115200 8N1**
+- 需上位机发命令启动测量（工具栏 **HKH-11C** Tab：复位 → 点名 → 开始测量）
+- 单信道 `ch0` 呼吸波形 raw（约 50 Hz）；保存前缀 `HKH_`，`frame_type: hkh11c_resp`
+- **详细协议、操作步骤与排障**：参见 [`docs/hkh11c_frame.md`](docs/hkh11c_frame.md)
+
 ### 信道探测（CS）帧格式
 ```
 == Basic Report == index:123, timestamp:456789
@@ -138,8 +150,10 @@ ble_host/
 ├── src/                      # 源代码目录
 │   ├── __init__.py
 │   ├── main_gui_qt.py        # 主GUI程序（PySide6/Qt）
-│   ├── serial_reader.py     # 串口读取模块（文本行 / DIP 二进制组帧）
-│   ├── dip_binary_parser.py # DIP 二进制 UART 帧解析（v2）
+│   ├── serial_reader.py     # 串口读取（文本 / BLE 二进制 / HKH-11C）
+│   ├── dip_binary_parser.py # DIP/CS 二进制 UART 帧解析（0x55 0xAA）
+│   ├── hkh11c_parser.py     # HKH-11C 呼吸传感器帧解析（0xFF 0xCC）
+│   ├── hkh11c_commands.py   # HKH-11C 命令组帧与校验
 │   ├── data_parser.py       # 数据解析模块（ASCII CS/DF）
 │   ├── data_processor.py    # 数据处理模块（支持信道切换检测）
 │   ├── data_saver.py         # 数据保存/加载模块（支持JSONL格式）
@@ -156,6 +170,8 @@ ble_host/
 │   ├── jsonl_format.md       # JSONL文件格式详细说明
 │   ├── uart_command_format.md # UART命令格式文档
 │   ├── dip_binary_frame.md   # DIP 二进制直接 IQ 接入说明
+│   ├── cs_binary_frame.md    # CS 二进制双端 IQ 接入说明
+│   ├── hkh11c_frame.md       # HKH-11C 呼吸传感器接入说明
 │   └── ...                   # 其他文档
 ├── run_qt.py                 # 程序入口
 ├── requirements.txt           # Python依赖
@@ -172,7 +188,7 @@ ble_host/
 
 #### 1. 连接串口
 - 在"连接配置"选项卡中选择串口和波特率
-- 选择帧类型（信道探测帧 / 方向估计帧 / **DIP-直接IQ输出**）
+- 选择帧类型（信道探测帧 / 方向估计帧 / DIP-直接IQ输出 / CS-二进制双端IQ / **HKH-11C呼吸波形**）
 - 点击"连接"按钮
 
 #### 2. 配置通道（CS模式）
@@ -190,7 +206,7 @@ ble_host/
 
 #### 4. 文件加载
 - 在"文件加载"选项卡中选择保存的数据文件
-- **自动识别**：程序会自动识别文件中的帧类型（DF/CS/DIP），并设置相应模式
+- **自动识别**：程序会自动识别文件中的帧类型（DF/CS/DIP/HKH），并设置相应模式
 - **时间窗**：加载后可以使用滑动条选择时间窗口进行分析
 - **文件信息**：显示文件版本、帧类型、保存时间、帧数等信息
 
@@ -221,12 +237,13 @@ ble_host/
 - **文件格式**：
   - **新版本（v3.6.0+）**：使用JSONL格式（.jsonl），支持增量追加写入，解决大量数据保存时的内存问题
   - **旧版本兼容**：仍支持加载旧版JSON格式文件（自动格式检测）
-  - **文件命名**：自动添加帧类型前缀（DF_/CS_/DIP_）
+  - **文件命名**：自动添加帧类型前缀（DF_/CS_/DIP_/HKH_）
   - **详细格式说明**：参见 `docs/jsonl_format.md`
 - **详细格式说明**：参见 `docs/jsonl_format.md`
 
 #### 7. 命令发送
-- 在"命令发送"选项卡中发送UART命令
+- 在「发送指令」选项卡中发送 BLE 下位机 UART 命令（`$CMD,...` 格式）
+- HKH-11C 传感器请使用工具栏 **HKH-11C** Tab（二进制命令，与 `$CMD` 无关）
 - 支持的命令类型：
   - **PING**: 连通性测试
   - **BLE_SCAN**: 控制扫描（start/stop）
@@ -275,6 +292,13 @@ ble_host/
    - 本地 IQ 映射为幅值/相位；`frame_type` 为 `dip_direct_iq`
 4. **显示与保存**：与 CS 相同（多 Tab、呼吸估计默认参数同 CS）；保存文件前缀 `DIP_`
 
+### HKH-11C 呼吸波形模式
+
+1. **启用方式**：在 GUI 选择 **「HKH-11C呼吸波形」**（自动建议波特率 115200，并切换到 HKH-11C 工具栏 Tab）
+2. **数据格式**：二进制 UART `0xFF 0xCC`，详见 [`docs/hkh11c_frame.md`](docs/hkh11c_frame.md)
+3. **操作流程**：连接串口 → 复位 → 点名 →（可选设置幅度）→ 开始测量 → 幅值 Tab 查看 ch0 波形
+4. **显示与保存**：仅幅值 Tab；`frame_type: hkh11c_resp`，文件前缀 `HKH_`
+
 ### 方向估计（DF）模式
 
 1. **启用方式**：在GUI界面选择"方向估计帧"作为帧类型
@@ -322,10 +346,11 @@ ble_host/
   - 事件标记：记录过程中可随时标记特殊事件
 - **加载**：
   - **自动格式检测**：自动识别JSONL或JSON格式（通过文件扩展名或内容检测）
-  - **自动识别帧类型**：加载时自动识别帧类型（DF/CS/DIP），自动设置相应模式
+  - **自动识别帧类型**：加载时自动识别帧类型（DF/CS/DIP/HKH），自动设置相应模式
   - **DF 文件**：方向估计模式，仅幅值 tab
   - **CS 文件**：信道探测模式，全部 tab
   - **DIP 文件**（`frame_type: dip_direct_iq`）：DIP-直接IQ输出模式，显示与 CS 相同
+  - **HKH 文件**（`frame_type: hkh11c_resp`）：HKH-11C呼吸波形模式，仅幅值 tab、信道 0
   - **时间窗**：加载文件后可使用滑动条选择时间窗口进行分析
   - **文件信息**：显示文件版本、帧类型、保存时间、帧数等信息
 
@@ -355,6 +380,7 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
 - **DF模式**：确认数据格式为 `$DF,ver,ch,seq,ts,p_avg`
 - **CS模式**：确认数据格式包含 `== Basic Report ==` 和 `== End Report ==`
 - **DIP模式**：确认已选「DIP-直接IQ输出」、波特率与固件一致；固件建议关闭冗长 ASCII 日志（见 `docs/dip_binary_frame.md`）
+- **HKH模式**：确认已选「HKH-11C呼吸波形」、波特率 115200；需先点名再开始测量（见 `docs/hkh11c_frame.md`）
 
 ### 文件加载问题
 - **格式检测**：程序会自动检测文件格式（JSONL或JSON），通过文件扩展名或内容判断
@@ -364,6 +390,7 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
   - DF文件：meta记录中包含 `frame_type: "direction_estimation"`
   - CS文件：meta记录中包含 `frame_type: "channel_sounding"`
   - DIP文件：meta记录中包含 `frame_type: "dip_direct_iq"`
+  - HKH文件：meta记录中包含 `frame_type: "hkh11c_resp"`
 - **JSON文件（旧格式）**：
   - DF文件：包含 `frame_type: "direction_estimation"`
   - CS文件：包含 `frame_type: "channel_sounding"` 或不包含frame_type（向后兼容）
@@ -380,15 +407,15 @@ def parse(self, text: str) -> Optional[Dict[str, float]]:
 - **绘图**: PyQtGraph（实时）+ Matplotlib（分析）
 - **特点**: 
   - 现代化界面、高性能
-  - 支持多帧类型（CS / DF / **DIP 二进制**）
-  - 自动帧类型识别（含 `dip_direct_iq` 录制文件）
+  - 支持多帧类型（CS / DF / DIP / CS 二进制 / **HKH-11C**）
+  - 自动帧类型识别（含 `dip_direct_iq`、`hkh11c_resp` 录制文件）
   - 完整的数据保存/加载功能（JSONL格式）
   - 时间窗滑动条（加载模式）
   - 实时呼吸估计（CS / DF / DIP 模式）
   - DF模式信道切换检测和数据累积
   - 命令发送功能
 - **入口**: `run_qt.py`
-- **版本**: v4.0.0
+- **版本**: v4.2.0
 
 ## 开发说明
 
@@ -412,6 +439,24 @@ logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 本项目仅供学习和开发使用。
 
 ## 更新日志
+
+### v4.2.0 (2026-07-03) — HKH-11C 呼吸传感器接入
+
+新增 **HKH-11C 呼吸传感器** UART 支持（方案 D：帧类型 + 专用工具栏 Tab），与 BLE 下位机帧类型互斥切换。
+
+- ✅ **新帧类型「HKH-11C呼吸波形」**
+  - 协议同步 `0xFF 0xCC`，50 Hz 单通道呼吸波形 raw
+  - 新增 `src/hkh11c_parser.py`、`src/hkh11c_commands.py`
+  - `SerialReader` 支持 `uart_frame_mode='hkh11c'`（与 text / ble_binary 三分支）
+- ✅ **工具栏 HKH-11C Tab**
+  - 复位、点名、开始/停止测量、幅度设置、读设备号/生产日期
+  - 设备状态机与十六进制交互历史
+- ✅ **数据流复用**
+  - 波形映射 `ch0.amplitude`，复用 Plotter / JSONL 记录；保存前缀 `HKH_`
+  - 加载 `hkh11c_resp` 文件自动切换模式
+- ✅ **文档**
+  - [`docs/hkh11c_frame.md`](docs/hkh11c_frame.md)、传感器接口 [`docs/呼吸传感器hkh-11c接口.md`](docs/呼吸传感器hkh-11c接口.md)
+  - README 与 jsonl 命名规则已同步
 
 ### v4.1.0 (2026-07-02) — 二进制 UART 协议 v0x02（设备时间戳）
 
@@ -524,7 +569,7 @@ logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 
 ### 主要功能
 
-- 多帧类型支持（CS/DF/DIP 二进制）
+- 多帧类型支持（CS/DF/DIP/CS 二进制/HKH-11C）
 - 自动帧类型识别
 - 数据保存/加载（支持帧类型记录）
 - 时间窗滑动条（加载模式）
@@ -543,6 +588,9 @@ logging.basicConfig(level=logging.DEBUG)  # 改为DEBUG查看更多信息
 - `docs/jsonl_format.md` - JSONL文件格式详细说明（v3.6.0+）
 - `docs/uart_command_format.md` - UART命令格式文档
 - `docs/dip_binary_frame.md` - DIP 二进制直接 IQ 帧接入说明
+- `docs/cs_binary_frame.md` - CS 二进制双端 IQ 帧接入说明
+- `docs/hkh11c_frame.md` - HKH-11C 呼吸传感器接入说明
+- `docs/呼吸传感器hkh-11c接口.md` - HKH-11C 传感器协议原文
 - `INSTALL.md` - 安装指南
 
 ## 联系方式

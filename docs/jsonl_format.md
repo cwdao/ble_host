@@ -28,7 +28,7 @@
   "record_type": "meta",
   "app_version": "3.6.0",           // 应用程序版本
   "log_version": "1.0",             // 日志格式版本
-  "frame_type": "direction_estimation",  // 帧类型：direction_estimation 或 channel_sounding
+  "frame_type": "direction_estimation",  // 帧类型：direction_estimation / channel_sounding / dip_direct_iq / hkh11c_resp
   "started_at_utc_ns": 1768033917747791700,  // 开始时间（UTC纳秒时间戳）
   "started_at_iso": "2026-01-10T16:31:57.747791",  // 开始时间（ISO格式）
   "file_version": "3.6.0",          // 文件版本（用于兼容性检查）
@@ -231,10 +231,13 @@ for event in saver.iter_events('log.jsonl'):
 
 - **方向估计帧**：`DF_frames_all_YYYYMMDD_HHMMSS.jsonl`
 - **信道探测帧**：`CS_frames_all_YYYYMMDD_HHMMSS.jsonl`
+- **DIP 直接 IQ**：`DIP_frames_all_YYYYMMDD_HHMMSS.jsonl`
+- **HKH-11C 呼吸波形**：`HKH_frames_all_YYYYMMDD_HHMMSS.jsonl`
 - **最近N帧**：`DF_frames_recent{N}_YYYYMMDD_HHMMSS.jsonl`
 
 ## 版本兼容性
 
+- **v4.2.0+**：支持 `hkh11c_resp` 帧类型与 `HKH_` 文件前缀
 - **v3.7.0+**：仅使用JSONL格式保存，支持加载JSONL和JSON格式（JSON仅用于加载旧文件）
 - **v3.6.0**：使用JSONL格式保存，支持加载JSONL和JSON格式
 - **v3.5.0及以下**：使用JSON格式保存，仍可被新版本加载
