@@ -37,7 +37,7 @@ import threading
 import time
 import logging
 import numpy as np
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Callable
 from datetime import datetime
 import platform
 
@@ -186,9 +186,12 @@ class BLEHostGUI(QMainWindow):
     save_success_signal = Signal(int, str)  # (frame_count, filename) - 保存成功
     save_error_signal = Signal(str)  # (error_msg) - 保存失败
     
-    def __init__(self):
+    def __init__(self, splash_callback: Optional[Callable[[str, int], None]] = None):
         """
         初始化BLEHostGUI主窗口
+        
+        Args:
+            splash_callback: 启动画面进度回调 (message, percent)
         
         初始化流程：
         1. 设置窗口基本属性（标题、大小）
@@ -199,6 +202,7 @@ class BLEHostGUI(QMainWindow):
         6. 启动数据更新循环和呼吸估计定时器
         """
         super().__init__()
+        self._splash_callback = splash_callback
         
         # ==================== 信号连接 ====================
         # 连接信号到槽函数，用于异步操作（如数据保存）完成后更新UI
@@ -214,11 +218,11 @@ class BLEHostGUI(QMainWindow):
         self.resize(config.base_window_width, config.base_window_height)
         
         # ==================== 日志系统初始化 ====================
-        # 设置日志（输出到控制台和文件）
+        self._splash_step("初始化日志系统...", 8)
         self._setup_logging()
         
         # ==================== 核心业务模块初始化 ====================
-        # 初始化组件（这些模块负责核心业务逻辑）
+        self._splash_step("加载数据处理模块...", 18)
         self.serial_reader = None  # 串口读取器（连接时创建）
         self.data_parser = DataParser()  # 数据解析器（解析CS/DF帧格式）
         self.data_processor = DataProcessor()  # 数据处理器（存储和查询帧数据）
@@ -367,11 +371,11 @@ class BLEHostGUI(QMainWindow):
         self.slider_button_direction = None  # 滑动方向：'left'（向前）或 'right'（向后）
         
         # ==================== GUI界面创建 ====================
-        # 创建界面（创建所有选项卡、控件、布局等）
+        self._splash_step("构建用户界面...", 42)
         self._create_widgets()
         
         # ==================== 初始化配置应用 ====================
-        # 应用默认设置（初始化显示信道）
+        self._splash_step("应用配置与主题...", 78)
         if self.frame_mode:
             # 先设置默认值
             self.display_channels_entry.setText(config.default_display_channels)
@@ -385,8 +389,7 @@ class BLEHostGUI(QMainWindow):
         # 主题会在 _create_settings_tab 中统一初始化
         
         # ==================== 启动定时器和循环 ====================
-        # 定时刷新（使用 QTimer 替代 threading）
-        # 这个定时器会定期调用 _update_data() 来处理串口数据
+        self._splash_step("启动数据服务...", 92)
         self._start_update_loop()
         
         # 启动实时呼吸估计定时器
@@ -406,6 +409,12 @@ class BLEHostGUI(QMainWindow):
         
         # 初始化文件加载tab的状态（确保初始状态正确）
         self._update_load_tab_state()
+        self._splash_step("准备就绪", 100)
+    
+    def _splash_step(self, message: str, percent: int):
+        """更新启动画面进度（若已启用）"""
+        if self._splash_callback:
+            self._splash_callback(message, percent)
     
     def _setup_logging(self):
         """设置日志"""
@@ -7901,10 +7910,25 @@ def main():
     except Exception as e:
         logging.getLogger(__name__).warning(f"无法设置图标: {e}")
     
-    # 创建主窗口
+    # 创建主窗口（带启动画面进度）
     try:
-        window = BLEHostGUI()
-        window.show()
+        from .splash_screen import create_startup_splash
+    except ImportError:
+        from splash_screen import create_startup_splash
+
+    splash = create_startup_splash(
+        app,
+        title=f"BLE Sensing Host",
+        subtitle=f"v{__version__}",
+    )
+    splash.set_progress(3, "正在初始化...")
+
+    def on_splash_progress(message: str, percent: int):
+        splash.set_progress(percent, message)
+
+    try:
+        window = BLEHostGUI(splash_callback=on_splash_progress)
+        splash.finish(window)
         
         # 运行应用程序
         exit_code = app.exec()
@@ -7920,6 +7944,7 @@ def main():
         
         sys.exit(exit_code)
     except Exception as e:
+        splash.close()
         # 捕获创建窗口时的异常
         logger = logging.getLogger(__name__)
         logger.critical(f"创建主窗口时发生异常: {e}", exc_info=True)
