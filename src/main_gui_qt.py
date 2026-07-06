@@ -78,7 +78,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QCheckBox,
     QRadioButton, QSlider, QTabWidget, QSplitter, QGroupBox, QMessageBox,
     QFileDialog, QButtonGroup, QFrame, QMenuBar, QMenu, QDialog, QDialogButtonBox,
-    QSizePolicy, QSpinBox, QDoubleSpinBox
+    QSizePolicy, QSpinBox, QDoubleSpinBox, QToolButton
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QMetaObject, QCoreApplication
 from PySide6.QtGui import QFont, QIcon, QAction, QActionGroup, QFontDatabase, QPainter
@@ -520,6 +520,7 @@ class BLEHostGUI(QMainWindow):
         self._create_feature_config_tab()
         self._create_settings_tab()
         
+        self._setup_config_menu_collapse()
         main_layout.addWidget(self.config_tabs)
         
         # 3. 左右分栏（绘图区域 + 右侧面板）
@@ -615,6 +616,55 @@ class BLEHostGUI(QMainWindow):
         self.main_splitter.setChildrenCollapsible(False)  # 防止完全折叠
         
         main_layout.addWidget(self.main_splitter, stretch=1)
+    
+    def _setup_config_menu_collapse(self):
+        """配置区 Office 式折叠：仅保留 tab 标签栏 / 完全展开"""
+        self.config_menu_collapsed = False
+        self._config_tabs_expanded_min_height = 150
+        
+        # 角部容器留右边距，避免按钮贴边被裁切
+        corner_widget = QWidget()
+        corner_layout = QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 0, 12, 0)
+        corner_layout.setSpacing(0)
+        
+        self.config_collapse_btn = QToolButton()
+        self.config_collapse_btn.setAutoRaise(True)
+        self.config_collapse_btn.setFixedSize(26, 22)
+        self.config_collapse_btn.setText("˄")
+        self.config_collapse_btn.setStyleSheet(
+            "QToolButton {"
+            "  border: none;"
+            "  color: #4a5d78;"
+            "  font-size: 15px;"
+            "  font-weight: bold;"
+            "  padding: 0px 2px;"
+            "}"
+            "QToolButton:hover {"
+            "  background-color: #e4eaf2;"
+            "  border-radius: 3px;"
+            "}"
+        )
+        self.config_collapse_btn.setToolTip("收起菜单（仅显示标签栏）")
+        self.config_collapse_btn.clicked.connect(self._toggle_config_menu_collapsed)
+        corner_layout.addWidget(self.config_collapse_btn)
+        self.config_tabs.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
+    
+    def _toggle_config_menu_collapsed(self):
+        """切换配置选项卡区域的展开/收起"""
+        self.config_menu_collapsed = not self.config_menu_collapsed
+        tab_bar_height = self.config_tabs.tabBar().sizeHint().height()
+        
+        if self.config_menu_collapsed:
+            self.config_tabs.setMinimumHeight(tab_bar_height)
+            self.config_tabs.setMaximumHeight(tab_bar_height)
+            self.config_collapse_btn.setText("˅")
+            self.config_collapse_btn.setToolTip("展开菜单")
+        else:
+            self.config_tabs.setMinimumHeight(self._config_tabs_expanded_min_height)
+            self.config_tabs.setMaximumHeight(16777215)
+            self.config_collapse_btn.setText("˄")
+            self.config_collapse_btn.setToolTip("收起菜单（仅显示标签栏）")
     
     def _create_breathing_control_tab(self, parent_layout):
         """创建呼吸控制tab（包含基本、进阶、可视化三个子tab）"""
