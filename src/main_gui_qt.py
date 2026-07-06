@@ -350,7 +350,7 @@ class BLEHostGUI(QMainWindow):
         self.show_breathing_control = user_settings.get_show_breathing_control()
         self.show_send_command = user_settings.get_show_send_command()
         self.show_hkh11c_control = user_settings.get_show_hkh11c_control()
-        self.plot_feature_enabled = user_settings.get_plot_feature_enabled()
+        self.plot_feature_enabled = {}
         self.plot_feature_checkboxes = {}
         self.plot_tab_indices = {}
         self._plot_features_dirty = False
@@ -377,16 +377,8 @@ class BLEHostGUI(QMainWindow):
             self.display_channels_entry.setText(config.default_display_channels)
             self._apply_frame_settings(show_info=False)  # 初始化时不显示提示
         
-        # 根据帧类型初始化呼吸估计器的默认参数（在UI创建完成后）
-        if hasattr(self, 'breathing_estimator') and hasattr(self, 'breathing_sampling_rate_entry'):
-            self._update_breathing_params_from_frame_type()
-        
-        # 功能开关：若全部为禁用（异常配置），按当前帧类型恢复默认预设
-        if not any(self.plot_feature_enabled.values()):
-            self._apply_plot_feature_preset_for_frame_type(self.frame_type, save=True)
-        else:
-            self._sync_plot_feature_checkboxes_from_applied()
-            self._update_plot_tabs_enabled_state()
+        # 根据帧类型初始化呼吸估计器默认参数与功能开关（UI 创建完成后）
+        self._initialize_frame_type_dependencies()
         
         # 应用初始主题（跟随系统）- 初始化时不显示提示
         # 注意：这里不调用 _on_theme_mode_changed，因为界面还没创建完成
@@ -1371,7 +1363,9 @@ class BLEHostGUI(QMainWindow):
         layout.addWidget(QLabel("帧类型:"))
         self.frame_type_combo = QComboBox()
         self.frame_type_combo.addItems(config.frame_type_options)
+        self.frame_type_combo.blockSignals(True)
         self.frame_type_combo.setCurrentText(config.default_frame_type)
+        self.frame_type_combo.blockSignals(False)
         self.frame_type_combo.currentTextChanged.connect(self._on_frame_type_changed)
         layout.addWidget(self.frame_type_combo)
         
@@ -1910,7 +1904,8 @@ class BLEHostGUI(QMainWindow):
         feature_layout.setVerticalSpacing(4)
         feature_group.setMaximumWidth(560)
         feature_group.setToolTip(
-            "勾选启用对应绘图 tab 及相关计算；取消勾选可停止计算以提升实时性"
+            "勾选后点击「应用」保存到当前帧类型；"
+            "未自定义过的帧类型使用出厂默认（方向估计/HKH 仅幅值，其余全开）"
         )
         
         cols = 3
@@ -1932,9 +1927,9 @@ class BLEHostGUI(QMainWindow):
         apply_btn_layout = QHBoxLayout()
         self.plot_feature_apply_btn = QPushButton("应用")
         self.plot_feature_apply_btn.setToolTip(
-            "将上方勾选状态应用到绘图与计算。\n"
-            "采集中也可启用功能，将使用已缓冲的数据；"
-            "呼吸估计需积累满「显示帧数」后才开始分析。"
+            "将勾选状态保存并应用到当前帧类型的绘图与计算；"
+            "仅点击「应用」后才会记忆该帧类型的配置。\n"
+            "采集中也可应用；呼吸估计需积累满「显示帧数」后才有结果。"
         )
         self.plot_feature_apply_btn.clicked.connect(self._on_apply_plot_features)
         apply_btn_layout.addWidget(self.plot_feature_apply_btn)
@@ -2767,6 +2762,7 @@ class BLEHostGUI(QMainWindow):
     def _on_frame_type_changed(self, text):
         """帧类型改变"""
         old_frame_type = self.frame_type
+        self._save_plot_features_for_frame_type(old_frame_type)
         self.frame_type = text
         old_frame_mode = self.frame_mode
         old_is_direction_mode = self.is_direction_estimation_mode
@@ -2829,8 +2825,8 @@ class BLEHostGUI(QMainWindow):
         if hasattr(self, 'breathing_estimator'):
             self._update_breathing_params_from_frame_type()
         
-        # 切换帧类型时应用该模式的默认功能勾选预设
-        self._apply_plot_feature_preset_for_frame_type(self.frame_type, save=True)
+        # 切换帧类型：加载该帧类型已记忆的功能配置
+        self._load_plot_features_for_frame_type(self.frame_type)
         
         # 如果切换到方向估计帧模式，需要更新显示帧数设置
         if old_is_direction_mode != self.is_direction_estimation_mode:
@@ -2863,12 +2859,54 @@ class BLEHostGUI(QMainWindow):
                         plotter.clear_plot()
                 self.data_parser.clear_buffer()
     
+    def _initialize_frame_type_dependencies(self):
+        """启动时根据当前帧类型同步呼吸滤波参数与功能开关"""
+        if hasattr(self, 'frame_type_combo'):
+            self.frame_type = self.frame_type_combo.currentText()
+            self._update_frame_mode_flags()
+        if hasattr(self, 'breathing_estimator'):
+            self._update_breathing_params_from_frame_type()
+        self._load_plot_features_for_frame_type(self.frame_type, refresh_runtime=False)
+
     def _get_plot_feature_preset_for_frame_type(self, frame_type: str) -> dict:
-        """各帧类型的功能开关默认预设（以 checkbox 为准，无帧类型硬禁用）"""
-        only_amplitude = frame_type in config.plot_feature_only_amplitude_frame_types
-        if only_amplitude:
-            return {key: (key == 'amplitude') for key, _ in PLOT_TAB_DEFINITIONS}
-        return {key: True for key, _ in PLOT_TAB_DEFINITIONS}
+        """各帧类型的功能开关默认预设（尚未保存用户配置时使用）"""
+        return config.get_default_plot_features_for_frame_type(frame_type)
+
+    def _save_plot_features_for_frame_type(self, frame_type: str):
+        """将当前已应用的功能配置保存到指定帧类型（仅已自定义过的才写入）"""
+        if not frame_type or not self.plot_feature_enabled:
+            return
+        if user_settings.is_plot_feature_customized(frame_type):
+            user_settings.set_plot_feature_enabled(frame_type, self.plot_feature_enabled)
+
+    def _load_plot_features_for_frame_type(self, frame_type: str, refresh_runtime: bool = True):
+        """加载指定帧类型的功能配置并同步到 UI"""
+        features = user_settings.get_plot_feature_enabled(frame_type)
+        if not any(features.values()):
+            features = self._get_plot_feature_preset_for_frame_type(frame_type)
+        self.plot_feature_enabled = dict(features)
+        self._plot_features_dirty = False
+        if hasattr(self, 'plot_feature_checkboxes') and self.plot_feature_checkboxes:
+            self._sync_plot_feature_checkboxes_from_applied()
+            self._update_plot_tabs_enabled_state()
+        if refresh_runtime:
+            self._refresh_plot_features_runtime()
+        self.logger.info(f"已加载帧类型「{frame_type}」的功能配置: {self.plot_feature_enabled}")
+
+    def _refresh_plot_features_runtime(self):
+        """按当前功能配置刷新实时/加载模式下的绘图与估计"""
+        if self.is_running and self.frame_mode:
+            if self.plot_feature_enabled.get('breathing_estimation') or self.plot_feature_enabled.get('filtered_signal'):
+                self._ensure_breathing_channel_combo_populated()
+            if self.plot_feature_enabled.get('breathing_estimation'):
+                self._update_realtime_breathing_estimation()
+            elif hasattr(self, 'breathing_result_text'):
+                self.breathing_result_text.setPlainText("呼吸估计已禁用")
+            if self.plot_feature_enabled.get('filtered_signal'):
+                self._update_realtime_filtered_signal()
+            self._update_frame_plots()
+        elif self.is_loaded_mode:
+            self._update_loaded_mode_plots()
 
     def _sync_plot_feature_checkboxes_from_applied(self):
         """将 checkbox 同步为当前已应用的功能开关状态"""
@@ -2906,7 +2944,7 @@ class BLEHostGUI(QMainWindow):
         self._update_plot_feature_apply_btn_state()
 
     def _apply_plot_feature_preset_for_frame_type(self, frame_type: str, save: bool = True):
-        """按帧类型设置默认功能勾选并立即应用"""
+        """将 checkbox 设为该帧类型出厂默认并应用（不覆盖其他帧类型的记忆）"""
         preset = self._get_plot_feature_preset_for_frame_type(frame_type)
         for tab_key, enabled in preset.items():
             if tab_key in self.plot_feature_checkboxes:
@@ -2934,7 +2972,7 @@ class BLEHostGUI(QMainWindow):
         
         self.plot_feature_enabled = dict(pending)
         if save:
-            user_settings.set_plot_feature_enabled(self.plot_feature_enabled)
+            user_settings.set_plot_feature_enabled(self.frame_type, self.plot_feature_enabled)
         
         for tab_key in disabled_keys:
             self._clear_plot_tab(tab_key)
@@ -2946,17 +2984,7 @@ class BLEHostGUI(QMainWindow):
         self._plot_features_dirty = False
         self._update_plot_feature_apply_btn_state()
         self._update_plot_tabs_enabled_state()
-        
-        if self.is_running and self.frame_mode:
-            if self.plot_feature_enabled.get('breathing_estimation') or self.plot_feature_enabled.get('filtered_signal'):
-                self._ensure_breathing_channel_combo_populated()
-            if self.plot_feature_enabled.get('breathing_estimation'):
-                self._update_realtime_breathing_estimation()
-            if self.plot_feature_enabled.get('filtered_signal'):
-                self._update_realtime_filtered_signal()
-            self._update_frame_plots()
-        elif self.is_loaded_mode:
-            self._update_loaded_mode_plots()
+        self._refresh_plot_features_runtime()
         
         if show_info:
             enabled_names = [
@@ -2964,16 +2992,20 @@ class BLEHostGUI(QMainWindow):
                 if self.plot_feature_enabled.get(key, True)
             ]
             tip = (
+                f"帧类型: {self.frame_type}\n"
                 f"已启用: {', '.join(enabled_names) if enabled_names else '无'}\n"
+                "配置已仅保存到当前帧类型。"
             )
             if self.is_running and self.frame_mode:
                 tip += (
-                    "采集中已应用。呼吸估计需积累满「显示帧数」后输出结果；"
+                    "\n采集中已应用。呼吸估计需积累满「显示帧数」后输出结果；"
                     "滤波波形默认可显示中值滤波结果。"
                 )
             InfoBarHelper.success(self, title="功能配置已应用", content=tip)
         
-        self.logger.info(f"绘图功能配置已应用: {self.plot_feature_enabled}")
+        self.logger.info(
+            f"帧类型「{self.frame_type}」绘图功能配置已应用: {self.plot_feature_enabled}"
+        )
 
     def _is_plot_tab_active(self, tab_key: str) -> bool:
         """功能是否启用（仅以已应用的 checkbox 状态为准）"""

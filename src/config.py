@@ -213,6 +213,14 @@ class AppConfig:
                 'breathing_estimation': True,
             }
 
+    def get_default_plot_features_for_frame_type(self, frame_type: str) -> dict:
+        """各帧类型功能开关的出厂默认预设（尚未保存用户配置时使用）"""
+        only_amplitude = frame_type in self.plot_feature_only_amplitude_frame_types
+        keys = self.default_plot_feature_enabled.keys()
+        if only_amplitude:
+            return {key: (key == 'amplitude') for key in keys}
+        return {key: True for key in keys}
+
 
 class UserSettings:
     """用户设置管理类（保存到文件）"""
@@ -236,8 +244,8 @@ class UserSettings:
             'show_breathing_control': config.default_show_breathing_control,
             'show_send_command': config.default_show_send_command,
             'show_hkh11c_control': config.default_show_hkh11c_control,
-            # 绘图/呼吸功能开关
-            'plot_feature_enabled': dict(config.default_plot_feature_enabled),
+            # 绘图/呼吸功能开关（按帧类型分别记忆）
+            'plot_feature_enabled_by_frame_type': {},
             # 主题设置
             'theme_mode': config.default_theme_mode
         }
@@ -265,6 +273,54 @@ class UserSettings:
                     self.settings.update(loaded)
             except Exception as e:
                 print(f"加载用户设置失败: {e}，使用默认设置")
+        self._migrate_plot_feature_settings()
+
+    def _migrate_plot_feature_settings(self):
+        """迁移绘图功能开关配置，并识别用户真正自定义过的帧类型"""
+        version = self.settings.get('plot_feature_settings_version', 0)
+
+        if version < 1:
+            if not self.settings.get('plot_feature_enabled_by_frame_type'):
+                by_frame = {}
+                legacy = self.settings.pop('plot_feature_enabled', None)
+                for frame_type in config.frame_type_options:
+                    by_frame[frame_type] = config.get_default_plot_features_for_frame_type(frame_type)
+                    if legacy and frame_type == config.default_frame_type:
+                        by_frame[frame_type] = dict(legacy)
+                self.settings['plot_feature_enabled_by_frame_type'] = by_frame
+            version = 1
+
+        if version < 2:
+            by_frame = self.settings.get('plot_feature_enabled_by_frame_type', {})
+            customized = []
+            for frame_type in config.frame_type_options:
+                if frame_type not in by_frame:
+                    continue
+                preset = config.get_default_plot_features_for_frame_type(frame_type)
+                saved = dict(config.default_plot_feature_enabled)
+                saved.update(by_frame[frame_type])
+                if saved != preset:
+                    customized.append(frame_type)
+            self.settings['plot_feature_customized_frame_types'] = customized
+            version = 2
+
+        if version < 3:
+            # 修正：仅幅值帧类型若被写入「全启用」迁移残留，不算用户自定义
+            customized = list(self.settings.get('plot_feature_customized_frame_types', []))
+            by_frame = self.settings.get('plot_feature_enabled_by_frame_type', {})
+            for frame_type in config.plot_feature_only_amplitude_frame_types:
+                if frame_type not in customized or frame_type not in by_frame:
+                    continue
+                saved = dict(config.default_plot_feature_enabled)
+                saved.update(by_frame[frame_type])
+                if all(saved.values()):
+                    customized.remove(frame_type)
+            self.settings['plot_feature_customized_frame_types'] = customized
+            version = 3
+
+        if version != self.settings.get('plot_feature_settings_version'):
+            self.settings['plot_feature_settings_version'] = version
+            self.save()
     
     def save(self):
         """保存用户设置到文件"""
@@ -359,18 +415,34 @@ class UserSettings:
         self.settings['show_hkh11c_control'] = show
         self.save()
 
-    def get_plot_feature_enabled(self) -> dict:
-        """获取绘图/呼吸功能开关（各 tab 是否启用）"""
-        defaults = config.default_plot_feature_enabled
-        saved = self.settings.get('plot_feature_enabled', {})
-        result = dict(defaults)
-        result.update(saved)
-        return result
+    def get_plot_feature_enabled(self, frame_type: str) -> dict:
+        """获取指定帧类型的绘图/呼吸功能开关（未自定义时返回出厂预设）"""
+        customized = self.settings.get('plot_feature_customized_frame_types', [])
+        if frame_type in customized:
+            by_frame = self.settings.get('plot_feature_enabled_by_frame_type', {})
+            if frame_type in by_frame:
+                result = dict(config.default_plot_feature_enabled)
+                result.update(by_frame[frame_type])
+                return result
+        return config.get_default_plot_features_for_frame_type(frame_type)
 
-    def set_plot_feature_enabled(self, features: dict):
-        """保存绘图/呼吸功能开关"""
-        self.settings['plot_feature_enabled'] = dict(features)
+    def set_plot_feature_enabled(self, frame_type: str, features: dict):
+        """保存指定帧类型的绘图/呼吸功能开关，并标记为已自定义"""
+        by_frame = self.settings.setdefault('plot_feature_enabled_by_frame_type', {})
+        by_frame[frame_type] = dict(features)
+        customized = self.settings.setdefault('plot_feature_customized_frame_types', [])
+        if frame_type not in customized:
+            customized.append(frame_type)
+        self.settings.pop('plot_feature_enabled', None)
         self.save()
+
+    def is_plot_feature_customized(self, frame_type: str) -> bool:
+        """该帧类型是否已有用户点击「应用」保存过的功能配置"""
+        return frame_type in self.settings.get('plot_feature_customized_frame_types', [])
+
+    def has_saved_plot_feature_config(self, frame_type: str) -> bool:
+        """兼容旧接口：是否已有用户自定义配置"""
+        return self.is_plot_feature_customized(frame_type)
     
     # 主题设置方法
     def get_theme_mode(self) -> str:

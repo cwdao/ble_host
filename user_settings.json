@@ -8,15 +8,61 @@
   "show_breathing_control": true,
   "show_send_command": true,
   "show_hkh11c_control": true,
-  "plot_feature_enabled": {
-    "amplitude": true,
-    "phase": true,
-    "local_amplitude": true,
-    "local_phase": true,
-    "remote_amplitude": true,
-    "remote_phase": true,
-    "filtered_signal": true,
-    "breathing_estimation": true
+  "plot_feature_enabled_by_frame_type": {
+    "CS-二进制双端IQ": {
+      "amplitude": true,
+      "phase": true,
+      "local_amplitude": true,
+      "local_phase": true,
+      "remote_amplitude": true,
+      "remote_phase": true,
+      "filtered_signal": true,
+      "breathing_estimation": true
+    },
+    "DIP-直接IQ输出": {
+      "amplitude": true,
+      "phase": true,
+      "local_amplitude": true,
+      "local_phase": true,
+      "remote_amplitude": true,
+      "remote_phase": true,
+      "filtered_signal": true,
+      "breathing_estimation": true
+    },
+    "方向估计帧": {
+      "amplitude": true,
+      "phase": true,
+      "local_amplitude": true,
+      "local_phase": true,
+      "remote_amplitude": true,
+      "remote_phase": true,
+      "filtered_signal": true,
+      "breathing_estimation": true
+    },
+    "信道探测帧": {
+      "amplitude": true,
+      "phase": true,
+      "local_amplitude": true,
+      "local_phase": true,
+      "remote_amplitude": true,
+      "remote_phase": true,
+      "filtered_signal": true,
+      "breathing_estimation": true
+    },
+    "HKH-11C呼吸波形": {
+      "amplitude": true,
+      "phase": false,
+      "local_amplitude": false,
+      "local_phase": false,
+      "remote_amplitude": false,
+      "remote_phase": false,
+      "filtered_signal": true,
+      "breathing_estimation": true
+    }
   },
-  "theme_mode": "light"
+  "theme_mode": "light",
+  "plot_feature_customized_frame_types": [
+    "HKH-11C呼吸波形"
+  ],
+  "plot_feature_settings_version": 3
 }
