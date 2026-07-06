@@ -7,5 +7,16 @@
   "show_toolbar": true,
   "show_breathing_control": true,
   "show_send_command": true,
+  "show_hkh11c_control": true,
+  "plot_feature_enabled": {
+    "amplitude": true,
+    "phase": true,
+    "local_amplitude": true,
+    "local_phase": true,
+    "remote_amplitude": true,
+    "remote_phase": true,
+    "filtered_signal": true,
+    "breathing_estimation": true
+  },
   "theme_mode": "light"
 }
