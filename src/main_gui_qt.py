@@ -1896,13 +1896,17 @@ class BLEHostGUI(QMainWindow):
         layout = QHBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
         
-        # 功能启用与禁用（3 列网格，避免单列撑高 tab）
+        # 功能启用与禁用：左侧 checkbox 网格 + 右侧独立「应用」列
+        feature_container = QWidget()
+        feature_container_layout = QHBoxLayout(feature_container)
+        feature_container_layout.setContentsMargins(0, 0, 0, 0)
+        feature_container_layout.setSpacing(8)
+
         feature_group = QGroupBox("功能启用与禁用")
         feature_group.setFont(get_app_font(9))
         feature_layout = QGridLayout(feature_group)
-        feature_layout.setHorizontalSpacing(16)
+        feature_layout.setHorizontalSpacing(12)
         feature_layout.setVerticalSpacing(4)
-        feature_group.setMaximumWidth(560)
         feature_group.setToolTip(
             "勾选后点击「应用」保存到当前帧类型；"
             "未自定义过的帧类型使用出厂默认（方向估计/HKH 仅幅值，其余全开）"
@@ -1922,24 +1926,26 @@ class BLEHostGUI(QMainWindow):
             checkbox.stateChanged.connect(self._on_plot_feature_checkbox_changed)
             feature_layout.addWidget(checkbox, i // cols, i % cols)
             self.plot_feature_checkboxes[tab_key] = checkbox
-        
-        apply_row = len(PLOT_TAB_DEFINITIONS) // cols + (1 if len(PLOT_TAB_DEFINITIONS) % cols else 0)
-        apply_btn_layout = QHBoxLayout()
-        self.plot_feature_apply_btn = QPushButton("应用")
+
+        apply_column = QVBoxLayout()
+        apply_column.setContentsMargins(0, 0, 0, 0)
+        apply_column.addStretch()
+        self.plot_feature_apply_btn = QPushButton("应用配置")
+        self.plot_feature_apply_btn.setFixedWidth(100)
         self.plot_feature_apply_btn.setToolTip(
             "将勾选状态保存并应用到当前帧类型的绘图与计算；"
             "仅点击「应用」后才会记忆该帧类型的配置。\n"
             "采集中也可应用；呼吸估计需积累满「显示帧数」后才有结果。"
         )
         self.plot_feature_apply_btn.clicked.connect(self._on_apply_plot_features)
-        apply_btn_layout.addWidget(self.plot_feature_apply_btn)
-        apply_btn_layout.addStretch()
-        apply_widget = QWidget()
-        apply_widget.setLayout(apply_btn_layout)
-        feature_layout.addWidget(apply_widget, apply_row, 0, 1, cols)
+        apply_column.addWidget(self.plot_feature_apply_btn)
+        apply_column.addStretch()
+
+        feature_container_layout.addWidget(feature_group)
+        feature_container_layout.addLayout(apply_column)
         self._update_plot_feature_apply_btn_state()
         
-        layout.addWidget(feature_group)
+        layout.addWidget(feature_container)
         
         # 信道呼吸能量计算
         breathing_adaptive_group = QGroupBox("呼吸估计")
