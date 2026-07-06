@@ -69,36 +69,28 @@ class BreathingEstimator:
         根据帧类型从config加载默认参数
         
         Args:
-            frame_type: 帧类型字符串，如 "方向估计帧" 或 "信道探测帧"
+            frame_type: 帧类型字符串
         """
-        if frame_type == "方向估计帧":
-            # 从config加载方向估计帧的默认参数
-            self.fft_zero_pad_size = config.breathing_df_fft_zero_pad_size
-            self.sampling_rate = config.breathing_df_sampling_rate
-            self.median_filter_window = config.breathing_df_median_filter_window
-            self.highpass_cutoff = config.breathing_df_highpass_cutoff
-            self.highpass_order = config.breathing_df_highpass_order
-            self.bandpass_lowcut = config.breathing_df_bandpass_lowcut
-            self.bandpass_highcut = config.breathing_df_bandpass_highcut
-            self.bandpass_order = config.breathing_df_bandpass_order
-            self.breath_freq_low = config.breathing_df_breath_freq_low
-            self.breath_freq_high = config.breathing_df_breath_freq_high
-            self.total_freq_low = config.breathing_df_total_freq_low
-            self.total_freq_high = config.breathing_df_total_freq_high
-        else:
-            # 从config加载信道探测帧的默认参数
-            self.fft_zero_pad_size = config.breathing_cs_fft_zero_pad_size
-            self.sampling_rate = config.breathing_cs_sampling_rate
-            self.median_filter_window = config.breathing_cs_median_filter_window
-            self.highpass_cutoff = config.breathing_cs_highpass_cutoff
-            self.highpass_order = config.breathing_cs_highpass_order
-            self.bandpass_lowcut = config.breathing_cs_bandpass_lowcut
-            self.bandpass_highcut = config.breathing_cs_bandpass_highcut
-            self.bandpass_order = config.breathing_cs_bandpass_order
-            self.breath_freq_low = config.breathing_cs_breath_freq_low
-            self.breath_freq_high = config.breathing_cs_breath_freq_high
-            self.total_freq_low = config.breathing_cs_total_freq_low
-            self.total_freq_high = config.breathing_cs_total_freq_high
+        param_map = {
+            "方向估计帧": "breathing_df",
+            "HKH-11C呼吸波形": "breathing_hkh11c",
+            "CS-二进制双端IQ": "breathing_cs_binary",
+            "DIP-直接IQ输出": "breathing_dip",
+            "信道探测帧": "breathing_cs",
+        }
+        prefix = param_map.get(frame_type, "breathing_cs")
+        self.fft_zero_pad_size = getattr(config, f"{prefix}_fft_zero_pad_size")
+        self.sampling_rate = getattr(config, f"{prefix}_sampling_rate")
+        self.median_filter_window = getattr(config, f"{prefix}_median_filter_window")
+        self.highpass_cutoff = getattr(config, f"{prefix}_highpass_cutoff")
+        self.highpass_order = getattr(config, f"{prefix}_highpass_order")
+        self.bandpass_lowcut = getattr(config, f"{prefix}_bandpass_lowcut")
+        self.bandpass_highcut = getattr(config, f"{prefix}_bandpass_highcut")
+        self.bandpass_order = getattr(config, f"{prefix}_bandpass_order")
+        self.breath_freq_low = getattr(config, f"{prefix}_breath_freq_low")
+        self.breath_freq_high = getattr(config, f"{prefix}_breath_freq_high")
+        self.total_freq_low = getattr(config, f"{prefix}_total_freq_low")
+        self.total_freq_high = getattr(config, f"{prefix}_total_freq_high")
         
         self.logger.info(
             f"已从config加载帧类型 '{frame_type}' 的默认参数: "

@@ -132,6 +132,18 @@ __version_author__ = config.version_author
 _app_font_family = None
 _app_font_size = 10
 
+# 绘图区 tab 定义（顺序与创建顺序一致）
+PLOT_TAB_DEFINITIONS = [
+    ('amplitude', '幅值'),
+    ('phase', '相位'),
+    ('local_amplitude', 'Local观测Ref幅值'),
+    ('local_phase', 'Local观测Ref相位'),
+    ('remote_amplitude', 'Remote观测Ini幅值'),
+    ('remote_phase', 'Remote观测Ini相位'),
+    ('filtered_signal', '滤波波形'),
+    ('breathing_estimation', '呼吸估计'),
+]
+
 
 class BLEHostGUI(QMainWindow):
     """
@@ -338,6 +350,9 @@ class BLEHostGUI(QMainWindow):
         self.show_breathing_control = user_settings.get_show_breathing_control()
         self.show_send_command = user_settings.get_show_send_command()
         self.show_hkh11c_control = user_settings.get_show_hkh11c_control()
+        self.plot_feature_enabled = user_settings.get_plot_feature_enabled()
+        self.plot_feature_checkboxes = {}
+        self.plot_tab_indices = {}
         
         # HKH-11C 设备状态
         self.hkh11c_state = "CLOSED"  # CLOSED/OPENED/READY/MEASURING/STOPPING
@@ -427,7 +442,7 @@ class BLEHostGUI(QMainWindow):
         这是GUI初始化的核心方法，负责创建所有界面元素：
         1. 菜单栏（文件、视图、帮助等）
         2. 连接状态栏（顶部显示连接状态和保存状态）
-        3. 配置选项卡区域（连接、信道配置、数据保存、文件加载、特殊功能、设置）
+        3. 配置选项卡区域（连接、信道配置、数据保存、文件加载、功能配置、设置）
         4. 绘图选项卡区域（幅值、相位、I/Q分量等）
         5. 右侧面板（工具栏、日志、版本信息）
         
@@ -493,7 +508,7 @@ class BLEHostGUI(QMainWindow):
         self._create_channel_config_tab()
         self._create_data_and_save_tab()
         self._create_load_tab()
-        self._create_special_features_tab()
+        self._create_feature_config_tab()
         self._create_settings_tab()
         
         main_layout.addWidget(self.config_tabs)
@@ -637,7 +652,7 @@ class BLEHostGUI(QMainWindow):
         channel_layout.addWidget(self.breathing_channel_combo)
         # 自适应checkbox（方向估计帧模式下禁用）
         self.breathing_adaptive_manual_checkbox = QCheckBox("自适应")
-        self.breathing_adaptive_manual_checkbox.setToolTip("启用后，信道呼吸能量计算功能将接管信道选择（方向估计帧模式下不可用）\n需要先开启“特殊功能-信道呼吸能量计算”。")
+        self.breathing_adaptive_manual_checkbox.setToolTip("启用后，信道呼吸能量计算功能将接管信道选择（方向估计帧模式下不可用）\n需要先开启“功能配置-信道呼吸能量计算”。")
         self.breathing_adaptive_manual_checkbox.setChecked(self.breathing_adaptive_manual_control)
         # 默认禁用，只有在开启"启用信道的呼吸能量计算"后才启用（一开始上电时强制禁用）
         # 注意：即使config中breathing_adaptive_enabled为True，一开始也要禁用，只有用户手动开启后才启用
@@ -695,11 +710,16 @@ class BLEHostGUI(QMainWindow):
         # 采样率
         sampling_rate_layout = QHBoxLayout()
         sampling_rate_label = QLabel("采样率 (Hz):")
-        sampling_rate_label.setToolTip("信号采样率，方向估计帧为50Hz，信道探测帧为2Hz")
+        sampling_rate_label.setToolTip(
+            "信号采样率，各帧类型预设："
+            "CS-二进制 4Hz、DIP 20Hz、方向估计 50Hz、"
+            "信道探测 2Hz、HKH-11C 50Hz"
+        )
         sampling_rate_label.installEventFilter(ToolTipFilter(sampling_rate_label, 0, ToolTipPosition.TOP))
         sampling_rate_layout.addWidget(sampling_rate_label)
         # 初始值根据当前帧类型设置（稍后会在_update_breathing_params_from_frame_type中更新）
-        initial_sampling_rate = config.breathing_df_sampling_rate if self.frame_type == "方向估计帧" else config.breathing_cs_sampling_rate
+        _init_estimator = BreathingEstimator(frame_type=self.frame_type)
+        initial_sampling_rate = _init_estimator.sampling_rate
         self.breathing_sampling_rate_entry = QLineEdit(str(initial_sampling_rate))
         self.breathing_sampling_rate_entry.setMaximumWidth(100)
         self.breathing_sampling_rate_entry.setToolTip("输入大于0的值（Hz）")
@@ -710,11 +730,15 @@ class BLEHostGUI(QMainWindow):
         # 中值滤波窗口
         median_filter_layout = QHBoxLayout()
         median_filter_label = QLabel("中值滤波窗口:")
-        median_filter_label.setToolTip("单位为帧数，方向估计帧为10，信道探测帧为3，通常不超过0.2s")
+        median_filter_label.setToolTip(
+            "单位为帧数，各帧类型预设："
+            "CS-二进制/DIP/信道探测 3~5、"
+            "方向估计/HKH-11C 10，通常不超过0.2s"
+        )
         median_filter_label.installEventFilter(ToolTipFilter(median_filter_label, 0, ToolTipPosition.TOP))
         median_filter_layout.addWidget(median_filter_label)
         # 初始值根据当前帧类型设置
-        initial_median_window = config.breathing_df_median_filter_window if self.frame_type == "方向估计帧" else config.breathing_cs_median_filter_window
+        initial_median_window = _init_estimator.median_filter_window
         self.breathing_median_filter_entry = QLineEdit(str(initial_median_window))
         self.breathing_median_filter_entry.setMaximumWidth(100)
         self.breathing_median_filter_entry.setToolTip("输入大于0的整数")
@@ -1863,14 +1887,44 @@ class BLEHostGUI(QMainWindow):
         
         self.config_tabs.addTab(tab, "文件加载")
     
-    def _create_special_features_tab(self):
-        """创建特殊功能选项卡"""
+    def _create_feature_config_tab(self):
+        """创建功能配置选项卡"""
         tab = QWidget()
         tab.setMinimumHeight(80)
         layout = QHBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)
         
-        # 信道呼吸能量计算按钮
+        # 功能启用与禁用（3 列网格，避免单列撑高 tab）
+        feature_group = QGroupBox("功能启用与禁用")
+        feature_group.setFont(get_app_font(9))
+        feature_layout = QGridLayout(feature_group)
+        feature_layout.setHorizontalSpacing(16)
+        feature_layout.setVerticalSpacing(4)
+        feature_group.setMaximumWidth(560)
+        feature_group.setToolTip(
+            "勾选启用对应绘图 tab 及相关计算；取消勾选可停止计算以提升实时性"
+        )
+        
+        cols = 3
+        for i, (tab_key, tab_label) in enumerate(PLOT_TAB_DEFINITIONS):
+            checkbox = QCheckBox(tab_label)
+            checkbox.setChecked(self.plot_feature_enabled.get(tab_key, True))
+            if tab_key == 'breathing_estimation':
+                checkbox.setToolTip(
+                    "控制呼吸估计 tab 及工具栏呼吸频率结果显示；"
+                    "取消勾选后停止呼吸估计算法"
+                )
+            else:
+                checkbox.setToolTip(f"启用/禁用「{tab_label}」绘图 tab 及相关绘图计算")
+            checkbox.stateChanged.connect(
+                lambda _state, key=tab_key: self._on_plot_feature_changed(key)
+            )
+            feature_layout.addWidget(checkbox, i // cols, i % cols)
+            self.plot_feature_checkboxes[tab_key] = checkbox
+        
+        layout.addWidget(feature_group)
+        
+        # 信道呼吸能量计算
         breathing_adaptive_group = QGroupBox("呼吸估计")
         breathing_adaptive_group.setFont(get_app_font(9))
         breathing_adaptive_layout = QVBoxLayout(breathing_adaptive_group)
@@ -1885,7 +1939,7 @@ class BLEHostGUI(QMainWindow):
         layout.addWidget(breathing_adaptive_group)
         layout.addStretch()
         
-        self.config_tabs.addTab(tab, "特殊功能")
+        self.config_tabs.addTab(tab, "功能配置")
     
     def _open_breathing_adaptive_dialog(self):
         """打开信道呼吸能量计算设置对话框"""
@@ -2401,6 +2455,7 @@ class BLEHostGUI(QMainWindow):
             
             # 添加到选项卡
             tab_index = self.plot_tabs.addTab(plotter.get_widget(), tab_name)
+            self.plot_tab_indices[tab_key] = tab_index
             
             # 为特定tab设置tooltip
             if tab_key == 'amplitude' or tab_key == 'phase':
@@ -2424,6 +2479,7 @@ class BLEHostGUI(QMainWindow):
         )
         plotter.plot_widget.sigRangeChanged.connect(self._on_plot_view_changed)
         tab_index = self.plot_tabs.addTab(plotter.get_widget(), "滤波波形")
+        self.plot_tab_indices['filtered_signal'] = tab_index
         self.plot_tabs.setTabToolTip(tab_index, "显示中值滤波、高通滤波、带通滤波后的信号波形")
         self.plotters['filtered_signal'] = {
             'plotter': plotter,
@@ -2785,28 +2841,74 @@ class BLEHostGUI(QMainWindow):
                         plotter.clear_plot()
                 self.data_parser.clear_buffer()
     
-    def _update_plot_tabs_enabled_state(self):
-        """根据帧类型更新plot tabs的启用状态"""
-        # 在方向估计帧模式下，只启用幅值tab，禁用其他tab
-        tab_configs = [
-            ('amplitude', 0),
-            ('phase', 1),
-            ('local_amplitude', 2),
-            ('local_phase', 3),
-            ('remote_amplitude', 4),
-            ('remote_phase', 5),
-        ]
+    def _is_only_amplitude_frame_mode(self) -> bool:
+        """方向估计帧 / HKH-11C 模式下仅保留幅值 tab"""
+        return self.is_direction_estimation_mode or self.is_hkh11c_mode
+
+    def _is_plot_tab_active(self, tab_key: str) -> bool:
+        """用户功能开关与帧类型约束共同决定 tab 是否应启用计算"""
+        if not self.plot_feature_enabled.get(tab_key, True):
+            return False
+        if self._is_only_amplitude_frame_mode() and tab_key != 'amplitude':
+            return False
+        return True
+
+    def _on_plot_feature_changed(self, tab_key: str):
+        """绘图/呼吸功能开关变化"""
+        checkbox = self.plot_feature_checkboxes.get(tab_key)
+        if checkbox is None:
+            return
+        enabled = checkbox.isChecked()
+        self.plot_feature_enabled[tab_key] = enabled
+        user_settings.set_plot_feature_enabled(self.plot_feature_enabled)
         
-        for tab_key, tab_index in tab_configs:
-            if tab_key in self.plotters:
-                # 方向估计帧 / HKH-11C：只启用幅值 tab
-                only_amplitude = self.is_direction_estimation_mode or self.is_hkh11c_mode
-                enabled = not only_amplitude or (tab_key == 'amplitude')
-                self.plot_tabs.setTabEnabled(tab_index, enabled)
-                
-                # 如果当前tab被禁用，切换到幅值tab
-                if not enabled and self.plot_tabs.currentIndex() == tab_index:
-                    self.plot_tabs.setCurrentIndex(0)  # 切换到幅值tab
+        if not enabled:
+            self._clear_plot_tab(tab_key)
+            if tab_key == 'breathing_estimation' and hasattr(self, 'breathing_result_text'):
+                self.breathing_result_text.setPlainText("呼吸估计已禁用")
+        
+        self._update_plot_tabs_enabled_state()
+        self.logger.info(f"绘图功能「{tab_key}」已{'启用' if enabled else '禁用'}")
+
+    def _clear_plot_tab(self, tab_key: str):
+        """清空指定 tab 的绘图内容"""
+        if tab_key not in self.plotters:
+            return
+        plotter_info = self.plotters[tab_key]
+        if tab_key == 'breathing_estimation':
+            axes = plotter_info.get('axes', {})
+            for ax in axes.values():
+                ax.clear()
+                if ax != axes.get('bottom_right'):
+                    ax.grid(True, alpha=0.3)
+            canvas = plotter_info.get('canvas')
+            if canvas:
+                canvas.draw_idle()
+        else:
+            plotter = plotter_info.get('plotter')
+            if plotter is not None:
+                plotter.clear_plot()
+
+    def _get_first_active_plot_tab_index(self) -> int:
+        """获取第一个应启用的 plot tab 索引"""
+        for tab_key, _ in PLOT_TAB_DEFINITIONS:
+            if self._is_plot_tab_active(tab_key) and tab_key in self.plot_tab_indices:
+                return self.plot_tab_indices[tab_key]
+        return 0
+
+    def _update_plot_tabs_enabled_state(self):
+        """根据帧类型与用户功能开关更新 plot tabs 的启用状态"""
+        current_index = self.plot_tabs.currentIndex()
+        need_switch = False
+        
+        for tab_key, tab_index in self.plot_tab_indices.items():
+            enabled = self._is_plot_tab_active(tab_key)
+            self.plot_tabs.setTabEnabled(tab_index, enabled)
+            if not enabled and current_index == tab_index:
+                need_switch = True
+        
+        if need_switch:
+            self.plot_tabs.setCurrentIndex(self._get_first_active_plot_tab_index())
         
         # 更新plot tab标题
         self._update_plot_tab_titles()
@@ -4645,24 +4747,16 @@ class BLEHostGUI(QMainWindow):
         if tab_key is None:
             # 只更新当前打开的tab（优化性能）
             current_tab_index = self.plot_tabs.currentIndex()
-            tab_configs = [
-                ('amplitude', '幅值'),
-                ('phase', '相位'),
-                ('local_amplitude', 'Local观测Ref幅值'),
-                ('local_phase', 'Local观测Ref相位'),
-                ('remote_amplitude', 'Remote观测Ini幅值'),
-                ('remote_phase', 'Remote观测Ini相位'),
-            ]
-            if current_tab_index < len(tab_configs):
-                tab_key = tab_configs[current_tab_index][0]
-                tabs_to_update = [tab_key] if tab_key in self.plotters else []
-            else:
-                tabs_to_update = []
+            tab_key_by_index = {idx: key for key, idx in self.plot_tab_indices.items()}
+            tab_key = tab_key_by_index.get(current_tab_index)
+            tabs_to_update = [tab_key] if tab_key and tab_key in self.plotters else []
         else:
             tabs_to_update = [tab_key] if tab_key in self.plotters else []
         
         # 更新指定的选项卡的绘图
         for tab_key_to_update in tabs_to_update:
+            if not self._is_plot_tab_active(tab_key_to_update):
+                continue
             plotter_info = self.plotters[tab_key_to_update]
             plotter = plotter_info.get('plotter')
             if plotter is None:
@@ -4817,7 +4911,8 @@ class BLEHostGUI(QMainWindow):
         }
         
         # 添加到选项卡
-        self.plot_tabs.addTab(tab_widget, "呼吸估计")
+        tab_index = self.plot_tabs.addTab(tab_widget, "呼吸估计")
+        self.plot_tab_indices['breathing_estimation'] = tab_index
         
         # 呼吸估计控制（在加载模式下显示）
         # TODO: 如果需要，可以添加呼吸估计控制面板
@@ -5957,6 +6052,9 @@ class BLEHostGUI(QMainWindow):
         if not self.frame_mode or not self.is_running:
             return
         
+        if not self._is_plot_tab_active('filtered_signal'):
+            return
+        
         # 检查是否有滤波波形tab
         if 'filtered_signal' not in self.plotters:
             return
@@ -6093,7 +6191,7 @@ class BLEHostGUI(QMainWindow):
                 InfoBarHelper.warning(
                     self,
                     title="无法启用自适应",
-                    content="请先启用'启用信道的呼吸能量计算'功能。\n可在'特殊功能' -> '信道呼吸能量计算'中开启。"
+                    content="请先启用'启用信道的呼吸能量计算'功能。\n可在'功能配置' -> '信道呼吸能量计算'中开启。"
                 )
                 return
         
@@ -6327,6 +6425,9 @@ class BLEHostGUI(QMainWindow):
         - 手动选择模式下，信道变化不触发重置
         """
         if not self.frame_mode or not self.is_running:
+            return
+        
+        if not self._is_plot_tab_active('breathing_estimation'):
             return
         
         # 检查是否有足够的数据
@@ -6688,8 +6789,8 @@ class BLEHostGUI(QMainWindow):
             if window_frames:
                 self._update_breathing_estimation_plot(window_frames)
                 
-            # 更新滤波波形tab（如果存在）
-            if 'filtered_signal' in self.plotters:
+            # 更新滤波波形tab（如果存在且已启用）
+            if self._is_plot_tab_active('filtered_signal') and 'filtered_signal' in self.plotters:
                 self._update_filtered_signal_plot(indices, values, processed)
                 
         except Exception as e:
@@ -6810,17 +6911,19 @@ class BLEHostGUI(QMainWindow):
         window_frames = self.loaded_frames[window_start:window_end]
         
         # 在文件加载模式下，如果启用了能量计算，先计算能量（这样高亮功能才能获取到最新状态）
-        if self.breathing_adaptive_enabled:
+        if self.breathing_adaptive_enabled and self._is_plot_tab_active('breathing_estimation'):
             self._update_loaded_mode_energy_calculation(window_frames)
         
         # 更新所有绘图tab（会应用高亮）
         self._update_loaded_plots_for_tabs(window_frames)
         
         # 更新呼吸估计tab
-        self._update_breathing_estimation_plot(window_frames)
+        if self._is_plot_tab_active('breathing_estimation'):
+            self._update_breathing_estimation_plot(window_frames)
         
         # 在文件加载模式下，如果启用了能量计算，也更新能量计算结果显示
-        if self.breathing_adaptive_enabled and hasattr(self, 'breathing_result_text'):
+        if (self.breathing_adaptive_enabled and self._is_plot_tab_active('breathing_estimation')
+                and hasattr(self, 'breathing_result_text')):
             self._update_loaded_mode_energy_result(window_frames)
         
         # 更新时间窗长度显示
@@ -6893,6 +6996,8 @@ class BLEHostGUI(QMainWindow):
         
         for tab_key, data_type in tab_configs:
             if tab_key not in self.plotters:
+                continue
+            if not self._is_plot_tab_active(tab_key):
                 continue
             
             plotter_info = self.plotters[tab_key]
@@ -6993,6 +7098,8 @@ class BLEHostGUI(QMainWindow):
     
     def _update_breathing_estimation_plot(self, window_frames: List[Dict]):
         """更新呼吸估计tab的绘图"""
+        if not self._is_plot_tab_active('breathing_estimation'):
+            return
         if 'breathing_estimation' not in self.plotters:
             return
         
@@ -7067,8 +7174,8 @@ class BLEHostGUI(QMainWindow):
         ax2.set_ylabel('Amplitude' if 'amplitude' in data_type else 'Phase')
         ax2.grid(True, alpha=0.3)
         
-        # 更新滤波波形tab（如果存在）
-        if 'filtered_signal' in self.plotters:
+        # 更新滤波波形tab（如果存在且已启用）
+        if self._is_plot_tab_active('filtered_signal') and 'filtered_signal' in self.plotters:
             self._update_filtered_signal_plot(indices, signal, processed)
         
         # 左下角：FFT频谱（带通前后对比）

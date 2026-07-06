@@ -106,6 +106,34 @@ class AppConfig:
     breathing_cs_total_freq_low: float = 0.05  # Hz
     breathing_cs_total_freq_high: float = 0.8  # Hz
     
+    # CS-二进制双端IQ 的默认参数（采样率 4Hz）
+    breathing_cs_binary_fft_zero_pad_size: int = 1024
+    breathing_cs_binary_sampling_rate: float = 4.0  # Hz
+    breathing_cs_binary_median_filter_window: int = 3
+    breathing_cs_binary_highpass_cutoff: float = 0.05  # Hz
+    breathing_cs_binary_highpass_order: int = 2
+    breathing_cs_binary_bandpass_lowcut: float = 0.1  # Hz
+    breathing_cs_binary_bandpass_highcut: float = 0.35  # Hz
+    breathing_cs_binary_bandpass_order: int = 2
+    breathing_cs_binary_breath_freq_low: float = 0.1  # Hz
+    breathing_cs_binary_breath_freq_high: float = 0.35  # Hz
+    breathing_cs_binary_total_freq_low: float = 0.05  # Hz
+    breathing_cs_binary_total_freq_high: float = 0.8  # Hz
+
+    # DIP-直接IQ输出 的默认参数（采样率 20Hz）
+    breathing_dip_fft_zero_pad_size: int = 2048
+    breathing_dip_sampling_rate: float = 20.0  # Hz
+    breathing_dip_median_filter_window: int = 5
+    breathing_dip_highpass_cutoff: float = 0.05  # Hz
+    breathing_dip_highpass_order: int = 2
+    breathing_dip_bandpass_lowcut: float = 0.1  # Hz
+    breathing_dip_bandpass_highcut: float = 0.35  # Hz
+    breathing_dip_bandpass_order: int = 2
+    breathing_dip_breath_freq_low: float = 0.1  # Hz
+    breathing_dip_breath_freq_high: float = 0.35  # Hz
+    breathing_dip_total_freq_low: float = 0.05  # Hz
+    breathing_dip_total_freq_high: float = 0.8  # Hz
+
     # 方向估计帧的默认参数
     breathing_df_fft_zero_pad_size: int = 4096  # FFT零填充起步点数（<=此长度补到此值）
     breathing_df_sampling_rate: float = 50.0  # Hz
@@ -128,6 +156,18 @@ class AppConfig:
     
     # HKH-11C 呼吸传感器
     hkh11c_sampling_rate: float = 50.0  # Hz
+    breathing_hkh11c_fft_zero_pad_size: int = 4096
+    breathing_hkh11c_sampling_rate: float = 50.0  # Hz
+    breathing_hkh11c_median_filter_window: int = 10
+    breathing_hkh11c_highpass_cutoff: float = 0.05  # Hz
+    breathing_hkh11c_highpass_order: int = 2
+    breathing_hkh11c_bandpass_lowcut: float = 0.1  # Hz
+    breathing_hkh11c_bandpass_highcut: float = 0.35  # Hz
+    breathing_hkh11c_bandpass_order: int = 2
+    breathing_hkh11c_breath_freq_low: float = 0.1  # Hz
+    breathing_hkh11c_breath_freq_high: float = 0.35  # Hz
+    breathing_hkh11c_total_freq_low: float = 0.05  # Hz
+    breathing_hkh11c_total_freq_high: float = 0.8  # Hz
     hkh11c_default_display_max_frames: int = 1000  # 50Hz 下约 20 秒
     hkh11c_default_baudrate: str = "115200"
     hkh11c_default_gain: int = 5  # 幅度级别 0~16
@@ -139,6 +179,9 @@ class AppConfig:
     default_show_breathing_control: bool = True  # 是否显示呼吸控制面板
     default_show_send_command: bool = True  # 是否显示命令发送面板
     default_show_hkh11c_control: bool = True  # 是否显示 HKH-11C 控制面板
+
+    # 绘图/呼吸功能开关默认值（8 个 tab 默认全部启用）
+    default_plot_feature_enabled: dict = None
     
     # 主题默认值
     default_theme_mode: str = "light"  # 默认主题模式："auto"（跟随系统）、"light"（浅色）、"dark"（深色）
@@ -156,6 +199,17 @@ class AppConfig:
                 "信道探测帧",
                 "HKH-11C呼吸波形",
             ]
+        if self.default_plot_feature_enabled is None:
+            self.default_plot_feature_enabled = {
+                'amplitude': True,
+                'phase': True,
+                'local_amplitude': True,
+                'local_phase': True,
+                'remote_amplitude': True,
+                'remote_phase': True,
+                'filtered_signal': True,
+                'breathing_estimation': True,
+            }
 
 
 class UserSettings:
@@ -180,6 +234,8 @@ class UserSettings:
             'show_breathing_control': config.default_show_breathing_control,
             'show_send_command': config.default_show_send_command,
             'show_hkh11c_control': config.default_show_hkh11c_control,
+            # 绘图/呼吸功能开关
+            'plot_feature_enabled': dict(config.default_plot_feature_enabled),
             # 主题设置
             'theme_mode': config.default_theme_mode
         }
@@ -299,6 +355,19 @@ class UserSettings:
     def set_show_hkh11c_control(self, show: bool):
         """设置是否显示 HKH-11C 控制面板"""
         self.settings['show_hkh11c_control'] = show
+        self.save()
+
+    def get_plot_feature_enabled(self) -> dict:
+        """获取绘图/呼吸功能开关（各 tab 是否启用）"""
+        defaults = config.default_plot_feature_enabled
+        saved = self.settings.get('plot_feature_enabled', {})
+        result = dict(defaults)
+        result.update(saved)
+        return result
+
+    def set_plot_feature_enabled(self, features: dict):
+        """保存绘图/呼吸功能开关"""
+        self.settings['plot_feature_enabled'] = dict(features)
         self.save()
     
     # 主题设置方法
