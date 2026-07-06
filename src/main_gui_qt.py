@@ -353,6 +353,7 @@ class BLEHostGUI(QMainWindow):
         self.plot_feature_enabled = user_settings.get_plot_feature_enabled()
         self.plot_feature_checkboxes = {}
         self.plot_tab_indices = {}
+        self._plot_features_dirty = False
         
         # HKH-11C 设备状态
         self.hkh11c_state = "CLOSED"  # CLOSED/OPENED/READY/MEASURING/STOPPING
@@ -379,6 +380,13 @@ class BLEHostGUI(QMainWindow):
         # 根据帧类型初始化呼吸估计器的默认参数（在UI创建完成后）
         if hasattr(self, 'breathing_estimator') and hasattr(self, 'breathing_sampling_rate_entry'):
             self._update_breathing_params_from_frame_type()
+        
+        # 功能开关：若全部为禁用（异常配置），按当前帧类型恢复默认预设
+        if not any(self.plot_feature_enabled.values()):
+            self._apply_plot_feature_preset_for_frame_type(self.frame_type, save=True)
+        else:
+            self._sync_plot_feature_checkboxes_from_applied()
+            self._update_plot_tabs_enabled_state()
         
         # 应用初始主题（跟随系统）- 初始化时不显示提示
         # 注意：这里不调用 _on_theme_mode_changed，因为界面还没创建完成
@@ -1916,11 +1924,25 @@ class BLEHostGUI(QMainWindow):
                 )
             else:
                 checkbox.setToolTip(f"启用/禁用「{tab_label}」绘图 tab 及相关绘图计算")
-            checkbox.stateChanged.connect(
-                lambda _state, key=tab_key: self._on_plot_feature_changed(key)
-            )
+            checkbox.stateChanged.connect(self._on_plot_feature_checkbox_changed)
             feature_layout.addWidget(checkbox, i // cols, i % cols)
             self.plot_feature_checkboxes[tab_key] = checkbox
+        
+        apply_row = len(PLOT_TAB_DEFINITIONS) // cols + (1 if len(PLOT_TAB_DEFINITIONS) % cols else 0)
+        apply_btn_layout = QHBoxLayout()
+        self.plot_feature_apply_btn = QPushButton("应用")
+        self.plot_feature_apply_btn.setToolTip(
+            "将上方勾选状态应用到绘图与计算。\n"
+            "采集中也可启用功能，将使用已缓冲的数据；"
+            "呼吸估计需积累满「显示帧数」后才开始分析。"
+        )
+        self.plot_feature_apply_btn.clicked.connect(self._on_apply_plot_features)
+        apply_btn_layout.addWidget(self.plot_feature_apply_btn)
+        apply_btn_layout.addStretch()
+        apply_widget = QWidget()
+        apply_widget.setLayout(apply_btn_layout)
+        feature_layout.addWidget(apply_widget, apply_row, 0, 1, cols)
+        self._update_plot_feature_apply_btn_state()
         
         layout.addWidget(feature_group)
         
@@ -2807,11 +2829,11 @@ class BLEHostGUI(QMainWindow):
         if hasattr(self, 'breathing_estimator'):
             self._update_breathing_params_from_frame_type()
         
-        # 如果切换到方向估计帧模式，需要更新tab的启用状态
+        # 切换帧类型时应用该模式的默认功能勾选预设
+        self._apply_plot_feature_preset_for_frame_type(self.frame_type, save=True)
+        
+        # 如果切换到方向估计帧模式，需要更新显示帧数设置
         if old_is_direction_mode != self.is_direction_estimation_mode:
-            self._update_plot_tabs_enabled_state()
-            
-            # 更新显示帧数设置
             if self.is_direction_estimation_mode:
                 # DF模式：设置默认显示帧数为1000
                 self.display_max_frames = config.df_default_display_max_frames
@@ -2841,34 +2863,121 @@ class BLEHostGUI(QMainWindow):
                         plotter.clear_plot()
                 self.data_parser.clear_buffer()
     
-    def _is_only_amplitude_frame_mode(self) -> bool:
-        """方向估计帧 / HKH-11C 模式下仅保留幅值 tab"""
-        return self.is_direction_estimation_mode or self.is_hkh11c_mode
+    def _get_plot_feature_preset_for_frame_type(self, frame_type: str) -> dict:
+        """各帧类型的功能开关默认预设（以 checkbox 为准，无帧类型硬禁用）"""
+        only_amplitude = frame_type in config.plot_feature_only_amplitude_frame_types
+        if only_amplitude:
+            return {key: (key == 'amplitude') for key, _ in PLOT_TAB_DEFINITIONS}
+        return {key: True for key, _ in PLOT_TAB_DEFINITIONS}
 
-    def _is_plot_tab_active(self, tab_key: str) -> bool:
-        """用户功能开关与帧类型约束共同决定 tab 是否应启用计算"""
-        if not self.plot_feature_enabled.get(tab_key, True):
-            return False
-        if self._is_only_amplitude_frame_mode() and tab_key != 'amplitude':
-            return False
-        return True
+    def _sync_plot_feature_checkboxes_from_applied(self):
+        """将 checkbox 同步为当前已应用的功能开关状态"""
+        for tab_key, checkbox in self.plot_feature_checkboxes.items():
+            checkbox.blockSignals(True)
+            checkbox.setChecked(self.plot_feature_enabled.get(tab_key, True))
+            checkbox.blockSignals(False)
+        self._plot_features_dirty = False
+        self._update_plot_feature_apply_btn_state()
 
-    def _on_plot_feature_changed(self, tab_key: str):
-        """绘图/呼吸功能开关变化"""
-        checkbox = self.plot_feature_checkboxes.get(tab_key)
-        if checkbox is None:
+    def _get_pending_plot_features(self) -> dict:
+        """读取 checkbox 上待应用的功能开关状态"""
+        return {
+            tab_key: checkbox.isChecked()
+            for tab_key, checkbox in self.plot_feature_checkboxes.items()
+        }
+
+    def _is_plot_features_pending_changed(self) -> bool:
+        pending = self._get_pending_plot_features()
+        return pending != self.plot_feature_enabled
+
+    def _update_plot_feature_apply_btn_state(self):
+        if not hasattr(self, 'plot_feature_apply_btn'):
             return
-        enabled = checkbox.isChecked()
-        self.plot_feature_enabled[tab_key] = enabled
-        user_settings.set_plot_feature_enabled(self.plot_feature_enabled)
+        dirty = self._plot_features_dirty and self._is_plot_features_pending_changed()
+        self.plot_feature_apply_btn.setEnabled(dirty)
+        if dirty:
+            self.plot_feature_apply_btn.setStyleSheet("font-weight: bold;")
+        else:
+            self.plot_feature_apply_btn.setStyleSheet("")
+
+    def _on_plot_feature_checkbox_changed(self, _state=None):
+        """checkbox 变更：仅标记待应用，不立即生效"""
+        self._plot_features_dirty = True
+        self._update_plot_feature_apply_btn_state()
+
+    def _apply_plot_feature_preset_for_frame_type(self, frame_type: str, save: bool = True):
+        """按帧类型设置默认功能勾选并立即应用"""
+        preset = self._get_plot_feature_preset_for_frame_type(frame_type)
+        for tab_key, enabled in preset.items():
+            if tab_key in self.plot_feature_checkboxes:
+                self.plot_feature_checkboxes[tab_key].blockSignals(True)
+                self.plot_feature_checkboxes[tab_key].setChecked(enabled)
+                self.plot_feature_checkboxes[tab_key].blockSignals(False)
+        self._apply_plot_features(save=save, show_info=False)
+
+    def _on_apply_plot_features(self):
+        """应用功能开关配置"""
+        self._apply_plot_features(save=True, show_info=True)
+
+    def _apply_plot_features(self, save: bool = True, show_info: bool = False):
+        """将 checkbox 状态应用到功能开关、tab 与计算管线"""
+        pending = self._get_pending_plot_features()
+        if pending == self.plot_feature_enabled:
+            self._plot_features_dirty = False
+            self._update_plot_feature_apply_btn_state()
+            return
         
-        if not enabled:
+        disabled_keys = [
+            key for key, enabled in pending.items()
+            if not enabled and self.plot_feature_enabled.get(key, True)
+        ]
+        
+        self.plot_feature_enabled = dict(pending)
+        if save:
+            user_settings.set_plot_feature_enabled(self.plot_feature_enabled)
+        
+        for tab_key in disabled_keys:
             self._clear_plot_tab(tab_key)
-            if tab_key == 'breathing_estimation' and hasattr(self, 'breathing_result_text'):
+        
+        if not self.plot_feature_enabled.get('breathing_estimation', True):
+            if hasattr(self, 'breathing_result_text'):
                 self.breathing_result_text.setPlainText("呼吸估计已禁用")
         
+        self._plot_features_dirty = False
+        self._update_plot_feature_apply_btn_state()
         self._update_plot_tabs_enabled_state()
-        self.logger.info(f"绘图功能「{tab_key}」已{'启用' if enabled else '禁用'}")
+        
+        if self.is_running and self.frame_mode:
+            if self.plot_feature_enabled.get('breathing_estimation') or self.plot_feature_enabled.get('filtered_signal'):
+                self._ensure_breathing_channel_combo_populated()
+            if self.plot_feature_enabled.get('breathing_estimation'):
+                self._update_realtime_breathing_estimation()
+            if self.plot_feature_enabled.get('filtered_signal'):
+                self._update_realtime_filtered_signal()
+            self._update_frame_plots()
+        elif self.is_loaded_mode:
+            self._update_loaded_mode_plots()
+        
+        if show_info:
+            enabled_names = [
+                label for key, label in PLOT_TAB_DEFINITIONS
+                if self.plot_feature_enabled.get(key, True)
+            ]
+            tip = (
+                f"已启用: {', '.join(enabled_names) if enabled_names else '无'}\n"
+            )
+            if self.is_running and self.frame_mode:
+                tip += (
+                    "采集中已应用。呼吸估计需积累满「显示帧数」后输出结果；"
+                    "滤波波形默认可显示中值滤波结果。"
+                )
+            InfoBarHelper.success(self, title="功能配置已应用", content=tip)
+        
+        self.logger.info(f"绘图功能配置已应用: {self.plot_feature_enabled}")
+
+    def _is_plot_tab_active(self, tab_key: str) -> bool:
+        """功能是否启用（仅以已应用的 checkbox 状态为准）"""
+        return self.plot_feature_enabled.get(tab_key, True)
 
     def _clear_plot_tab(self, tab_key: str):
         """清空指定 tab 的绘图内容"""
@@ -6055,6 +6164,8 @@ class BLEHostGUI(QMainWindow):
         if not self._is_plot_tab_active('filtered_signal'):
             return
         
+        self._ensure_breathing_channel_combo_populated()
+        
         # 检查是否有滤波波形tab
         if 'filtered_signal' not in self.plotters:
             return
@@ -6079,31 +6190,60 @@ class BLEHostGUI(QMainWindow):
         if len(values) == 0:
             return
         
-        # 检查是否有任何可视化选项被选中，如果没有则跳过滤波计算
-        has_any_checked = (
-            (hasattr(self, 'breathing_show_median_checkbox') and self.breathing_show_median_checkbox.isChecked()) or
-            (hasattr(self, 'breathing_show_highpass_checkbox') and self.breathing_show_highpass_checkbox.isChecked()) or
-            (hasattr(self, 'breathing_show_bandpass_checkbox') and self.breathing_show_bandpass_checkbox.isChecked())
-        )
-        
-        if not has_any_checked:
-            # 如果没有任何选项被选中，清空显示并返回，不执行滤波计算
-            if 'filtered_signal' in self.plotters:
-                plotter_info = self.plotters['filtered_signal']
-                plotter = plotter_info.get('plotter')
-                if plotter:
-                    plotter.clear_plot()
+        show_median, show_highpass, show_bandpass = self._get_filtered_signal_display_flags()
+        if not (show_median or show_highpass or show_bandpass):
             return
         
-        # 进行滤波处理（只有至少有一个选项被选中时才执行）
+        # 进行滤波处理
         signal = np.array(values)
         try:
             processed = self.breathing_estimator.process_signal(signal, data_type)
             if processed:
-                # 更新滤波波形tab
-                self._update_filtered_signal_plot(indices, values, processed)
+                self._update_filtered_signal_plot(
+                    indices, values, processed,
+                    show_median=show_median,
+                    show_highpass=show_highpass,
+                    show_bandpass=show_bandpass,
+                )
         except Exception as e:
             self.logger.warning(f"实时滤波处理出错: {e}")
+    
+    def _get_filtered_signal_display_flags(self):
+        """滤波波形 tab 各阶段是否显示；未配置可视化时默认仅中值滤波"""
+        show_median = (
+            hasattr(self, 'breathing_show_median_checkbox')
+            and self.breathing_show_median_checkbox.isChecked()
+        )
+        show_highpass = (
+            hasattr(self, 'breathing_show_highpass_checkbox')
+            and self.breathing_show_highpass_checkbox.isChecked()
+        )
+        show_bandpass = (
+            hasattr(self, 'breathing_show_bandpass_checkbox')
+            and self.breathing_show_bandpass_checkbox.isChecked()
+        )
+        if not (show_median or show_highpass or show_bandpass):
+            show_median = True
+        return show_median, show_highpass, show_bandpass
+
+    def _ensure_breathing_channel_combo_populated(self):
+        """确保呼吸估计信道下拉框已根据当前缓冲数据填充"""
+        if not hasattr(self, 'breathing_channel_combo'):
+            return
+        all_channels = self.data_processor.get_all_frame_channels()
+        if not all_channels:
+            return
+        channel_list = [str(ch) for ch in sorted(all_channels)]
+        current_items = [
+            self.breathing_channel_combo.itemText(i)
+            for i in range(self.breathing_channel_combo.count())
+        ]
+        if set(channel_list) != set(current_items) or not current_items:
+            self.breathing_channel_combo.clear()
+            self.breathing_channel_combo.addItems(channel_list)
+            if channel_list:
+                self.breathing_channel_combo.setCurrentIndex(0)
+        self.breathing_channels_initialized = True
     
     def _breathing_data_accessor(self, method: str):
         """
@@ -6429,6 +6569,8 @@ class BLEHostGUI(QMainWindow):
         
         if not self._is_plot_tab_active('breathing_estimation'):
             return
+        
+        self._ensure_breathing_channel_combo_populated()
         
         # 检查是否有足够的数据
         all_channels = self.data_processor.get_all_frame_channels()
@@ -6797,7 +6939,15 @@ class BLEHostGUI(QMainWindow):
             self.logger.error(f"实时呼吸估计出错: {e}")
             self.breathing_result_text.setPlainText(f"分析出错: {str(e)}")
     
-    def _update_filtered_signal_plot(self, indices: np.ndarray, values: np.ndarray, processed: Dict):
+    def _update_filtered_signal_plot(
+        self,
+        indices: np.ndarray,
+        values: np.ndarray,
+        processed: Dict,
+        show_median: bool = None,
+        show_highpass: bool = None,
+        show_bandpass: bool = None,
+    ):
         """
         更新滤波波形tab的显示
         
@@ -6805,9 +6955,15 @@ class BLEHostGUI(QMainWindow):
             indices: 帧索引数组
             values: 原始信号值数组
             processed: process_signal返回的处理结果字典
+            show_median: 是否显示中值滤波（None 时从 UI 读取）
+            show_highpass: 是否显示高通滤波
+            show_bandpass: 是否显示带通滤波
         """
         if 'filtered_signal' not in self.plotters:
             return
+        
+        if show_median is None or show_highpass is None or show_bandpass is None:
+            show_median, show_highpass, show_bandpass = self._get_filtered_signal_display_flags()
         
         plotter_info = self.plotters['filtered_signal']
         plotter = plotter_info.get('plotter')
@@ -6826,9 +6982,8 @@ class BLEHostGUI(QMainWindow):
             'bandpass': '中值+高通+带通滤波'
         }
         
-        # 根据复选框状态显示/隐藏对应的线条
-        # 中值滤波
-        if hasattr(self, 'breathing_show_median_checkbox') and self.breathing_show_median_checkbox.isChecked():
+        # 根据显示标志绘制各滤波阶段
+        if show_median:
             if 'median_filtered' in processed:
                 if 'median' not in plotter.data_lines:
                     plotter.add_line('median', color=filter_colors['median'], label=filter_labels['median'])
@@ -6840,7 +6995,7 @@ class BLEHostGUI(QMainWindow):
                 plotter.remove_line('median')
         
         # 高通滤波
-        if hasattr(self, 'breathing_show_highpass_checkbox') and self.breathing_show_highpass_checkbox.isChecked():
+        if show_highpass:
             if 'highpass_filtered' in processed:
                 if 'highpass' not in plotter.data_lines:
                     plotter.add_line('highpass', color=filter_colors['highpass'], label=filter_labels['highpass'])
@@ -6852,7 +7007,7 @@ class BLEHostGUI(QMainWindow):
                 plotter.remove_line('highpass')
         
         # 带通滤波（需要计算）
-        if hasattr(self, 'breathing_show_bandpass_checkbox') and self.breathing_show_bandpass_checkbox.isChecked():
+        if show_bandpass:
             if 'highpass_filtered' in processed and len(processed['highpass_filtered']) > 0:
                 try:
                     analysis = self.breathing_estimator.analyze_window(

@@ -182,6 +182,8 @@ class AppConfig:
 
     # 绘图/呼吸功能开关默认值（8 个 tab 默认全部启用）
     default_plot_feature_enabled: dict = None
+    # 仅默认勾选「幅值」的帧类型（其余 tab 默认不勾选）
+    plot_feature_only_amplitude_frame_types: tuple = ("方向估计帧", "HKH-11C呼吸波形")
     
     # 主题默认值
     default_theme_mode: str = "light"  # 默认主题模式："auto"（跟随系统）、"light"（浅色）、"dark"（深色）
